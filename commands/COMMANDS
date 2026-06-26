@@ -24,3 +24,9 @@ List files and directories
 
 9) cd <folder_name> | cd ..
 Enter a directory | Go back a directory
+
+10) cp <file/folder_name> <folder_name> | cp <file/folder_name> new_file/folder_name>
+Copy file(s) or folder(s)
+
+11) mv <file/folder_name> <folder_name> | mv <file/folder_name> new_file/folder_name>
+Move or rename file(s) or folder(s)
