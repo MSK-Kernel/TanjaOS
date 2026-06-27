@@ -2,7 +2,6 @@ CC=gcc
 LD=ld
 ASM=nasm
 
-# Kernel-safe flags (important for freestanding OS dev)
 CFLAGS=-ffreestanding -m32 -c \
        -fno-stack-protector \
        -fno-builtin \
