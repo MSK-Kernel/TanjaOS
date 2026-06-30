@@ -57,11 +57,3 @@ clean:
 	rm -rf output
 	rm -f cmd/*.o
 	rm -f cmd/init.c
-
-run: all
-	qemu-system-x86_64 -m 64 -kernel output/image/msk-i386
-
-run-debug: all
-	qemu-system-x86_64 -m 64 -kernel output/image/msk-i386 -s -S
-
-.PHONY: all clean run run-debug
