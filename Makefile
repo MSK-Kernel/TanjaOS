@@ -106,7 +106,7 @@ commandset:
 cmd/init.c: $(CMD_SRC)
 	@rm -f cmd/init.c
 	@echo "// Auto-generated - DO NOT EDIT" > cmd/init.c
-	@echo 'extern void register_cmd(const char* name, void (*func)(char* args));' >> cmd/init.c
+	@echo '#include "cmd.h"' >> cmd/init.c
 	@echo '' >> cmd/init.c
 	@echo 'void init_cmds() {' >> cmd/init.c
 	@for name in $(CMD_NAMES); do \
@@ -131,15 +131,20 @@ output/build/kernel.o: kernel/kernel.c | output/build
 	@echo "[CC] kernel.c"
 	$(CC) $(CFLAGS) -I. kernel/kernel.c -o output/build/kernel.o
 
+# Build ata.o
+output/build/ata.o: kernel/ata.c | output/build
+	@echo "[CC] ata.c"
+	$(CC) $(CFLAGS) -I. kernel/ata.c -o output/build/ata.o
+
 # Build init.o separately (from generated init.c)
 cmd/init.o: cmd/init.c
 	@echo "[CC] init.c (auto-generated)"
 	$(CC) $(CFLAGS) -I. -o $@ $<
 
 # Link everything
-output/image/msk-i386: output/build/boot.o output/build/kernel.o cmd/init.o $(CMD_OBJ) | output/image
+output/image/msk-i386: output/build/boot.o output/build/kernel.o output/build/ata.o cmd/init.o $(CMD_OBJ) | output/image
 	@echo "[LD] Linking kernel with $(words $(CMD_NAMES)) commands..."
-	$(LD) $(LDFLAGS) -o output/image/msk-i386 output/build/boot.o output/build/kernel.o cmd/init.o $(CMD_OBJ)
+	$(LD) $(LDFLAGS) -o output/image/msk-i386 output/build/boot.o output/build/kernel.o output/build/ata.o cmd/init.o $(CMD_OBJ)
 	@echo
 	@echo "[INFO] Kernel ready at output/image/msk-i386"
 	@echo "[INFO] Commands included: $(CMD_NAMES)"
@@ -151,6 +156,6 @@ clean:
 	rm -f cmd/init.c
 
 distclean: clean
-	rm -f cmd/*.o cmd/*.c
+	rm -f cmd/*.c
 
 .PHONY: all clean distclean commandset
