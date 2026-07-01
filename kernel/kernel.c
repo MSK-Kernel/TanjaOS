@@ -27,6 +27,20 @@ int caps_lock = 0;
 #define KEY_BACKSPACE 0x85
 
 // ============================================================
+// COMMAND SYSTEM
+// ============================================================
+
+#define MAX_CMDS 64
+
+typedef struct {
+    char name[32];
+    void (*func)(char* args);
+} Command;
+
+Command cmd_table[MAX_CMDS];
+int cmd_count = 0;
+
+// ============================================================
 // PORT I/O
 // ============================================================
 
@@ -114,6 +128,80 @@ void backspace() {
 }
 
 // ============================================================
+// NUMBER PRINTING HELPERS
+// ============================================================
+
+void print_hex(uint32_t n) {
+    char hex_chars[] = "0123456789ABCDEF";
+    char buffer[11];
+    buffer[0] = '0';
+    buffer[1] = 'x';
+    buffer[10] = 0;
+    
+    for (int i = 9; i >= 2; i--) {
+        buffer[i] = hex_chars[n & 0xF];
+        n >>= 4;
+    }
+    print(buffer);
+}
+
+void print_dec(uint32_t n) {
+    if (n == 0) {
+        putc('0');
+        return;
+    }
+    
+    char buffer[11];
+    int pos = 10;
+    buffer[pos] = 0;
+    
+    while (n > 0 && pos > 0) {
+        pos--;
+        buffer[pos] = '0' + (n % 10);
+        n /= 10;
+    }
+    
+    print(&buffer[pos]);
+}
+
+void print_dec_pad(uint32_t n, int width) {
+    char buffer[11];
+    int pos = 10;
+    buffer[pos] = 0;
+    
+    if (n == 0) {
+        buffer[--pos] = '0';
+    }
+    
+    while (n > 0 && pos > 0) {
+        pos--;
+        buffer[pos] = '0' + (n % 10);
+        n /= 10;
+    }
+    
+    int len = 10 - pos;
+    for (int i = 0; i < width - len; i++) {
+        putc(' ');
+    }
+    
+    print(&buffer[pos]);
+}
+
+void print_timestamp(uint32_t ms) {
+    uint32_t seconds = ms / 1000;
+    uint32_t millis = ms % 1000;
+    
+    print("[    ");
+    print_dec_pad(seconds, 1);
+    putc('.');
+    
+    if (millis < 100) putc('0');
+    if (millis < 10) putc('0');
+    print_dec(millis);
+    print("] ");
+}
+
+// ============================================================
 // KEYBOARD
 // ============================================================
 
@@ -148,22 +236,18 @@ int get_key() {
         if (!(inb(0x64) & 1)) continue;
         uint8_t sc = inb(0x60);
         
-        // Shift keys
         if (sc == 0x2A || sc == 0x36) { shift = 1; continue; }
         if (sc == 0xAA || sc == 0xB6) { shift = 0; continue; }
         
-        // Caps Lock
         if (sc == 0x3A) {
             caps_lock = !caps_lock;
             continue;
         }
         
-        // Extended keys (arrow keys, etc.)
         if (sc == 0xE0) {
             while (!(inb(0x64) & 1)) continue;
             uint8_t ext_sc = inb(0x60);
             
-            // Return special codes for arrow keys
             if (ext_sc == 0x48) return KEY_UP;
             if (ext_sc == 0x50) return KEY_DOWN;
             if (ext_sc == 0x4B) return KEY_LEFT;
@@ -171,11 +255,9 @@ int get_key() {
             continue;
         }
         
-        // Ignore key releases
         if (sc & 0x80) continue;
         if (sc >= 128) continue;
         
-        // Determine which keymap to use
         char res;
         if (caps_lock && !shift) {
             res = keymap_caps[sc];
@@ -232,15 +314,12 @@ void read_line(char* buffer, int max_len) {
         
         if (key == 8 || key == KEY_BACKSPACE) {
             if (pos > 0) {
-                // Move cursor left
                 cursor--;
-                // Shift characters left
                 for (int i = pos - 1; i < len - 1; i++) {
                     line[i] = line[i + 1];
                 }
                 len--;
                 pos--;
-                // Redraw from cursor position
                 cursor = prompt_start + pos;
                 sync_cursor();
                 for (int i = pos; i < len; i++) {
@@ -254,7 +333,6 @@ void read_line(char* buffer, int max_len) {
             continue;
         }
         
-        // Arrow keys
         if (key == KEY_LEFT) {
             if (pos > 0) {
                 pos--;
@@ -274,14 +352,11 @@ void read_line(char* buffer, int max_len) {
         }
         
         if (key == KEY_UP || key == KEY_DOWN) {
-            // History not implemented yet - just ignore
             continue;
         }
         
-        // Regular character (must be printable)
         if (key >= 32 && key <= 126) {
             if (len < max_len - 1) {
-                // Insert character at cursor position
                 for (int i = len; i > pos; i--) {
                     line[i] = line[i - 1];
                 }
@@ -289,7 +364,6 @@ void read_line(char* buffer, int max_len) {
                 len++;
                 pos++;
                 
-                // Redraw from cursor position
                 cursor = prompt_start + pos - 1;
                 sync_cursor();
                 for (int i = pos - 1; i < len; i++) {
@@ -302,7 +376,6 @@ void read_line(char* buffer, int max_len) {
         }
     }
     
-    // Copy to buffer
     for (int i = 0; i < len; i++) {
         buffer[i] = line[i];
     }
@@ -310,18 +383,8 @@ void read_line(char* buffer, int max_len) {
 }
 
 // ============================================================
-// COMMAND SYSTEM
+// COMMAND FUNCTIONS
 // ============================================================
-
-#define MAX_CMDS 64
-
-typedef struct {
-    char name[32];
-    void (*func)(char* args);
-} Command;
-
-Command cmd_table[MAX_CMDS];
-int cmd_count = 0;
 
 void register_cmd(const char* name, void (*func)(char* args)) {
     if (cmd_count < MAX_CMDS) {
@@ -336,10 +399,6 @@ void register_cmd(const char* name, void (*func)(char* args)) {
     }
 }
 
-// ============================================================
-// LIST COMMANDS
-// ============================================================
-
 void list_commands(void) {
     print("\n");
     print("Available commands:\n");
@@ -350,10 +409,6 @@ void list_commands(void) {
     }
     print("\n");
 }
-
-// ============================================================
-// EXECUTE COMMAND
-// ============================================================
 
 void execute_command(const char* cmd_line) {
     while (*cmd_line == ' ') cmd_line++;
@@ -391,6 +446,85 @@ void execute_command(const char* cmd_line) {
 }
 
 // ============================================================
+// KERNEL PANIC
+// ============================================================
+
+void kernel_panic(const char* msg) {
+    asm volatile ("cli");
+    
+    for (int i = 0; i < VGA_WIDTH * VGA_HEIGHT; i++) {
+        VGA[i] = (0x4F << 8) | ' ';
+    }
+    
+    cursor = 0;
+    
+    print("Kernel panic - not syncing: ");
+    print(msg);
+    print("\n\n");
+    
+    uint32_t eax, ebx, ecx, edx, esi, edi, ebp, esp;
+    asm volatile ("mov %%eax, %0" : "=r"(eax));
+    asm volatile ("mov %%ebx, %0" : "=r"(ebx));
+    asm volatile ("mov %%ecx, %0" : "=r"(ecx));
+    asm volatile ("mov %%edx, %0" : "=r"(edx));
+    asm volatile ("mov %%esi, %0" : "=r"(esi));
+    asm volatile ("mov %%edi, %0" : "=r"(edi));
+    asm volatile ("mov %%ebp, %0" : "=r"(ebp));
+    asm volatile ("mov %%esp, %0" : "=r"(esp));
+    
+    print("CPU: 0 PID: 0 Comm: MSK Not tainted 0.1.0\n");
+    
+    print("Registers:\n");
+    print("  EAX: "); print_hex(eax);
+    print("  EBX: "); print_hex(ebx);
+    print("  ECX: "); print_hex(ecx);
+    print("  EDX: "); print_hex(edx); print("\n");
+    print("  ESI: "); print_hex(esi);
+    print("  EDI: "); print_hex(edi);
+    print("  EBP: "); print_hex(ebp);
+    print("  ESP: "); print_hex(esp); print("\n\n");
+    
+    print("Call Trace:\n");
+    print("  [<"); print_hex(ebp + 0x1000); print(">] kernel_panic+0x");
+    print_hex((uint32_t)&kernel_panic & 0xFFF); print("\n");
+    print("  [<"); print_hex(ebp + 0x1004); print(">] init_cmds+0x42\n");
+    print("  [<"); print_hex(ebp + 0x1008); print(">] kernel_main+0x");
+    print_hex(0x567); print("\n");
+    print("  [<"); print_hex(ebp + 0x100C); print(">] ? start_kernel+0x1A4\n");
+    print("  [<"); print_hex(ebp + 0x1010); print(">] ? startup_32+0x8F\n\n");
+    
+    print("Kernel State:\n");
+    print("  Command table address: "); print_hex((uint32_t)&cmd_table); print("\n");
+    print("  Commands loaded: "); print_dec(cmd_count); print("\n");
+    print("  Cursor position: "); print_dec(cursor); print("\n");
+    print("  Caps lock state: "); print(caps_lock ? "ON" : "OFF"); print("\n");
+    print("  Shift state: "); print(shift ? "ACTIVE" : "inactive"); print("\n\n");
+    
+    print("---[ end Kernel panic - not syncing: ");
+    print(msg);
+    print(" ]---\n\n");    
+
+    print("Kernel has encountered a fatal error.\n");
+    print("System halted. Manual reboot required.\n\n");
+    print("Press any key to attempt reboot...");
+    
+    while (!(inb(0x64) & 1));
+    inb(0x60);
+    
+    while ((inb(0x64) & 0x02) != 0);
+    outb(0x64, 0xFE);
+    
+    asm volatile (
+        "lidt 0\n"
+        "int $0"
+    );
+    
+    while (1) {
+        asm volatile ("cli; hlt");
+    }
+}
+
+// ============================================================
 // SHELL
 // ============================================================
 
@@ -423,7 +557,38 @@ void kernel_main() {
     init_cmds();
     
     if (cmd_count == 0) {
-        print("warning: No commands in /cmd\n");
+        uint32_t boot_time;
+        asm volatile ("rdtsc" : "=a"(boot_time));
+        boot_time = boot_time / 1000000; // Convert to milliseconds
+        
+        print("[    ");
+        print_dec_pad(boot_time, 1);
+        print(".");
+        print_dec(0);  // milliseconds decimal
+        print("] --- Kernel panic: not syncing: Failed to load command(s)\n");
+        print("[    ");
+        print_dec_pad(boot_time, 1);
+        print(".");
+        print_dec(0);
+        print("] failed to load command(s)\n");
+        print("[    ");
+        print_dec_pad(boot_time, 1);
+        print(".");
+        print_dec(0);
+        print("] previous error may be due to failed command loading or no commands in the /cmd directory\n");
+        print("[    ");
+        print_dec_pad(boot_time, 1);
+        print(".");
+        print_dec(0);
+        print("] --- end Kernel panic: not syncing: Failed to load command(s) ---\n");
+        print("[    ");
+        print_dec_pad(boot_time, 1);
+        print(".");
+        print_dec(0);
+        print("] Use 'make commandset' to generate base commands before using 'make'\n");
+        while (1) {
+            asm volatile ("cli; hlt");
+        }
     }
     
     shell();
