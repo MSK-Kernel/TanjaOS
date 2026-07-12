@@ -9,5 +9,4 @@ For building, use 'make' to compile. Once compiling is finished, a bootable kern
 1) make
 2) nasm
 3) gcc
-4) ld
 ---------------------
