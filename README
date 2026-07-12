@@ -1,7 +1,7 @@
 For commands, use 'make commandset' to generate the base commands. Otherwise you can create commands yourself and manually insert them into cmd.
 The Makefile will automatically detect your commands so you don't have to edit anything. Without commands, this will result in a kernel panic.
 ---------------------------------------------------------------------------
-For building, use 'make' to compile. Once compiling is finished, a bootable kernel image 'tanja-base' will be located at output/image.
+For building, use 'make' to compile. Once compiling is finished, a bootable kernel image 'tanja-base' will be located at arch/x86/boot.
 
  ___________________
 [ REQUIRED PACKAGES ]
