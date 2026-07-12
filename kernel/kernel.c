@@ -495,7 +495,7 @@ void execute_command(const char* cmd_line) {
 void setup_wizard() {
     print("===== TanjaOS Setup =====\n");
     print("\n");
-    print("Create a username: "); read_line(config.username, MAX_USERNAME);
+    print("Create a login: "); read_line(config.username, MAX_USERNAME);
     print("Create a password: "); read_line(config.password, MAX_PASSWORD);
     print("Set a hostname: "); read_line(config.hostname, MAX_HOSTNAME);
     config.is_setup = 1; clear_screen();
@@ -504,7 +504,8 @@ void setup_wizard() {
 void login_prompt() {
     char u[MAX_USERNAME], p[MAX_PASSWORD];
     while (1) {
-        print("Username: "); read_line(u, MAX_USERNAME);
+        print("The TanjaOS Project\n\n");
+        print(config.hostname); print(" login: "); read_line(u, MAX_USERNAME);
         print("Password: "); read_line(p, MAX_PASSWORD);
         if (streq(u, config.username) && streq(p, config.password)) { print("\n"); return; }
         print("Invalid credentials. Try again\n");
