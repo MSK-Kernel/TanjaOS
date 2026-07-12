@@ -91,10 +91,9 @@ void sync_cursor() {
     outb(0x3D5, (uint8_t)((cursor >> 8) & 0xFF));
 }
 
-void underline_cursor() {
+void block_cursor() {
     outb(0x3D4, 0x0A);
-    outb(0x3D5, 0x0D);
-
+    outb(0x3D5, 0x0E);
     outb(0x3D4, 0x0B);
     outb(0x3D5, 0x0F);
 }
@@ -548,7 +547,7 @@ void shell() {
 extern void init_cmds(void);
 
 void kernel_main() {
-    underline_cursor(); clear_screen();
+    block_cursor(); clear_screen();
     fs_init(); init_cmds();
     if (cmd_count == 0) { print("---[ Kernel panic - not syncing: Unable to load commands ]---\n    command count=0\n    Please use 'make commandset' to generate base commands\n---[ end Kernel panic - not syncing: Unable to load commands ]---\n"); while (1); }
     register_cmd("exit", cmd_exit);
