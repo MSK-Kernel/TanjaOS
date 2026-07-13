@@ -9,6 +9,8 @@ CMD_SRC = $(filter-out cmd/init.c, $(wildcard cmd/*.c))
 CMD_OBJ = $(CMD_SRC:.c=.o)
 CMD_NAMES = $(notdir $(basename $(CMD_SRC)))
 
+KERNEL_OBJ = kernel/kernel.o kernel/game.o
+
 all: arch/x86/boot/tanja-base
 
 arch/x86/boot:
@@ -31,43 +33,63 @@ cmd/init.c: $(CMD_SRC)
 	done
 	@echo '}' >> cmd/init.c
 
+
 cmd/%.o: cmd/%.c
 	@echo "[CC] cmd/$(notdir $<)"
 	$(CC) $(CFLAGS) -o $@ $<
+
 
 kernel/kernel.o: kernel/kernel.c
 	@echo "[CC] kernel/kernel.c"
 	$(CC) $(CFLAGS) -o kernel/kernel.o kernel/kernel.c
 
+
+kernel/game.o: kernel/game.c
+	@echo "[CC] kernel/game.c"
+	$(CC) $(CFLAGS) -o kernel/game.o kernel/game.c
+
+
 fs/fs.o: fs/fs.c
 	@echo "[CC] fs/fs.c"
 	$(CC) $(CFLAGS) -o fs/fs.o fs/fs.c
+
 
 cmd/init.o: cmd/init.c
 	@echo "[CC] cmd/init.c"
 	$(CC) $(CFLAGS) -o cmd/init.o cmd/init.c
 
+
 arch/x86/boot/boot.o: arch/x86/boot/boot.asm | arch/x86/boot
 	@echo "[ASM] boot.asm"
 	$(ASM) -f elf32 arch/x86/boot/boot.asm -o arch/x86/boot/boot.o
 
-arch/x86/boot/tanja-base: arch/x86/boot/boot.o kernel/kernel.o fs/fs.o cmd/init.o $(CMD_OBJ) | arch/x86/boot
+
+arch/x86/boot/tanja-base: arch/x86/boot/boot.o $(KERNEL_OBJ) fs/fs.o cmd/init.o $(CMD_OBJ) | arch/x86/boot
 	@echo "[LD] Linking..."
-	$(LD) $(LDFLAGS) -o arch/x86/boot/tanja-base arch/x86/boot/boot.o kernel/kernel.o fs/fs.o cmd/init.o $(CMD_OBJ)
+	$(LD) $(LDFLAGS) -o arch/x86/boot/tanja-base \
+		arch/x86/boot/boot.o \
+		$(KERNEL_OBJ) \
+		fs/fs.o \
+		cmd/init.o \
+		$(CMD_OBJ)
+
 	@echo
 	@echo "[INFO] Kernel image ready at arch/x86/boot/tanja-base"
 	@echo "[INFO] Commands: $(CMD_NAMES)"
 	@echo
+
 
 clean:
 	rm -f kernel/*.o fs/*.o
 	rm -f cmd/*.o cmd/init.c
 	rm -f arch/x86/boot/*.o arch/x86/boot/tanja-base
 
+
 distclean: clean
 	rm -f cmd/help.c cmd/reboot.c cmd/echo.c cmd/clear.c
 	rm -f cmd/mkdir.c cmd/rmdir.c cmd/touch.c cmd/rm.c cmd/cat.c
 	rm -f cmd/ls.c cmd/pwd.c cmd/cd.c cmd/editor.c
 	rm -f cmd/cp.c cmd/mv.c
+
 
 .PHONY: all clean distclean commandset
