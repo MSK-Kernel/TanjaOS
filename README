@@ -6,7 +6,7 @@ For building, use 'make' to compile. Once compiling is finished, a bootable kern
  ___________________
 [ REQUIRED PACKAGES ]
 |-------------------|
-1) make             |
-2) nasm             |
-3) gcc              |
---------------------'
+| 1) make           |
+| 2) nasm           |
+| 3) gcc            |
+|___________________|
