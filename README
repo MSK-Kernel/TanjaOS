@@ -3,11 +3,10 @@ The Makefile will automatically detect your commands so you don't have to edit a
 ---------------------------------------------------------------------------
 For building, use 'make' to compile. Once compiling is finished, a bootable kernel image 'tanja-base' will be located at output/image.
 
----------------------
+ ___________________
 [ REQUIRED PACKAGES ]
----------------------
-1) make
-2) nasm
-3) gcc
-4) ld
----------------------
+|-------------------|
+1) make             |
+2) nasm             |
+3) gcc              |
+--------------------'
