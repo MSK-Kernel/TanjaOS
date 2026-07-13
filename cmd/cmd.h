@@ -5,6 +5,8 @@
 #include <stddef.h>
 
 // External kernel functions available to commands
+extern int key_available(void);
+extern int get_key(void);
 extern void print(const char* s);
 extern void putc(char c);
 extern void clear_screen(void);
