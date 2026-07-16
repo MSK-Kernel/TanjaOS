@@ -509,11 +509,10 @@ void setup_wizard() {
 void login_prompt() {
     char u[MAX_USERNAME], p[MAX_PASSWORD];
     while (1) {
-        print("The TanjaOS Project\n\n");
         print(config.hostname); print(" login: "); read_line(u, MAX_USERNAME);
         print("Password: "); read_line(p, MAX_PASSWORD);
         if (streq(u, config.username) && streq(p, config.password)) { print("\n"); return; }
-        print("Invalid credentials. Try again\n");
+        print("Login incorrect\n\n");
     }
 }
 
@@ -560,5 +559,5 @@ void kernel_main() {
     register_cmd("exit", cmd_exit);
     register_cmd("hostname", cmd_hostname);
     if (!config.is_setup) setup_wizard();
-    while (1) { login_prompt(); clear_screen(); print("Welcome to TanjaOS!\nType 'help' for commands.\n\n"); shell(); }
+    while (1) { print("The TanjaOS Project\n\n");login_prompt(); print(""); shell(); }
 }
