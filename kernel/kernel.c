@@ -559,5 +559,5 @@ void kernel_main() {
     register_cmd("exit", cmd_exit);
     register_cmd("hostname", cmd_hostname);
     if (!config.is_setup) setup_wizard();
-    while (1) { print("The TanjaOS Project\n\n");login_prompt(); print(""); shell(); }
+    while (1) { print("The TanjaOS Project\n\n");login_prompt(); shell(); }
 }
