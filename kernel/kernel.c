@@ -17,6 +17,10 @@ int cursor = 0;
 // GLOBAL VARIABLES
 // ============================================================
 
+uint32_t boot_time_ms = 0;
+
+uint32_t boot_ticks = 0;
+
 typedef struct Command {
     char name[32];
     void (*func)(char* args);
@@ -39,10 +43,6 @@ int caps_lock = 0;
 #define KEY_RIGHT  0x83
 #define KEY_ENTER  0x84
 #define KEY_BACKSPACE 0x85
-
-// ============================================================
-// COMMAND SYSTEM
-// ============================================================
 
 // ============================================================
 // USER CONFIGURATION
@@ -71,6 +71,30 @@ void outb(uint16_t port, uint8_t val) {
     asm volatile ("outb %0, %1" : : "a"(val), "Nd"(port));
 }
 
+void timer_init()
+{
+    // PIT channel 0, rate generator mode
+    outb(0x43, 0x34);
+
+    uint16_t divisor = 1193180 / 1000; // ~1ms ticks
+
+    outb(0x40, divisor & 0xFF);
+    outb(0x40, (divisor >> 8) & 0xFF);
+}
+
+void timer_delay_ms(uint32_t ms)
+{
+    for (uint32_t i = 0; i < ms; i++)
+    {
+        for (volatile uint32_t j = 0; j < 1000; j++)
+        {
+            asm volatile("nop");
+        }
+
+        boot_time_ms++;
+    }
+}
+
 uint8_t inb(uint16_t port) {
     uint8_t ret;
     asm volatile ("inb %1, %0" : "=a"(ret) : "Nd"(port));
@@ -89,6 +113,18 @@ void sync_cursor() {
     outb(0x3D5, (uint8_t)(cursor & 0xFF));
     outb(0x3D4, 0x0E);
     outb(0x3D5, (uint8_t)((cursor >> 8) & 0xFF));
+}
+
+void timer_tick()
+{
+    boot_ticks++;
+}
+
+void timer_handler()
+{
+    boot_ticks++;
+
+    outb(0x20, 0x20); // send EOI
 }
 
 void underline_cursor() {
@@ -156,6 +192,29 @@ void print_dec(uint32_t n) {
     char buffer[11]; int pos = 10; buffer[pos] = 0;
     while (n > 0 && pos > 0) { pos--; buffer[pos] = '0' + (n % 10); n /= 10; }
     print(&buffer[pos]);
+}
+
+void boot_log(const char* msg)
+{
+    print("[ ");
+
+    print_dec(boot_time_ms / 1000);
+
+    print(".");
+
+    uint32_t ms = boot_time_ms % 1000;
+
+    if (ms < 100)
+        putc('0');
+    if (ms < 10)
+        putc('0');
+
+    print_dec(ms);
+
+    print(" ] ");
+
+    print(msg);
+    print("\n");
 }
 
 void print_dec_pad(uint32_t n, int width) {
@@ -552,12 +611,60 @@ void shell() {
 
 extern void init_cmds(void);
 
-void kernel_main() {
-    underline_cursor(); clear_screen();
-    fs_init(); init_cmds();
-    if (cmd_count == 0) { print("---[ Kernel panic - not syncing: Unable to load commands ]---\n    command count=0\n    Please use 'make commandset' to generate base commands\n---[ end Kernel panic - not syncing: Unable to load commands ]---\n"); while (1); }
+void kernel_main()
+{
+    underline_cursor();
+    clear_screen();
+
+    timer_init();
+
+    boot_log("Kernel starting");
+
+    timer_delay_ms(50);
+
+    boot_log("Initializing filesystem");
+    fs_init();
+
+    timer_delay_ms(50);
+
+    boot_log("Loading commands");
+    init_cmds();
+
+    timer_delay_ms(50);
+
+    boot_log("Checking command table");
+
+    if (cmd_count == 0)
+    {
+        print("---[ Kernel panic - not syncing: Unable to load commands ]---\n");
+        print("    command count=0\n");
+        print("    Please use 'make commandset' to generate base commands\n");
+        print("---[ end Kernel panic - not syncing: Unable to load commands ]---\n");
+
+        while (1);
+    }
+
     register_cmd("exit", cmd_exit);
     register_cmd("hostname", cmd_hostname);
-    if (!config.is_setup) setup_wizard();
-    while (1) { print("The TanjaOS Project\n\n");login_prompt(); shell(); }
+
+    timer_delay_ms(50);
+
+    boot_log("Starting setup");
+
+    if (!config.is_setup)
+        print("\n");
+	setup_wizard();
+
+    timer_delay_ms(50);
+    boot_log("Starting shell");
+    print("\n");
+
+    while (1)
+    {
+        print("The TanjaOS Project\n\n");
+
+        login_prompt();
+
+        shell();
+    }
 }
