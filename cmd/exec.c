@@ -11,7 +11,7 @@ extern void execute_command(const char* cmd);
 void cmd_exec(char* args)
 {
     if (!args || !args[0]) {
-        print("usage: exec <file>\n");
+        print("Usage: exec <file>\n");
         return;
     }
 

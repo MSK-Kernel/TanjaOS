@@ -54,7 +54,7 @@ static void draw_editor(char *text,int pos)
 
     print("TanjaOS Editor\n");
     print("Ctrl+X = Save & Exit\n");
-    print("----------------------------------------\n");
+    print("---------------------\n");
 
     for(int i=0;text[i];i++)
         putc(text[i]);

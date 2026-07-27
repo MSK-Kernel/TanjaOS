@@ -89,7 +89,7 @@ distclean: clean
 	rm -f cmd/help.c cmd/reboot.c cmd/echo.c cmd/clear.c
 	rm -f cmd/mkdir.c cmd/rmdir.c cmd/touch.c cmd/rm.c cmd/cat.c
 	rm -f cmd/ls.c cmd/pwd.c cmd/cd.c cmd/editor.c
-	rm -f cmd/cp.c cmd/mv.c
+	rm -f cmd/cp.c cmd/mv.c cmd/grep.c cmd/exec.c
 
 
 .PHONY: all clean distclean commandset
