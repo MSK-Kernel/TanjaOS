@@ -1,6 +1,5 @@
 For commands, use 'make commandset' to generate the base commands. Otherwise you can create commands yourself and manually insert them into cmd.
 The Makefile will automatically detect your commands so you don't have to edit anything. Without commands, this will result in a kernel panic.
----------------------------------------------------------------------------
 For building, use 'make' to compile. Once compiling is finished, a bootable kernel image 'tanja-base' will be located at arch/x86/boot.
  ___________________
 [ REQUIRED PACKAGES ]
@@ -9,3 +8,15 @@ For building, use 'make' to compile. Once compiling is finished, a bootable kern
 | 2) nasm           |
 | 3) gcc            |
 |___________________|
+
+For compiling on BSD systems, you should use gmake instead of make,
+this is because BSD's make can't use the traditional linker.ld for TanjaOS.
+You will see a file called "Makefile.bsd", this is the Makefile for BSD systems.
+To use Makefile.bsd, use 'gmake <option> -f Makefile.bsd'. 
+ _________________________
+[ REQUIRED PACKAGES (BSD) ]
+|-------------------------|
+| 1) gmake                |
+| 2) nasm                 |
+| 3) gcc                  |
+|_________________________|
