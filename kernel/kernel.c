@@ -636,10 +636,10 @@ void kernel_main()
 
     if (cmd_count == 0)
     {
-        print("---[ Kernel panic - not syncing: Unable to load commands ]---\n");
-        print("    command count=0\n");
-        print("    Please use 'make commandset' to generate base commands\n");
-        print("---[ end Kernel panic - not syncing: Unable to load commands ]---\n");
+        print("panic: due to: Unable to load commands\n");
+        print("command count=0\n");
+        print("Please use 'make commandset' to generate base commands\n");
+        print("panic: due to: Unable to load commands\n");
 
         while (1);
     }
