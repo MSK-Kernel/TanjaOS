@@ -23,6 +23,8 @@ static int strlen_safe(const char* s) {
 #define MAX_F 32
 #define MAX_D 16
 
+int fs_delete_directory_recursive(const char *path);
+
 static char fname[MAX_F][64];
 static char fdata[MAX_F][1024];
 static int fsize[MAX_F];
@@ -58,10 +60,35 @@ static void abs_path(const char* name, char* out) {
     }
 }
 
+static int parent_exists(const char* path) {
+    char full[256];
+    abs_path(path, full);
+
+    char parent[256];
+    strcpy_safe(parent, full, 256);
+
+    int len = strlen_safe(parent);
+
+    if (len <= 1)
+        return 1; // root
+
+    while (len > 0 && parent[len - 1] != '/')
+        len--;
+
+    if (len <= 1)
+        return 1;
+
+    parent[len - 1] = 0;
+
+    return fs_directory_exists(parent);
+}
+
 int fs_create_directory(const char* path) {
     if (!path || !path[0]) return -1;
     char full[256];
     abs_path(path, full);
+    if (!parent_exists(path))
+    return -1;
     if (strcmp_safe(full, "/")) return -1;
     int i;
     // Check if directory already exists
@@ -145,6 +172,8 @@ int fs_create_file(const char* path) {
     if (!path || !path[0]) return -1;
     char full[256];
     abs_path(path, full);
+    if (!parent_exists(path))
+    return -1;
     int i;
     // Check if file already exists
     for (i = 0; i < MAX_F; i++)
@@ -198,7 +227,8 @@ int fs_write_file(const char* path, const char* data, uint32_t size) {
     for (i = 0; i < MAX_F; i++)
         if (fused[i] && strcmp_safe(fname[i], full)) { idx = i; break; }
     if (idx == -1) {
-        fs_create_file(path);
+    if (fs_create_file(path) != 0)
+        return -1;
         for (i = 0; i < MAX_F; i++)
             if (fused[i] && strcmp_safe(fname[i], full)) { idx = i; break; }
         if (idx == -1) return -1;

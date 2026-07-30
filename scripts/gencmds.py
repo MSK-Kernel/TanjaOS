@@ -101,7 +101,11 @@ void cmd_echo(char* args) {
         uint32_t len = 0;
         char* p = text;
         while (*p) { len++; p++; }
-        fs_write_file(filename, text, len);
+        if (fs_write_file(filename, text, len) != 0) {
+            print("echo: cannot write '");
+            print(filename);
+            print("': No such directory\n");
+        }fs_write_file(filename, text, len);
     } else {
         // Print to screen
         char* p = text;
@@ -154,48 +158,6 @@ void cmd_mkdir(char* args) {
     
     if (fs_create_directory(args) != 0) {
         print("mkdir: cannot create directory '");
-        print(args);
-        print("': Error\n");
-    }
-}
-"""
-
-commands["rmdir.c"] = r"""#include "cmd.h"
-
-void cmd_rmdir(char* args) {
-    extern void print(const char* s);
-    extern int fs_delete_directory(const char* path);
-    extern int fs_directory_exists(const char* path);
-    
-    if (!args || !*args) {
-        print("Usage: rmdir <directory>\n");
-        return;
-    }
-    
-    while (*args == ' ') args++;
-    
-    char* end = args;
-    while (*end) end++;
-    end--;
-    while (end > args && (*end == ' ' || *end == '\n' || *end == '\r')) {
-        *end = 0;
-        end--;
-    }
-    
-    if (!fs_directory_exists(args)) {
-        print("rmdir: failed to remove '");
-        print(args);
-        print("': No such file or directory\n");
-        return;
-    }
-    
-    int result = fs_delete_directory(args);
-    if (result == -2) {
-        print("rmdir: failed to remove '");
-        print(args);
-        print("': Directory not empty\n");
-    } else if (result != 0) {
-        print("rmdir: failed to remove '");
         print(args);
         print("': Error\n");
     }
@@ -371,8 +333,7 @@ void cmd_cd(char* args) {
 }
 """
 
-commands["editor.c"] = r'''
-#include "../include/fs.h"
+commands["editor.c"] = r'''#include "../include/fs.h"
 #include <stdint.h>
 
 #define KEY_UP     0x80
@@ -461,8 +422,14 @@ void cmd_editor(char *args)
 
     if(fs_file_exists(args))
         fs_read_file(args,text,&size);
-    else
-        fs_create_file(args);
+    else {
+        if (fs_create_file(args) != 0) {
+            print("editor: cannot open '");
+            print(args);
+            print("': No such directory\n");
+            return;
+        }
+    }
 
     int pos=strlen_editor(text);
 

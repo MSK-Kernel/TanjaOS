@@ -1,4 +1,3 @@
-
 #include "../include/fs.h"
 #include <stdint.h>
 
@@ -88,8 +87,14 @@ void cmd_editor(char *args)
 
     if(fs_file_exists(args))
         fs_read_file(args,text,&size);
-    else
-        fs_create_file(args);
+    else {
+        if (fs_create_file(args) != 0) {
+            print("editor: cannot open '");
+            print(args);
+            print("': No such directory\n");
+            return;
+        }
+    }
 
     int pos=strlen_editor(text);
 

@@ -71,7 +71,11 @@ void cmd_echo(char* args) {
         uint32_t len = 0;
         char* p = text;
         while (*p) { len++; p++; }
-        fs_write_file(filename, text, len);
+        if (fs_write_file(filename, text, len) != 0) {
+            print("echo: cannot write '");
+            print(filename);
+            print("': No such directory\n");
+        }fs_write_file(filename, text, len);
     } else {
         // Print to screen
         char* p = text;
