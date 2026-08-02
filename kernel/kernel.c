@@ -156,25 +156,34 @@ void scroll() {
     cursor = VGA_WIDTH * (VGA_HEIGHT - 1);
 }
 
-void putc(char c) {
+void putc_color(char c, uint16_t color) {
     if (c == '\n') {
         cursor = ((cursor / VGA_WIDTH) + 1) * VGA_WIDTH;
     } else if (c == '\b') {
         if (cursor > 0) {
             cursor--;
-            VGA[cursor] = VGA_COLOR | ' ';
+            VGA[cursor] = color | ' ';
         }
     } else if (c >= ' ') {
-        VGA[cursor] = VGA_COLOR | (uint8_t)c;
+        VGA[cursor] = color | (uint8_t)c;
         cursor++;
     }
     if (cursor >= VGA_WIDTH * VGA_HEIGHT) scroll();
     sync_cursor();
 }
 
+void putc(char c) {
+    putc_color(c, VGA_COLOR);
+}
+
 void print(const char* s) {
     if (!s) return;
     while (*s) putc(*s++);
+}
+
+void print_color(const char* s, uint16_t color) {
+    if (!s) return;
+    while (*s) putc_color(*s++, color);
 }
 
 void clear_screen() {
@@ -489,6 +498,17 @@ void register_cmd(const char* name, void (*func)(char* args)) {
     }
 
     cmd_count++;
+}
+
+int cmd_exists(const char* name) {
+    if (!name || !*name) return 0;
+
+    Command* cmd = cmd_table;
+    while (cmd) {
+        if (streq(cmd->name, name)) return 1;
+        cmd = cmd->next;
+    }
+    return 0;
 }
 
 void list_commands(void) {
