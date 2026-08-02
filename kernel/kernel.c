@@ -109,6 +109,15 @@ void sync_cursor() {
     int max = VGA_WIDTH * VGA_HEIGHT - 1;
     if (cursor < 0) cursor = 0;
     if (cursor > max) cursor = max;
+
+    // 1. Configure Cursor Shape to a Solid Block
+    outb(0x3D4, 0x0A);                   // Select Cursor Start Register
+    outb(0x3D5, (inb(0x3D5) & 0xC0) | 0); // Start at scanline 0 (Top)
+    
+    outb(0x3D4, 0x0B);                   // Select Cursor End Register
+    outb(0x3D5, (inb(0x3D5) & 0xE0) | 15);// End at scanline 15 (Bottom)
+
+    // 2. Update Cursor Position (Your existing logic)
     outb(0x3D4, 0x0F);
     outb(0x3D5, (uint8_t)(cursor & 0xFF));
     outb(0x3D4, 0x0E);
