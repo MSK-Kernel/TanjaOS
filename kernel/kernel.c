@@ -492,19 +492,31 @@ void register_cmd(const char* name, void (*func)(char* args)) {
 }
 
 void list_commands(void) {
-    print("\nAvailable commands:\n");
+    print("\nAvailable commands:\n\n");
 
     Command* cmd = cmd_table;
+    int col = 0;
 
     while (cmd) {
-        print("  ");
+        int len = 0;
+        while (cmd->name[len])
+            len++;
+
+        // Wrap to next line if this command won't fit
+        if (col + len + 3 >= VGA_WIDTH) {
+            print("\n");
+            col = 0;
+        }
+
         print(cmd->name);
-        print("\n");
+        print(" ");
+
+        col += len + 3;
 
         cmd = cmd->next;
     }
 
-    print("\n");
+    print("\n\n");
 }
 
 void execute_command(const char* cmd_line) {
