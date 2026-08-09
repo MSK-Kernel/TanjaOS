@@ -117,7 +117,7 @@ void sync_cursor() {
     outb(0x3D4, 0x0B);                   // Select Cursor End Register
     outb(0x3D5, (inb(0x3D5) & 0xE0) | 15);// End at scanline 15 (Bottom)
 
-    // 2. Update Cursor Position (Your existing logic)
+    // 2. Update Cursor Position
     outb(0x3D4, 0x0F);
     outb(0x3D5, (uint8_t)(cursor & 0xFF));
     outb(0x3D4, 0x0E);
