@@ -679,7 +679,7 @@ void kernel_main()
     {
         print("panic: due to: Unable to load commands\n");
         print("command count=0\n");
-        print("Please use 'make commandset' to generate base commands\n");
+        print("Please provide commands in cmd\n");
         print("panic: due to: Unable to load commands\n");
 
         while (1);
