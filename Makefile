@@ -16,9 +16,6 @@ all: arch/x86/boot/tanja-base
 arch/x86/boot:
 	mkdir -p arch/x86/boot
 
-commandset:
-	python3 scripts/gencmds.py
-
 cmd/init.c: $(CMD_SRC)
 	@rm -f cmd/init.c
 	@echo "// Auto-generated" > cmd/init.c
