@@ -3,9 +3,11 @@
 
 #include <stdint.h>
 
-// ATA I/O Ports (Primary IDE Channel)
+// ATA I/O Ports
 #define ATA_PRIMARY_IO       0x1F0
 #define ATA_PRIMARY_CTRL     0x3F6
+#define ATA_SECONDARY_IO     0x170
+#define ATA_SECONDARY_CTRL   0x376
 
 // ATA Registers (offsets from base)
 #define ATA_REG_DATA         0x00
@@ -44,7 +46,15 @@ typedef struct {
 
 // Function prototypes
 void ata_init(void);
+
+// channel: 0 = primary (0x1F0), 1 = secondary (0x170)
+// drive:   0 = master, 1 = slave
 int ata_detect_drive(int channel, int drive, ata_drive_info_t *info);
 void ata_print_drive_info(ata_drive_info_t *info);
+
+// Raw PIO sector I/O, LBA28. count is in 512-byte sectors (1-255).
+// Returns 0 on success, -1 on error/timeout.
+int ata_read_sectors(int channel, int drive, uint32_t lba, uint8_t count, void* buf);
+int ata_write_sectors(int channel, int drive, uint32_t lba, uint8_t count, const void* buf);
 
 #endif

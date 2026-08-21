@@ -1,5 +1,10 @@
 #include "../include/fs.h"
 
+// Hook into store.c. It's always linked in; it no-ops internally if no
+// disk-backed Storefile is active. Declared extern here (rather than
+// pulled in via a header) to avoid fs.h depending on store.h.
+extern void store_autosave(void);
+
 static void strcpy_safe(char* d, const char* s, int max) {
     if (!d || !s) return;
     int i;
@@ -101,6 +106,7 @@ int fs_create_directory(const char* path) {
         if (!dused[i]) {
             strcpy_safe(dname[i], full, 64);
             dused[i] = 1;
+            store_autosave();
             return 0;
         }
     }
@@ -162,6 +168,7 @@ int fs_delete_directory(const char* path) {
         if (dused[i] && strcmp_safe(dname[i], full)) {
             dused[i] = 0;
             dname[i][0] = 0;
+            store_autosave();
             return 0;
         }
     }
@@ -187,6 +194,7 @@ int fs_create_file(const char* path) {
             fsize[i] = 0;
             fdata[i][0] = 0;
             fused[i] = 1;
+            store_autosave();
             return 0;
         }
     }
@@ -213,6 +221,7 @@ int fs_delete_file(const char* path) {
             fused[i] = 0;
             fname[i][0] = 0;
             fsize[i] = 0;
+            store_autosave();
             return 0;
         }
     }
@@ -237,6 +246,7 @@ int fs_write_file(const char* path, const char* data, uint32_t size) {
     for (i = 0; i < (int)size; i++) fdata[idx][i] = data[i];
     fdata[idx][size] = 0;
     fsize[idx] = size;
+    store_autosave();
     return 0;
 }
 
@@ -364,3 +374,100 @@ void fs_get_current_path(char* path) {
 
 int find_in_directory(int a, const char* b, fs_type_t c) { (void)a;(void)b;(void)c; return -1; }
 int parse_path(const char* a, char* b, char* c) { (void)a; if(b)b[0]=0; if(c)c[0]=0; return 0; }
+
+// ============================================================
+// STOREFILE SERIALIZATION
+//
+// Packs the static fname/fdata/fsize/fused/dname/dused/cwd tables into
+// a flat blob (and back). Layout, in order:
+//   4 bytes  magic "TJFS"
+//   1 byte   version
+//   3 bytes  reserved/padding
+//   MAX_D    bytes   dused[]
+//   MAX_D*64 bytes   dname[][64]
+//   MAX_F    bytes   fused[]
+//   MAX_F*4  bytes   fsize[]   (little-endian)
+//   MAX_F*64 bytes   fname[][64]
+//   MAX_F*1024 bytes fdata[][1024]
+//   256      bytes   cwd
+// ============================================================
+
+#define STORE_VERSION 1
+
+uint32_t fs_store_size(void) {
+    return 8
+        + MAX_D
+        + (MAX_D * 64)
+        + MAX_F
+        + (MAX_F * 4)
+        + (MAX_F * 64)
+        + (MAX_F * 1024)
+        + 256;
+}
+
+int fs_serialize(uint8_t* buf, uint32_t buf_size) {
+    if (!buf) return -1;
+    uint32_t need = fs_store_size();
+    if (buf_size < need) return -1;
+
+    uint32_t p = 0;
+    int i, j;
+
+    buf[p++] = 'T'; buf[p++] = 'J'; buf[p++] = 'F'; buf[p++] = 'S';
+    buf[p++] = STORE_VERSION; buf[p++] = 0; buf[p++] = 0; buf[p++] = 0;
+
+    for (i = 0; i < MAX_D; i++) buf[p++] = (uint8_t)dused[i];
+    for (i = 0; i < MAX_D; i++)
+        for (j = 0; j < 64; j++) buf[p++] = (uint8_t)dname[i][j];
+
+    for (i = 0; i < MAX_F; i++) buf[p++] = (uint8_t)fused[i];
+    for (i = 0; i < MAX_F; i++) {
+        uint32_t s = (uint32_t)fsize[i];
+        buf[p++] = (uint8_t)(s & 0xFF);
+        buf[p++] = (uint8_t)((s >> 8) & 0xFF);
+        buf[p++] = (uint8_t)((s >> 16) & 0xFF);
+        buf[p++] = (uint8_t)((s >> 24) & 0xFF);
+    }
+    for (i = 0; i < MAX_F; i++)
+        for (j = 0; j < 64; j++) buf[p++] = (uint8_t)fname[i][j];
+    for (i = 0; i < MAX_F; i++)
+        for (j = 0; j < 1024; j++) buf[p++] = (uint8_t)fdata[i][j];
+
+    for (j = 0; j < 256; j++) buf[p++] = (uint8_t)cwd[j];
+
+    return 0;
+}
+
+int fs_deserialize(const uint8_t* buf, uint32_t buf_size) {
+    if (!buf) return -1;
+    uint32_t need = fs_store_size();
+    if (buf_size < need) return -1;
+    if (buf[0] != 'T' || buf[1] != 'J' || buf[2] != 'F' || buf[3] != 'S') return -1;
+    if (buf[4] != STORE_VERSION) return -1;
+
+    uint32_t p = 8;
+    int i, j;
+
+    for (i = 0; i < MAX_D; i++) dused[i] = buf[p++];
+    for (i = 0; i < MAX_D; i++)
+        for (j = 0; j < 64; j++) dname[i][j] = (char)buf[p++];
+
+    for (i = 0; i < MAX_F; i++) fused[i] = buf[p++];
+    for (i = 0; i < MAX_F; i++) {
+        uint32_t s = (uint32_t)buf[p]
+                   | ((uint32_t)buf[p + 1] << 8)
+                   | ((uint32_t)buf[p + 2] << 16)
+                   | ((uint32_t)buf[p + 3] << 24);
+        fsize[i] = (int)s;
+        p += 4;
+    }
+    for (i = 0; i < MAX_F; i++)
+        for (j = 0; j < 64; j++) fname[i][j] = (char)buf[p++];
+    for (i = 0; i < MAX_F; i++)
+        for (j = 0; j < 1024; j++) fdata[i][j] = (char)buf[p++];
+
+    for (j = 0; j < 256; j++) cwd[j] = (char)buf[p++];
+
+    return 0;
+}
+

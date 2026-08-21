@@ -1,6 +1,8 @@
 #include <stdint.h>
 #include <stddef.h>
 #include "../include/fs.h"
+#include "../include/store.h"
+#include "../include/idt.h"
 
 // ============================================================
 // VGA CONSTANTS
@@ -16,8 +18,6 @@ int cursor = 0;
 // ============================================================
 // GLOBAL VARIABLES
 // ============================================================
-
-uint32_t boot_time_ms = 0;
 
 uint32_t boot_ticks = 0;
 
@@ -63,6 +63,36 @@ user_config_t config = { .is_setup = 0 };
 
 int shell_exit_flag = 0;
 
+// Packs/unpacks `config` (login + hostname) into a flat blob so
+// store.c can save it alongside the filesystem, letting the setup
+// wizard's "create a login" step actually stick across reboots
+// instead of running every single boot.
+uint32_t config_store_size(void) {
+    return MAX_USERNAME + MAX_PASSWORD + MAX_HOSTNAME + 1; // +1 for is_setup
+}
+
+int config_serialize(uint8_t* buf, uint32_t buf_size) {
+    if (!buf || buf_size < config_store_size()) return -1;
+    uint32_t p = 0;
+    int i;
+    for (i = 0; i < MAX_USERNAME; i++) buf[p++] = (uint8_t)config.username[i];
+    for (i = 0; i < MAX_PASSWORD; i++) buf[p++] = (uint8_t)config.password[i];
+    for (i = 0; i < MAX_HOSTNAME; i++) buf[p++] = (uint8_t)config.hostname[i];
+    buf[p++] = (uint8_t)(config.is_setup ? 1 : 0);
+    return 0;
+}
+
+int config_deserialize(const uint8_t* buf, uint32_t buf_size) {
+    if (!buf || buf_size < config_store_size()) return -1;
+    uint32_t p = 0;
+    int i;
+    for (i = 0; i < MAX_USERNAME; i++) config.username[i] = (char)buf[p++];
+    for (i = 0; i < MAX_PASSWORD; i++) config.password[i] = (char)buf[p++];
+    for (i = 0; i < MAX_HOSTNAME; i++) config.hostname[i] = (char)buf[p++];
+    config.is_setup = buf[p++] ? 1 : 0;
+    return 0;
+}
+
 // ============================================================
 // PORT I/O
 // ============================================================
@@ -73,7 +103,9 @@ void outb(uint16_t port, uint8_t val) {
 
 void timer_init()
 {
-    // PIT channel 0, rate generator mode
+    // PIT channel 0, rate generator mode, ~1000Hz (~1ms per tick).
+    // idt_init() is what actually turns these ticks into a counted
+    // value via IRQ0 - this alone just sets the rate.
     outb(0x43, 0x34);
 
     uint16_t divisor = 1193180 / 1000; // ~1ms ticks
@@ -84,14 +116,9 @@ void timer_init()
 
 void timer_delay_ms(uint32_t ms)
 {
-    for (uint32_t i = 0; i < ms; i++)
-    {
-        for (volatile uint32_t j = 0; j < 1000; j++)
-        {
-            asm volatile("nop");
-        }
-
-        boot_time_ms++;
+    uint32_t start = get_uptime_ms();
+    while (get_uptime_ms() - start < ms) {
+        asm volatile("hlt"); // sleep until the next interrupt (IRQ0 wakes us every ~1ms)
     }
 }
 
@@ -122,11 +149,6 @@ void sync_cursor() {
     outb(0x3D5, (uint8_t)(cursor & 0xFF));
     outb(0x3D4, 0x0E);
     outb(0x3D5, (uint8_t)((cursor >> 8) & 0xFF));
-}
-
-void timer_tick()
-{
-    boot_ticks++;
 }
 
 void timer_handler()
@@ -214,13 +236,15 @@ void print_dec(uint32_t n) {
 
 void boot_log(const char* msg)
 {
+    uint32_t t = get_uptime_ms();
+
     print("[ ");
 
-    print_dec(boot_time_ms / 1000);
+    print_dec(t / 1000);
 
     print(".");
 
-    uint32_t ms = boot_time_ms % 1000;
+    uint32_t ms = t % 1000;
 
     if (ms < 100)
         putc('0');
@@ -621,7 +645,10 @@ void cmd_hostname(char* args) {
     if (args && args[0]) {
         int i = 0;
         while (i < MAX_HOSTNAME-1 && args[i] && args[i] != ' ') { config.hostname[i] = args[i]; i++; }
-        config.hostname[i] = 0; print("Hostname updated\n");
+        config.hostname[i] = 0;
+        extern void store_save(void);
+        store_save();
+        print("Hostname updated\n");
     } else { print(config.hostname); print("\n"); }
 }
 
@@ -652,19 +679,20 @@ void shell() {
 
 extern void init_cmds(void);
 
-void kernel_main()
+void kernel_main(uint32_t mb_magic, uint32_t mb_addr)
 {
     underline_cursor();
     clear_screen();
 
     timer_init();
+    idt_init(); // enables real IRQ0-driven millisecond ticks (see idt.c)
 
     boot_log("Kernel starting");
 
     timer_delay_ms(50);
 
     boot_log("Initializing filesystem");
-    fs_init();
+    store_init(mb_magic, mb_addr);
 
     timer_delay_ms(50);
 
@@ -679,7 +707,7 @@ void kernel_main()
     {
         print("panic: due to: Unable to load commands\n");
         print("command count=0\n");
-        print("Please provide commands in cmd\n");
+        print("Please provide commands in bin\n");
         print("panic: due to: Unable to load commands\n");
 
         while (1);
@@ -692,9 +720,12 @@ void kernel_main()
 
     boot_log("Starting setup");
 
-    if (!config.is_setup)
+    if (!config.is_setup) {
         print("\n");
-	setup_wizard();
+        setup_wizard();
+        extern void store_save(void);
+        store_save();
+    }
 
     timer_delay_ms(50);
     boot_log("Starting shell");

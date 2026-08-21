@@ -1,0 +1,16 @@
+CROSS_CC      = i686-linux-gnu-gcc
+CROSS_LD      = i686-linux-gnu-ld
+CROSS_CFLAGS  = -ffreestanding -c -fno-stack-protector -fno-builtin -fno-pic -fno-pie -I.
+CROSS_LDFLAGS = -T linker/linker.ld -nostdlib
+
+.DEFAULT_GOAL := all
+
+.PHONY: all clean distclean
+
+all clean distclean:
+	$(MAKE) -f Makefile \
+		CC="$(CROSS_CC)" \
+		LD="$(CROSS_LD)" \
+		CFLAGS="$(CROSS_CFLAGS)" \
+		LDFLAGS="$(CROSS_LDFLAGS)" \
+		$@
