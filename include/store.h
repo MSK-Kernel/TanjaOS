@@ -4,7 +4,7 @@
 #include <stdint.h>
 
 // Call once from kernel_main with the raw multiboot magic/info pointer
-// (whatever GRUB left in eax/ebx). Figures out whether we're running
+// (whatever the bootloader left in eax/ebx). Figures out whether we're running
 // from a real disk, loads any previously saved state from the fixed
 // Storefile region, and if this is a first boot, seeds it from the
 // "module /boot/Storefile" multiboot module (if one was given). Always
@@ -19,7 +19,7 @@ void store_save(void);
 void store_autosave(void);
 
 // 1 if a disk-backed Storefile is active (writes are being persisted),
-// 0 if we're running RAM-only (no disk found, or it was too small).
+// 0 if we're running from RAM (no disk found, or it was too small).
 int store_is_persistent(void);
 
 #endif

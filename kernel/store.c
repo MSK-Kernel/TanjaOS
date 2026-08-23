@@ -13,19 +13,6 @@ extern uint32_t config_store_size(void);
 extern int config_serialize(uint8_t* buf, uint32_t buf_size);
 extern int config_deserialize(const uint8_t* buf, uint32_t buf_size);
 
-// The store region's LBA is *not* a fixed constant — it's computed at
-// boot from the disk's own reported size (see store_init below) and
-// placed near the very end of the disk. This matters a lot for the
-// common case of `dd`-ing a GRUB ISO straight onto disk.img and
-// booting with a single `-hda`: GRUB, the kernel, and the Storefile
-// module all live at the *start* of that same disk, so a fixed early
-// LBA (like the old hardcoded 2048) can land inside the ISO9660
-// content and get silently corrupted the first time we write. Writing
-// near the end instead only requires that disk.img has spare space
-// past whatever was written there (e.g. `qemu-img create disk.img 64M`
-// and then `dd if=tanjaos.iso of=disk.img conv=notrunc` — NOT plain
-// `dd if=tanjaos.iso of=disk.img`, which would truncate disk.img down
-// to the ISO's exact size and leave no room at all).
 #define STORE_RESERVED_TAIL_SECTORS 16
 #define STORE_FALLBACK_LBA          2048
 
@@ -66,7 +53,7 @@ int store_is_persistent(void) {
 
 // Print which of the 4 legacy IDE slots (primary/secondary,
 // master/slave) got used, so it's visible on the boot log instead of
-// being a silent guess. Handy for diagnosing "why is this RAM-only"
+// being a silent guess. Handy for diagnosing "why is this running from RAM?"
 // across different VM software that orders IDE devices differently.
 static void log_slot(int channel, int drive) {
     boot_log(channel == 0
@@ -83,7 +70,7 @@ void store_init(uint32_t mb_magic, uint32_t mb_addr) {
     store_sectors = bytes_to_sectors(need);
 
     if (need > sizeof(store_buf) || store_sectors > 255) {
-        boot_log("Storefile: image too large, running RAM-only");
+        boot_log("Storefile: image too large, running from RAM");
         fs_init();
         return;
     }
@@ -109,7 +96,7 @@ void store_init(uint32_t mb_magic, uint32_t mb_addr) {
     }
 
     if (!found) {
-        boot_log("Storefile: no usable ATA disk found on any IDE slot, running RAM-only");
+        boot_log("Storefile: no usable ATA disk found on any IDE slot, running from RAM");
         fs_init();
         return;
     }

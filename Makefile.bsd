@@ -89,4 +89,4 @@ distclean: clean
 	rm -f cmd/cp.c cmd/mv.c cmd/grep.c cmd/exec.c
 
 
-.PHONY: all clean distclean commandset
+.PHONY: all clean distclean

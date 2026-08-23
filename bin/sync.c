@@ -6,7 +6,7 @@ void cmd_sync(char* args) {
     extern int store_is_persistent(void);
 
     if (!store_is_persistent()) {
-        print("sync: no persistent disk found, running RAM-only\n");
+        print("sync: no persistent disk found, running from RAM\n");
         return;
     }
 

@@ -23,6 +23,16 @@ static inline uint16_t inw(uint16_t port) {
     return ret;
 }
 
+// Real elapsed milliseconds since boot (see kernel/idt.c) - used for
+// timeouts below instead of raw iteration counts. QEMU's virtual
+// drives respond essentially instantly, so an iteration-count "timeout"
+// tuned against QEMU can complete in a fraction of a millisecond on
+// fast real hardware while a genuinely slow/spinning-up real drive
+// still hasn't responded - real elapsed time is the only timeout that
+// means the same thing regardless of CPU speed or which machine this
+// runs on.
+extern uint32_t get_uptime_ms(void);
+
 static uint16_t io_base(int channel) {
     return channel ? ATA_SECONDARY_IO : ATA_PRIMARY_IO;
 }
@@ -39,33 +49,77 @@ static void ata_io_wait(int channel) {
     inb(ctrl); inb(ctrl); inb(ctrl); inb(ctrl);
 }
 
-static int ata_poll_bsy(int channel) {
+// Belt-and-suspenders iteration cap alongside the real-time cap below,
+// purely as a fallback in case the tick counter were ever somehow not
+// advancing (it should always be ticking by the time this runs - see
+// idt_init() in kernel_main - this is just defensive).
+#define ATA_ITER_CAP 50000000
+
+static int ata_poll_bsy_timeout(int channel, uint32_t timeout_ms) {
     uint16_t io = io_base(channel);
-    uint32_t timeout = 2000000;
-    while (timeout--) {
-        if (!(inb(io + ATA_REG_STATUS) & ATA_STATUS_BSY))
-            return 0;
+    uint32_t start = get_uptime_ms();
+    uint32_t iters = ATA_ITER_CAP;
+    while (iters--) {
+        if (!(inb(io + ATA_REG_STATUS) & ATA_STATUS_BSY)) return 0;
+        if (get_uptime_ms() - start > timeout_ms) return -1;
     }
     return -1;
+}
+
+static int ata_poll_bsy(int channel) {
+    // 5s is generous for a normal command on a drive that's already
+    // spun up and responding - real drives essentially always clear
+    // BSY in well under that, this just needs to not be so tight that
+    // a momentarily busy real controller gets treated as absent.
+    return ata_poll_bsy_timeout(channel, 5000);
 }
 
 static int ata_poll_drq(int channel) {
     uint16_t io = io_base(channel);
-    uint32_t timeout = 2000000;
-    while (timeout--) {
+    uint32_t start = get_uptime_ms();
+    uint32_t iters = ATA_ITER_CAP;
+    while (iters--) {
         uint8_t status = inb(io + ATA_REG_STATUS);
         if (status & ATA_STATUS_ERR) return -1;
         if (status & ATA_STATUS_DF) return -1;
         if (status & 0x08) return 0; // DRQ
+        if (get_uptime_ms() - start > 5000) return -1;
     }
     return -1;
 }
 
+// ATA software reset (SRST). Recovers the bus into a known state
+// regardless of whatever a previous OS/BIOS/firmware left it in -
+// QEMU's virtual drives always start clean so this is invisible there,
+// but it matters on real hardware that's been through other boot
+// stages already. Per the ATA spec, SRST must be held for at least 5us
+// before being cleared; reading the control port repeatedly (~100ns
+// each on real hardware) comfortably covers that with margin.
+static void ata_srst(int channel) {
+    uint16_t ctrl = ctrl_base(channel);
+    outb(ctrl, 0x04); // SRST=1
+    int i;
+    for (i = 0; i < 20; i++) inb(ctrl);
+    outb(ctrl, 0x00); // SRST=0
+    for (i = 0; i < 20; i++) inb(ctrl);
+}
+
 void ata_init(void) {
+    ata_srst(0);
+    ata_srst(1);
+
     outb(ATA_PRIMARY_IO + ATA_REG_DRIVE_HEAD, 0xA0);
     ata_io_wait(0);
     outb(ATA_SECONDARY_IO + ATA_REG_DRIVE_HEAD, 0xA0);
     ata_io_wait(1);
+
+    // Give real drives a genuine chance to come back from that reset
+    // (allow up to 10s here specifically - full device resets are
+    // allowed to take longer than a normal command per spec, though in
+    // practice it's almost always well under a second) before anything
+    // else tries to talk to them.
+    ata_poll_bsy_timeout(0, 10000);
+    ata_poll_bsy_timeout(1, 10000);
 }
 
 int ata_detect_drive(int channel, int drive, ata_drive_info_t *info) {
@@ -88,7 +142,10 @@ int ata_detect_drive(int channel, int drive, ata_drive_info_t *info) {
     outb(io + ATA_REG_COMMAND, ATA_CMD_IDENTIFY);
 
     uint8_t status = inb(io + ATA_REG_STATUS);
-    if (status == 0) return -1; // floating bus, nothing there
+    // A floating/nothing-there bus commonly reads back as 0x00, but
+    // some real controllers read back 0xFF instead - both mean "no
+    // device here", not just 0x00 as QEMU's emulation always shows.
+    if (status == 0x00 || status == 0xFF) return -1;
 
     if (ata_poll_bsy(channel) != 0) return -1;
 
