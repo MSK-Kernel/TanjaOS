@@ -32,9 +32,9 @@ typedef struct multiboot_info {
     uint16_t vbe_interface_len;
 } __attribute__((packed)) multiboot_info_t;
 
-// One entry per "module /boot/Storefile" line in boot.cfg / grub.cfg.
+// One entry per "module /boot/Storefile" line in the bootloader configuration file.
 typedef struct multiboot_module {
-    uint32_t mod_start; // physical address GRUB placed the module at
+    uint32_t mod_start; // physical address the bootloader placed the module at
     uint32_t mod_end;   // one past the last byte
     uint32_t string;    // pointer to the module's command line (its path)
     uint32_t reserved;

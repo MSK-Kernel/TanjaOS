@@ -9,7 +9,7 @@ BIN_SRC = $(filter-out bin/init.c, $(wildcard bin/*.c))
 BIN_OBJ = $(BIN_SRC:.c=.o)
 BIN_NAMES = $(notdir $(basename $(BIN_SRC)))
 
-KERNEL_OBJ = kernel/kernel.o kernel/game.o kernel/ata.o kernel/store.o kernel/idt.o
+KERNEL_OBJ = kernel/kernel.o kernel/game.o kernel/ata.o kernel/ahci.o kernel/store.o kernel/idt.o kernel/cc.o
 
 all: arch/x86/boot/tanja-base
 
@@ -49,6 +49,11 @@ kernel/ata.o: kernel/ata.c
 	$(CC) $(CFLAGS) -o kernel/ata.o kernel/ata.c
 
 
+kernel/ahci.o: kernel/ahci.c
+	@echo "[CC] kernel/ahci.c"
+	$(CC) $(CFLAGS) -o kernel/ahci.o kernel/ahci.c
+
+
 kernel/store.o: kernel/store.c
 	@echo "[CC] kernel/store.c"
 	$(CC) $(CFLAGS) -o kernel/store.o kernel/store.c
@@ -57,6 +62,11 @@ kernel/store.o: kernel/store.c
 kernel/idt.o: kernel/idt.c
 	@echo "[CC] kernel/idt.c"
 	$(CC) $(CFLAGS) -o kernel/idt.o kernel/idt.c
+
+
+kernel/cc.o: kernel/cc.c
+	@echo "[CC] kernel/cc.c"
+	$(CC) $(CFLAGS) -o kernel/cc.o kernel/cc.c
 
 
 arch/x86/idt_asm.o: arch/x86/idt_asm.asm
@@ -94,14 +104,12 @@ arch/x86/boot/tanja-base: arch/x86/boot/boot.o arch/x86/idt_asm.o $(KERNEL_OBJ) 
 	@echo "[INFO] Commands: $(BIN_NAMES)"
 	@echo
 
-
-DISK_SIZE_MB = 64
-
 clean:
 	rm -f kernel/*.o fs/*.o
 	rm -f bin/*.o bin/init.c
 	rm -f arch/x86/boot/*.o arch/x86/boot/tanja-base
 	rm -f arch/x86/idt_asm.o
+	rm -rf build
 
 distclean: clean
 	rm -f bin/help.c bin/reboot.c bin/echo.c bin/clear.c
