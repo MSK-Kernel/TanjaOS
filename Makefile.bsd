@@ -112,7 +112,7 @@ clean:
 	rm -rf build
 
 distclean: clean
-	rm -f bin/help.c bin/reboot.c bin/echo.c bin/clear.c
+	rm -f bin/help.c bin/reboot.c bin/echo.c bin/clear.c bin/datareset.c
 	rm -f bin/mkdir.c bin/rmdir.c bin/touch.c bin/rm.c bin/cat.c
 	rm -f bin/ls.c bin/pwd.c bin/cd.c bin/editor.c
 	rm -f bin/cp.c bin/mv.c bin/grep.c bin/exec.c

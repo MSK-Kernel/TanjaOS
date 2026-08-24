@@ -93,6 +93,16 @@ int config_deserialize(const uint8_t* buf, uint32_t buf_size) {
     return 0;
 }
 
+// Reset the account configuration to the same state as a fresh install.
+// This deliberately clears all fields and marks setup as incomplete.
+void config_reset(void) {
+    int i;
+    for (i = 0; i < MAX_USERNAME; i++) config.username[i] = 0;
+    for (i = 0; i < MAX_PASSWORD; i++) config.password[i] = 0;
+    for (i = 0; i < MAX_HOSTNAME; i++) config.hostname[i] = 0;
+    config.is_setup = 0;
+}
+
 // ============================================================
 // PORT I/O
 // ============================================================
