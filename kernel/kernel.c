@@ -497,6 +497,86 @@ void read_line(char* buffer, int max_len) {
     buffer[copy_len] = 0;
 }
 
+int read_int(void) {
+    char buffer[32];
+    int sign = 1;
+    int value = 0;
+    int i = 0;
+
+    read_line(buffer, sizeof(buffer));
+
+    while (buffer[i] == ' ' || buffer[i] == '\t')
+        i++;
+
+    if (buffer[i] == '-') {
+        sign = -1;
+        i++;
+    } else if (buffer[i] == '+') {
+        i++;
+    }
+
+    while (buffer[i] >= '0' && buffer[i] <= '9') {
+        value = value * 10 + (buffer[i] - '0');
+        i++;
+    }
+
+    return value * sign;
+}
+
+
+int cc_strlen(const char* s) {
+    int n = 0;
+    if (!s) return 0;
+    while (s[n]) n++;
+    return n;
+}
+
+int cc_strcmp(const char* a, const char* b) {
+    if (!a || !b) return a == b ? 0 : (a ? 1 : -1);
+    while (*a && *b && *a == *b) { a++; b++; }
+    return (unsigned char)*a - (unsigned char)*b;
+}
+
+char* cc_strcpy(char* dst, const char* src) {
+    char* start = dst;
+    if (!dst || !src) return dst;
+    while ((*dst++ = *src++)) {}
+    return start;
+}
+
+void* cc_memset(void* dst, int value, int count) {
+    unsigned char* p = (unsigned char*)dst;
+    if (!p || count < 0) return dst;
+    while (count-- > 0) *p++ = (unsigned char)value;
+    return dst;
+}
+
+void* cc_memcpy(void* dst, const void* src, int count) {
+    unsigned char* d = (unsigned char*)dst;
+    const unsigned char* s = (const unsigned char*)src;
+    if (!d || !s || count < 0) return dst;
+    while (count-- > 0) *d++ = *s++;
+    return dst;
+}
+
+int cc_atoi(const char* s) {
+    int sign = 1, value = 0, i = 0;
+    if (!s) return 0;
+    while (s[i] == ' ' || s[i] == '\t') i++;
+    if (s[i] == '-') { sign = -1; i++; }
+    else if (s[i] == '+') i++;
+    while (s[i] >= '0' && s[i] <= '9') {
+        value = value * 10 + (s[i] - '0');
+        i++;
+    }
+    return value * sign;
+}
+
+int cc_abs(int n) { return n < 0 ? -n : n; }
+int cc_min(int a, int b) { return a < b ? a : b; }
+int cc_max(int a, int b) { return a > b ? a : b; }
+
+
 // ============================================================
 // COMMAND SYSTEM
 // ============================================================
@@ -676,7 +756,7 @@ void print_prompt_path() {
     char cwd[256];
     fs_get_current_path(cwd);
     if (cwd[0] == '/' && cwd[1] == 0) {
-        // at home ("/")
+        // TanjaOS starts each login at the filesystem root.
         print("~");
     } else {
         // e.g. cwd="/folder/project" -> "~/folder/project"
@@ -756,6 +836,11 @@ void kernel_main(uint32_t mb_magic, uint32_t mb_addr)
         print("The TanjaOS Project\n\n");
 
         login_prompt();
+
+        /* A login always starts at the filesystem root.  The filesystem
+         * persists cwd for storage, but cwd is a shell-session state and
+         * should not leak from a previous login/reboot. */
+        fs_change_directory("/");
 
         shell();
     }

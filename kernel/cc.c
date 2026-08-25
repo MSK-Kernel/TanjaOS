@@ -4,7 +4,7 @@
 // A real, single-pass, x86-32 machine-code-emitting compiler for a
 // deliberately small subset of C. No linker, no object files, no
 // libc: source goes in, machine code comes out into an executable
-// buffer, and main() gets called directly.
+// buffer, and the first function definition gets called directly as the program entry point.
 //
 // Supported: int type only (plus void as a function return type and
 // as "(void)" for an explicit empty parameter list - there's no void*
@@ -22,7 +22,7 @@
 // print is just a shorter alias - string literals only work as a
 // direct argument to these, there's no general char* string type).
 //
-// NOT supported: structs/unions/typedefs, the preprocessor, floats,
+// Additional built-ins: strlen, strcmp, strcpy, memset, memcpy, atoi, abs, min, max.\n// NOT supported: structs/unions/typedefs, the preprocessor, floats,
 // multi-dimensional arrays, pointer arithmetic beyond plain
 // assignment/deref, compound-assign through a pointer (*p += 1),
 // multiple translation units.
@@ -40,6 +40,8 @@ extern void print_dec(uint32_t n);
 extern void print_hex(uint32_t n);
 extern void putc(char c);
 extern int get_key(void);
+extern void read_line(char* buffer, int max_len);
+extern int read_int(void);
 extern void clear_screen(void);
 extern void timer_delay_ms(uint32_t ms);
 
@@ -596,24 +598,7 @@ static void parse_call_args_and_call(func_t* fn, const char* builtin_name) {
         // sites (left-to-right), so this works out consistently as long
         // as both sides agree, which they do since both use this file.
         for (;;) {
-            if ((str_eq(builtin_name ? builtin_name : "", "print_str") ||
-                 str_eq(builtin_name ? builtin_name : "", "print")) && argc == 0) {
-                if (cur_tok.type != T_STR) { cc_seterr(cur_tok.line, "print_str/print requires a string literal argument"); return; }
-                // Store string bytes right here in the code buffer as
-                // inline data, preceded by a jmp over it so it's never
-                // executed, then load its address into eax. Works fine
-                // for an empty string too - just emits a single 0 byte.
-                uint32_t jmp_at = gen_jmp_placeholder();
-                uint32_t str_addr = (uint32_t)code_buf + code_len;
-                int i = 0;
-                while (cur_tok.sval[i]) { emit_u8((uint8_t)cur_tok.sval[i]); i++; }
-                emit_u8(0);
-                patch_jump_here(jmp_at);
-                gen_mov_eax_imm32(str_addr);
-                next_token();
-            } else {
-                parse_expr();
-            }
+            parse_expr();
             if (cc_error_flag) return;
             gen_push_eax();
             argc++;
@@ -631,9 +616,17 @@ static void parse_call_args_and_call(func_t* fn, const char* builtin_name) {
 
         if (str_eq(builtin_name, "putchar") || str_eq(builtin_name, "print_int") ||
             str_eq(builtin_name, "print_hex") || str_eq(builtin_name, "print_str") ||
-            str_eq(builtin_name, "print")) expected = 1;
+            str_eq(builtin_name, "print") ||
+            str_eq(builtin_name, "getchar") || str_eq(builtin_name, "strlen") ||
+            str_eq(builtin_name, "atoi") || str_eq(builtin_name, "abs")) expected = 1;
         else if (str_eq(builtin_name, "getchar") ||
+                 str_eq(builtin_name, "read_int") ||
                  str_eq(builtin_name, "clear_screen")) expected = 0;
+        else if (str_eq(builtin_name, "read_line")) expected = 2;
+        else if (str_eq(builtin_name, "strcmp")) expected = 2;
+        else if (str_eq(builtin_name, "strcpy")) expected = 2;
+        else if (str_eq(builtin_name, "memset") || str_eq(builtin_name, "memcpy") ||
+                 str_eq(builtin_name, "min") || str_eq(builtin_name, "max")) expected = 3;
         else if (str_eq(builtin_name, "sleep_ms")) expected = 1;
 
         if (argc != expected) {
@@ -652,6 +645,38 @@ static void parse_call_args_and_call(func_t* fn, const char* builtin_name) {
             target = (uint32_t)(void*)print;
         } else if (str_eq(builtin_name, "getchar")) {
             target = (uint32_t)(void*)get_key;
+        } else if (str_eq(builtin_name, "read_line")) {
+            target = (uint32_t)(void*)read_line;
+            returns_value = 0;
+        } else if (str_eq(builtin_name, "read_int")) {
+            target = (uint32_t)(void*)read_int;
+        } else if (str_eq(builtin_name, "strlen")) {
+            extern int cc_strlen(const char* s);
+            target = (uint32_t)(void*)cc_strlen;
+        } else if (str_eq(builtin_name, "strcmp")) {
+            extern int cc_strcmp(const char* a, const char* b);
+            target = (uint32_t)(void*)cc_strcmp;
+        } else if (str_eq(builtin_name, "strcpy")) {
+            extern char* cc_strcpy(char* dst, const char* src);
+            target = (uint32_t)(void*)cc_strcpy;
+        } else if (str_eq(builtin_name, "memset")) {
+            extern void* cc_memset(void* dst, int value, int count);
+            target = (uint32_t)(void*)cc_memset;
+        } else if (str_eq(builtin_name, "memcpy")) {
+            extern void* cc_memcpy(void* dst, const void* src, int count);
+            target = (uint32_t)(void*)cc_memcpy;
+        } else if (str_eq(builtin_name, "atoi")) {
+            extern int cc_atoi(const char* s);
+            target = (uint32_t)(void*)cc_atoi;
+        } else if (str_eq(builtin_name, "abs")) {
+            extern int cc_abs(int n);
+            target = (uint32_t)(void*)cc_abs;
+        } else if (str_eq(builtin_name, "min")) {
+            extern int cc_min(int a, int b);
+            target = (uint32_t)(void*)cc_min;
+        } else if (str_eq(builtin_name, "max")) {
+            extern int cc_max(int a, int b);
+            target = (uint32_t)(void*)cc_max;
         } else if (str_eq(builtin_name, "clear_screen")) {
             target = (uint32_t)(void*)clear_screen;
             returns_value = 0;
@@ -672,6 +697,19 @@ static void parse_call_args_and_call(func_t* fn, const char* builtin_name) {
 
 static void parse_primary(void) {
     if (cc_error_flag) return;
+    if (cur_tok.type == T_STR) {
+        /* String literals are first-class pointer values.  Store the bytes
+         * inline in the generated code and return their runtime address. */
+        uint32_t jmp_at = gen_jmp_placeholder();
+        uint32_t str_addr = (uint32_t)code_buf + code_len;
+        int i = 0;
+        while (cur_tok.sval[i]) { emit_u8((uint8_t)cur_tok.sval[i]); i++; }
+        emit_u8(0);
+        patch_jump_here(jmp_at);
+        gen_mov_eax_imm32(str_addr);
+        next_token();
+        return;
+    }
     if (cur_tok.type == T_NUM) {
         gen_mov_eax_imm32((uint32_t)cur_tok.ival);
         next_token();
@@ -762,7 +800,13 @@ static void parse_primary(void) {
                 if (str_eq(name, "putchar") || str_eq(name, "print_int") ||
                     str_eq(name, "print_hex") || str_eq(name, "print_str") ||
                     str_eq(name, "print") || str_eq(name, "getchar") ||
-                    str_eq(name, "clear_screen") || str_eq(name, "sleep_ms")) builtin = name;
+                    str_eq(name, "read_line") || str_eq(name, "read_int") ||
+                    str_eq(name, "clear_screen") || str_eq(name, "sleep_ms") ||
+                    str_eq(name, "strlen") || str_eq(name, "strcmp") ||
+                    str_eq(name, "strcpy") || str_eq(name, "memset") ||
+                    str_eq(name, "memcpy") || str_eq(name, "atoi") ||
+                    str_eq(name, "abs") || str_eq(name, "min") ||
+                    str_eq(name, "max")) builtin = name;
                 else { cc_seterr(line, "call to undefined function"); return; }
             }
             parse_call_args_and_call(fn, builtin);
@@ -1592,16 +1636,16 @@ static int cc_compile(const char* source, unsigned int len, func_t** out_mainfn)
 int cc_compile_to_binary(const char* source, unsigned int len,
                          uint8_t* out, unsigned int out_cap,
                          unsigned int* out_len) {
-    func_t* mainfn;
+    func_t* entryfn;
 
     if (!out || !out_len || out_cap < TJBIN_HEADER_SIZE) return -1;
-    if (cc_compile(source, len, &mainfn) != 0) return -1;
+    if (cc_compile(source, len, &entryfn) != 0) return -1;
 
     /*
      * Append a tiny startup wrapper. It reinitializes file-scope globals
      * every time the binary starts, so a program's state cannot leak from
      * the previous binary that happened to use the compiler's shared
-     * runtime storage. The wrapper then calls the real main().
+     * runtime storage. The wrapper then calls the first function definition as the program entry point.
      */
     uint32_t entry = code_len;
 
@@ -1619,7 +1663,7 @@ int cc_compile_to_binary(const char* source, unsigned int len,
         emit_u8(0xF3); emit_u8(0xAB); /* rep stosd, ECX elements */
     }
 
-    gen_call_abs(mainfn->addr);
+    gen_call_abs(entryfn->addr);
     emit_u8(0xC3); /* ret */
 
     if (entry >= code_len || code_len + TJBIN_HEADER_SIZE > out_cap) {
@@ -1674,7 +1718,7 @@ void* cc_debug_codebuf(void) { return code_buf; }
 unsigned int cc_debug_codebuf_size(void) { return CODE_BUF_SIZE; }
 unsigned int cc_debug_codelen(void) { return code_len; }
 
-// Returns 0 on success (main() found and ready to call), -1 on
+// Returns 0 on success (an entry function found and ready to call), -1 on
 // failure (error already printed). Doesn't execute anything - split
 // out from cc_compile_and_run so host-side tooling can inspect
 // generated code without ever jumping into it (this kernel has no
@@ -1684,7 +1728,7 @@ static int cc_compile(const char* source, unsigned int len, func_t** out_mainfn)
     src = source; src_len = len; src_pos = 0; cur_line = 1;
     code_len = 0;
     cc_error_flag = 0; cc_error_line = 0; cc_error_msg[0] = 0;
-    local_count = 0; func_count = 0; global_count = 0; token_count = 0;
+    local_count = 0; func_count = 0; global_count = 0; token_count = 0; global_array_pool_used = 0;
 
     next_token();
     parse_program();
@@ -1698,27 +1742,30 @@ static int cc_compile(const char* source, unsigned int len, func_t** out_mainfn)
         return -1;
     }
 
-    func_t* mainfn = find_func("main");
-    if (!mainfn) {
-        print("Compile error: no main() function\n");
+    if (func_count == 0) {
+        print("Compile error: no function definition\n");
         return -1;
     }
-    *out_mainfn = mainfn;
+
+    /* TanjaOS C has no linker or separate program-start convention.
+     * The first function defined in the source is the program entry point,
+     * so users can name it anything: int hello() { ... } works directly. */
+    *out_mainfn = &funcs[0];
     return 0;
 }
 
 // Test-only entry point: compiles but never executes anything, safe
 // to call from a host-side test harness on any host architecture.
 int cc_compile_only(const char* source, unsigned int len) {
-    func_t* mainfn;
-    return cc_compile(source, len, &mainfn);
+    func_t* entryfn;
+    return cc_compile(source, len, &entryfn);
 }
 
 void cc_compile_and_run(const char* source, unsigned int len) {
-    func_t* mainfn;
-    if (cc_compile(source, len, &mainfn) != 0) return;
+    func_t* entryfn;
+    if (cc_compile(source, len, &entryfn) != 0) return;
 
-    int (*entry)(void) = (int (*)(void))(void*)mainfn->addr;
+    int (*entry)(void) = (int (*)(void))(void*)entryfn->addr;
     int rc = entry();
     print("Program exited with code ");
     print_dec((uint32_t)rc);
