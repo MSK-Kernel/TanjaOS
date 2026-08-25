@@ -573,6 +573,8 @@ void list_commands(void) {
     print("\n\n");
 }
 
+extern int exec_file(const char* path);
+
 void execute_command(const char* cmd_line) {
     while (*cmd_line == ' ')
         cmd_line++;
@@ -620,6 +622,14 @@ void execute_command(const char* cmd_line) {
         }
 
         cmd = cmd->next;
+    }
+
+    /* Like a normal shell, fall back to executing a file when the command
+     * name is not a built-in. Compiled TanjaOS binaries and text scripts
+     * both go through exec_file(). */
+    if (fs_file_exists(cmd_name)) {
+        exec_file(cmd_name);
+        return;
     }
 
     print("error: Command not found: ");

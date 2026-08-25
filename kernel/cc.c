@@ -1,5 +1,5 @@
 // ============================================================
-// TanjaOS JIT C compiler ("c" command)
+// C compiler ("c" command)
 //
 // A real, single-pass, x86-32 machine-code-emitting compiler for a
 // deliberately small subset of C. No linker, no object files, no
@@ -39,12 +39,16 @@ extern void print(const char* s);
 extern void print_dec(uint32_t n);
 extern void print_hex(uint32_t n);
 extern void putc(char c);
+extern int get_key(void);
+extern void clear_screen(void);
+extern void timer_delay_ms(uint32_t ms);
 
 // ------------------------------------------------------------
 // Code buffer
 // ------------------------------------------------------------
 
-#define CODE_BUF_SIZE 16384
+#define CODE_BUF_SIZE 32768
+#define TJBIN_HEADER_SIZE 12
 static uint8_t code_buf[CODE_BUF_SIZE];
 static uint32_t code_len;
 
@@ -88,18 +92,21 @@ static void cc_seterr(int line, const char* msg) {
 
 typedef enum {
     T_EOF, T_NUM, T_IDENT, T_STR,
-    T_INT, T_VOID, T_IF, T_ELSE, T_WHILE, T_FOR, T_RETURN, T_BREAK, T_CONTINUE,
+    T_INT, T_VOID, T_CHAR, T_CONST, T_UNSIGNED, T_SIGNED, T_LONG, T_SHORT,
+    T_IF, T_ELSE, T_WHILE, T_DO, T_FOR, T_RETURN, T_BREAK, T_CONTINUE,
     T_LPAREN, T_RPAREN, T_LBRACE, T_RBRACE, T_LBRACKET, T_RBRACKET, T_SEMI, T_COMMA,
     T_PLUS, T_MINUS, T_STAR, T_SLASH, T_PERCENT, T_AMP,
     T_ASSIGN, T_EQ, T_NE, T_LT, T_GT, T_LE, T_GE,
     T_ANDAND, T_OROR, T_NOT,
-    T_INC, T_DEC, T_PLUSEQ, T_MINUSEQ, T_STAREQ, T_SLASHEQ, T_PERCENTEQ
+    T_BITAND, T_BITOR, T_XOR, T_SHL, T_SHR, T_TILDE, T_QUESTION, T_COLON,
+    T_INC, T_DEC, T_PLUSEQ, T_MINUSEQ, T_STAREQ, T_SLASHEQ, T_PERCENTEQ,
+    T_ANDEQ, T_OREQ, T_XOREQ, T_SHLEQ, T_SHREQ
 } token_type_t;
 
 typedef struct {
     token_type_t type;
     int32_t ival;
-    char sval[64];
+    char sval[256];
     int line;
     uint32_t start_pos; // byte offset in source where this token began
 } token_t;
@@ -157,7 +164,31 @@ static void next_token(void) {
 
     if (c >= '0' && c <= '9') {
         int32_t v = 0;
-        while (peekc() >= '0' && peekc() <= '9') { v = v * 10 + (getc_src() - '0'); }
+
+        if (c == '0' && src_pos + 1 < src_len &&
+            (src[src_pos + 1] == 'x' || src[src_pos + 1] == 'X')) {
+            getc_src(); getc_src();
+            while (1) {
+                int h = peekc();
+                int digit = -1;
+                if (h >= '0' && h <= '9') digit = h - '0';
+                else if (h >= 'a' && h <= 'f') digit = h - 'a' + 10;
+                else if (h >= 'A' && h <= 'F') digit = h - 'A' + 10;
+                if (digit < 0) break;
+                v = (v << 4) | digit;
+                getc_src();
+            }
+        } else if (c == '0' && src_pos + 1 < src_len &&
+                   (src[src_pos + 1] == 'b' || src[src_pos + 1] == 'B')) {
+            getc_src(); getc_src();
+            while (peekc() == '0' || peekc() == '1') {
+                v = (v << 1) | (getc_src() - '0');
+            }
+        } else {
+            while (peekc() >= '0' && peekc() <= '9')
+                v = v * 10 + (getc_src() - '0');
+        }
+
         cur_tok.type = T_NUM; cur_tok.ival = v; return;
     }
 
@@ -165,19 +196,30 @@ static void next_token(void) {
         int i = 0;
         while ((peekc() >= 'a' && peekc() <= 'z') || (peekc() >= 'A' && peekc() <= 'Z') ||
                (peekc() >= '0' && peekc() <= '9') || peekc() == '_') {
-            if (i < 63) cur_tok.sval[i++] = (char)getc_src(); else getc_src();
+            if (i < 255) cur_tok.sval[i++] = (char)getc_src(); else getc_src();
         }
         cur_tok.sval[i] = 0;
         if (str_eq(cur_tok.sval, "int")) cur_tok.type = T_INT;
         else if (str_eq(cur_tok.sval, "void")) cur_tok.type = T_VOID;
+        else if (str_eq(cur_tok.sval, "char")) cur_tok.type = T_CHAR;
+        else if (str_eq(cur_tok.sval, "const")) cur_tok.type = T_CONST;
+        else if (str_eq(cur_tok.sval, "unsigned")) cur_tok.type = T_UNSIGNED;
+        else if (str_eq(cur_tok.sval, "signed")) cur_tok.type = T_SIGNED;
+        else if (str_eq(cur_tok.sval, "long")) cur_tok.type = T_LONG;
+        else if (str_eq(cur_tok.sval, "short")) cur_tok.type = T_SHORT;
         else if (str_eq(cur_tok.sval, "if")) cur_tok.type = T_IF;
         else if (str_eq(cur_tok.sval, "else")) cur_tok.type = T_ELSE;
         else if (str_eq(cur_tok.sval, "while")) cur_tok.type = T_WHILE;
+        else if (str_eq(cur_tok.sval, "do")) cur_tok.type = T_DO;
         else if (str_eq(cur_tok.sval, "for")) cur_tok.type = T_FOR;
         else if (str_eq(cur_tok.sval, "return")) cur_tok.type = T_RETURN;
         else if (str_eq(cur_tok.sval, "break")) cur_tok.type = T_BREAK;
         else if (str_eq(cur_tok.sval, "continue")) cur_tok.type = T_CONTINUE;
-        else cur_tok.type = T_IDENT;
+        else if (str_eq(cur_tok.sval, "NULL") || str_eq(cur_tok.sval, "false")) {
+            cur_tok.type = T_NUM; cur_tok.ival = 0;
+        } else if (str_eq(cur_tok.sval, "true")) {
+            cur_tok.type = T_NUM; cur_tok.ival = 1;
+        } else cur_tok.type = T_IDENT;
         return;
     }
 
@@ -189,13 +231,14 @@ static void next_token(void) {
             if (ch == '\\') {
                 int e = getc_src();
                 if (e == 'n') ch = '\n';
+                else if (e == 'r') ch = '\r';
                 else if (e == 't') ch = '\t';
                 else if (e == '0') ch = '\0';
                 else if (e == '\\') ch = '\\';
                 else if (e == '"') ch = '"';
                 else ch = e;
             }
-            if (i < 63) cur_tok.sval[i++] = (char)ch;
+            if (i < 255) cur_tok.sval[i++] = (char)ch;
         }
         if (peekc() == '"') getc_src();
         cur_tok.sval[i] = 0;
@@ -209,6 +252,7 @@ static void next_token(void) {
         if (ch == '\\') {
             int e = getc_src();
             if (e == 'n') ch = '\n';
+            else if (e == 'r') ch = '\r';
             else if (e == 't') ch = '\t';
             else if (e == '0') ch = '\0';
             else if (e == '\\') ch = '\\';
@@ -253,17 +297,35 @@ static void next_token(void) {
             if (peekc() == '=') { getc_src(); cur_tok.type = T_NE; } else cur_tok.type = T_NOT;
             return;
         case '<':
+            if (peekc() == '<') {
+                getc_src();
+                if (peekc() == '=') { getc_src(); cur_tok.type = T_SHLEQ; return; }
+                cur_tok.type = T_SHL; return;
+            }
             if (peekc() == '=') { getc_src(); cur_tok.type = T_LE; } else cur_tok.type = T_LT;
             return;
         case '>':
+            if (peekc() == '>') {
+                getc_src();
+                if (peekc() == '=') { getc_src(); cur_tok.type = T_SHREQ; return; }
+                cur_tok.type = T_SHR; return;
+            }
             if (peekc() == '=') { getc_src(); cur_tok.type = T_GE; } else cur_tok.type = T_GT;
             return;
         case '&':
             if (peekc() == '&') { getc_src(); cur_tok.type = T_ANDAND; return; }
-            cur_tok.type = T_AMP; return;
+            if (peekc() == '=') { getc_src(); cur_tok.type = T_ANDEQ; return; }
+            cur_tok.type = T_BITAND; return;
         case '|':
             if (peekc() == '|') { getc_src(); cur_tok.type = T_OROR; return; }
-            cc_seterr(cur_line, "unexpected '|'"); cur_tok.type = T_EOF; return;
+            if (peekc() == '=') { getc_src(); cur_tok.type = T_OREQ; return; }
+            cur_tok.type = T_BITOR; return;
+        case '^':
+            if (peekc() == '=') { getc_src(); cur_tok.type = T_XOREQ; return; }
+            cur_tok.type = T_XOR; return;
+        case '~': cur_tok.type = T_TILDE; return;
+        case '?': cur_tok.type = T_QUESTION; return;
+        case ':': cur_tok.type = T_COLON; return;
         default:
             cc_seterr(cur_line, "unexpected character in source");
             cur_tok.type = T_EOF; return;
@@ -366,7 +428,17 @@ static void gen_pop_eax(void) { emit_u8(0x58); }
 static void gen_mov_eax_esp0(void) { emit_u8(0x8B); emit_u8(0x04); emit_u8(0x24); } // mov eax,[esp] (peek, no pop)
 static void gen_mov_eax_abs(uint32_t addr) { emit_u8(0xA1); emit_u32(addr); }
 static void gen_mov_abs_eax(uint32_t addr) { emit_u8(0xA3); emit_u32(addr); }
+static void gen_mov_abs_imm32(uint32_t addr, uint32_t value) {
+    emit_u8(0xC7); emit_u8(0x05); emit_u32(addr); emit_u32(value);
+}
 static void gen_add_eax_ecx(void) { emit_u8(0x01); emit_u8(0xC8); }
+static void gen_and_eax_ecx(void) { emit_u8(0x21); emit_u8(0xC8); }
+static void gen_or_eax_ecx(void)  { emit_u8(0x09); emit_u8(0xC8); }
+static void gen_xor_eax_ecx(void) { emit_u8(0x31); emit_u8(0xC8); }
+static void gen_shl_eax_cl(void)  { emit_u8(0xD3); emit_u8(0xE0); }
+static void gen_sar_eax_cl(void)  { emit_u8(0xD3); emit_u8(0xF8); }
+static void gen_xchg_eax_ecx(void){ emit_u8(0x91); }
+static void gen_not_eax(void)     { emit_u8(0xF7); emit_u8(0xD0); }
 static void gen_sub_ecx_eax_then_mov(void) { emit_u8(0x29); emit_u8(0xC1); emit_u8(0x89); emit_u8(0xC8); } // ecx-=eax; eax=ecx
 static void gen_imul_eax_ecx(void) { emit_u8(0x0F); emit_u8(0xAF); emit_u8(0xC1); }
 static void gen_div_setup_and_idiv(void) {
@@ -494,7 +566,7 @@ static int peek_is_array_assign(void) {
     }
     next_token(); // consume the matching ']'
     int result = (cur_tok.type == T_ASSIGN || cur_tok.type == T_PLUSEQ || cur_tok.type == T_MINUSEQ ||
-                  cur_tok.type == T_STAREQ || cur_tok.type == T_SLASHEQ || cur_tok.type == T_PERCENTEQ);
+                  cur_tok.type == T_STAREQ || cur_tok.type == T_SLASHEQ || cur_tok.type == T_PERCENTEQ || cur_tok.type == T_ANDEQ || cur_tok.type == T_OREQ || cur_tok.type == T_XOREQ || cur_tok.type == T_SHLEQ || cur_tok.type == T_SHREQ);
     lexer_restore(save);
     return result;
 }
@@ -553,14 +625,44 @@ static void parse_call_args_and_call(func_t* fn, const char* builtin_name) {
     if (cc_error_flag) return;
 
     if (builtin_name) {
+        int expected = -1;
         uint32_t target = 0;
+        int returns_value = 1;
+
+        if (str_eq(builtin_name, "putchar") || str_eq(builtin_name, "print_int") ||
+            str_eq(builtin_name, "print_hex") || str_eq(builtin_name, "print_str") ||
+            str_eq(builtin_name, "print")) expected = 1;
+        else if (str_eq(builtin_name, "getchar") ||
+                 str_eq(builtin_name, "clear_screen")) expected = 0;
+        else if (str_eq(builtin_name, "sleep_ms")) expected = 1;
+
+        if (argc != expected) {
+            cc_seterr(cur_tok.line, "wrong number of arguments to builtin");
+            return;
+        }
+
         if (str_eq(builtin_name, "putchar")) target = (uint32_t)(void*)putc;
         else if (str_eq(builtin_name, "print_int")) {
-            // handled by cc_print_int helper declared below
             extern void cc_print_int(int32_t n);
             target = (uint32_t)(void*)cc_print_int;
-        } else if (str_eq(builtin_name, "print_str") || str_eq(builtin_name, "print")) target = (uint32_t)(void*)print;
+        } else if (str_eq(builtin_name, "print_hex")) {
+            extern void cc_print_hex(uint32_t n);
+            target = (uint32_t)(void*)cc_print_hex;
+        } else if (str_eq(builtin_name, "print_str") || str_eq(builtin_name, "print")) {
+            target = (uint32_t)(void*)print;
+        } else if (str_eq(builtin_name, "getchar")) {
+            target = (uint32_t)(void*)get_key;
+        } else if (str_eq(builtin_name, "clear_screen")) {
+            target = (uint32_t)(void*)clear_screen;
+            returns_value = 0;
+        } else if (str_eq(builtin_name, "sleep_ms")) {
+            target = (uint32_t)(void*)timer_delay_ms;
+            returns_value = 0;
+        }
+
         gen_call_abs(target);
+        if (!returns_value)
+            gen_mov_eax_imm32(0);
     } else {
         if (fn->nparams != argc) { cc_seterr(cur_tok.line, "wrong number of arguments"); return; }
         gen_call_abs(fn->addr);
@@ -596,6 +698,13 @@ static void parse_primary(void) {
         gen_setcc_movzx(0x94); // sete
         return;
     }
+    if (cur_tok.type == T_TILDE) {
+        next_token();
+        parse_primary();
+        if (cc_error_flag) return;
+        gen_not_eax();
+        return;
+    }
     if (cur_tok.type == T_STAR) {
         // pointer dereference (rvalue): *expr
         next_token();
@@ -604,7 +713,7 @@ static void parse_primary(void) {
         gen_mov_eax_indirect_eax();
         return;
     }
-    if (cur_tok.type == T_AMP) {
+    if (cur_tok.type == T_BITAND) {
         // address-of: &ident or &ident[expr]
         next_token();
         int line = cur_tok.line;
@@ -650,7 +759,10 @@ static void parse_primary(void) {
             func_t* fn = find_func(name);
             const char* builtin = 0;
             if (!fn) {
-                if (str_eq(name, "putchar") || str_eq(name, "print_int") || str_eq(name, "print_str") || str_eq(name, "print")) builtin = name;
+                if (str_eq(name, "putchar") || str_eq(name, "print_int") ||
+                    str_eq(name, "print_hex") || str_eq(name, "print_str") ||
+                    str_eq(name, "print") || str_eq(name, "getchar") ||
+                    str_eq(name, "clear_screen") || str_eq(name, "sleep_ms")) builtin = name;
                 else { cc_seterr(line, "call to undefined function"); return; }
             }
             parse_call_args_and_call(fn, builtin);
@@ -715,8 +827,47 @@ static void parse_additive(void) {
     }
 }
 
-static void parse_relational(void) {
+static void parse_shift(void) {
     parse_additive();
+    while (cur_tok.type == T_SHL || cur_tok.type == T_SHR) {
+        token_type_t t = cur_tok.type;
+        next_token();
+        gen_push_eax();
+        parse_additive();
+        if (cc_error_flag) return;
+        gen_pop_ecx();
+        gen_xchg_eax_ecx();
+        if (t == T_SHL) gen_shl_eax_cl();
+        else gen_sar_eax_cl();
+    }
+}
+
+static void parse_bitand(void) {
+    parse_shift();
+    while (cur_tok.type == T_BITAND) {
+        next_token(); gen_push_eax(); parse_shift(); if (cc_error_flag) return;
+        gen_pop_ecx(); gen_and_eax_ecx();
+    }
+}
+
+static void parse_bitxor(void) {
+    parse_bitand();
+    while (cur_tok.type == T_XOR) {
+        next_token(); gen_push_eax(); parse_bitand(); if (cc_error_flag) return;
+        gen_pop_ecx(); gen_xor_eax_ecx();
+    }
+}
+
+static void parse_bitor(void) {
+    parse_bitxor();
+    while (cur_tok.type == T_BITOR) {
+        next_token(); gen_push_eax(); parse_bitxor(); if (cc_error_flag) return;
+        gen_pop_ecx(); gen_or_eax_ecx();
+    }
+}
+
+static void parse_relational(void) {
+    parse_bitor();
     for (;;) {
         if (cc_error_flag) return;
         token_type_t t = cur_tok.type;
@@ -782,6 +933,29 @@ static void parse_logic_or(void) {
     }
 }
 
+static void parse_conditional(void) {
+    parse_logic_or();
+    if (cc_error_flag) return;
+
+    if (cur_tok.type == T_QUESTION) {
+        next_token();
+        gen_test_eax_eax();
+        uint32_t false_at = gen_jz_placeholder();
+
+        parse_expr();
+        if (cc_error_flag) return;
+
+        uint32_t end_at = gen_jmp_placeholder();
+        expect(T_COLON, "expected ':' in conditional expression");
+        if (cc_error_flag) return;
+
+        patch_jump_here(false_at);
+        parse_conditional();
+        if (cc_error_flag) return;
+        patch_jump_here(end_at);
+    }
+}
+
 static void parse_assign(void) {
     if (cur_tok.type == T_IDENT) {
         lexer_state_t save = lexer_save();
@@ -814,7 +988,14 @@ static void parse_assign(void) {
                 else if (op == T_MINUSEQ) gen_sub_ecx_eax_then_mov();
                 else if (op == T_STAREQ) gen_imul_eax_ecx();
                 else if (op == T_SLASHEQ) gen_div_setup_and_idiv();
-                else { gen_div_setup_and_idiv(); emit_u8(0x89); emit_u8(0xD0); } // %=
+                else if (op == T_ANDEQ) gen_and_eax_ecx();
+                else if (op == T_OREQ) gen_or_eax_ecx();
+                else if (op == T_XOREQ) gen_xor_eax_ecx();
+                else if (op == T_SHLEQ || op == T_SHREQ) {
+                    gen_xchg_eax_ecx();
+                    if (op == T_SHLEQ) gen_shl_eax_cl();
+                    else gen_sar_eax_cl();
+                } else { gen_div_setup_and_idiv(); emit_u8(0x89); emit_u8(0xD0); } // %=
                 gen_pop_ecx();              // ecx = element address
                 gen_mov_indirect_ecx_eax();
             }
@@ -829,7 +1010,7 @@ static void parse_assign(void) {
             return;
         }
         if (cur_tok.type == T_PLUSEQ || cur_tok.type == T_MINUSEQ || cur_tok.type == T_STAREQ ||
-            cur_tok.type == T_SLASHEQ || cur_tok.type == T_PERCENTEQ) {
+            cur_tok.type == T_SLASHEQ || cur_tok.type == T_PERCENTEQ || cur_tok.type == T_ANDEQ || cur_tok.type == T_OREQ || cur_tok.type == T_XOREQ || cur_tok.type == T_SHLEQ || cur_tok.type == T_SHREQ) {
             token_type_t op = cur_tok.type;
             next_token();
             gen_var_load_to_eax(name, line); // old value -> eax
@@ -875,7 +1056,7 @@ static void parse_assign(void) {
         lexer_restore(save);
     }
 
-    parse_logic_or();
+    parse_conditional();
 }
 
 static void parse_expr(void) { parse_assign(); }
@@ -898,34 +1079,68 @@ static void add_local(const char* name, int is_array, int array_len) {
     local_count++;
 }
 
-static void parse_local_decl(void) {
-    expect(T_INT, "expected 'int'");
-    if (cc_error_flag) return;
-    if (cur_tok.type == T_STAR) next_token(); // pointer marker - parsed, no distinct handling needed
-    if (cur_tok.type != T_IDENT) { cc_seterr(cur_tok.line, "expected identifier after 'int'"); return; }
-    char name[64];
-    int i = 0; while (cur_tok.sval[i]) { name[i] = cur_tok.sval[i]; i++; } name[i] = 0;
-    next_token();
+static int is_type_start(token_type_t t) {
+    return t == T_INT || t == T_CHAR || t == T_CONST ||
+           t == T_UNSIGNED || t == T_SIGNED || t == T_LONG || t == T_SHORT;
+}
 
-    if (cur_tok.type == T_LBRACKET) {
+static void consume_scalar_type(void) {
+    int saw_base = 0;
+    while (cur_tok.type == T_CONST || cur_tok.type == T_UNSIGNED ||
+           cur_tok.type == T_SIGNED || cur_tok.type == T_LONG ||
+           cur_tok.type == T_SHORT || cur_tok.type == T_CHAR ||
+           cur_tok.type == T_INT) {
+        if (cur_tok.type == T_CHAR || cur_tok.type == T_INT) saw_base = 1;
         next_token();
-        if (cur_tok.type != T_NUM || cur_tok.ival <= 0) { cc_seterr(cur_tok.line, "array size must be a positive constant"); return; }
-        int len = cur_tok.ival;
-        next_token();
-        expect(T_RBRACKET, "expected ']'");
-        if (cc_error_flag) return;
-        add_local(name, 1, len); // no initializer support for local arrays
-        return;
     }
+    if (!saw_base && !cc_error_flag)
+        cc_seterr(cur_tok.line, "expected scalar type");
+}
 
-    add_local(name, 0, 0);
+static void parse_local_decl(void) {
+    consume_scalar_type();
     if (cc_error_flag) return;
-    if (cur_tok.type == T_ASSIGN) {
+
+    for (;;) {
+        if (cur_tok.type == T_STAR) next_token();
+        if (cur_tok.type != T_IDENT) {
+            cc_seterr(cur_tok.line, "expected identifier after type");
+            return;
+        }
+
+        char name[64];
+        int i = 0;
+        while (cur_tok.sval[i]) { name[i] = cur_tok.sval[i]; i++; }
+        name[i] = 0;
         next_token();
-        parse_expr();
-        if (cc_error_flag) return;
-        local_t* l = find_local(name);
-        gen_mov_ebp_disp32_eax(l->offset);
+
+        if (cur_tok.type == T_LBRACKET) {
+            next_token();
+            if (cur_tok.type != T_NUM || cur_tok.ival <= 0) {
+                cc_seterr(cur_tok.line, "array size must be a positive constant");
+                return;
+            }
+            int len = cur_tok.ival;
+            next_token();
+            expect(T_RBRACKET, "expected ']'");
+            if (cc_error_flag) return;
+            add_local(name, 1, len);
+        } else {
+            add_local(name, 0, 0);
+            if (cc_error_flag) return;
+
+            if (cur_tok.type == T_ASSIGN) {
+                next_token();
+                parse_expr();
+                if (cc_error_flag) return;
+                local_t* l = find_local(name);
+                gen_mov_ebp_disp32_eax(l->offset);
+            }
+        }
+
+        if (cur_tok.type != T_COMMA)
+            break;
+        next_token();
     }
 }
 
@@ -955,6 +1170,51 @@ static void parse_stmt(void) {
         return;
     }
 
+    if (cur_tok.type == T_DO) {
+        next_token();
+
+        uint32_t body_start = code_len;
+        loop_ctx_t ctx;
+        ctx.break_count = 0;
+        ctx.continue_count = 0;
+        ctx.continue_target_known = 0;
+
+        loop_ctx_t* prev_loop = cur_loop;
+        cur_loop = &ctx;
+        parse_stmt();
+        cur_loop = prev_loop;
+        if (cc_error_flag) return;
+
+        uint32_t cond_start = code_len;
+        int ci;
+        for (ci = 0; ci < ctx.continue_count; ci++)
+            patch_jump_here(ctx.continue_patches[ci]);
+
+        if (cur_tok.type != T_WHILE) {
+            cc_seterr(cur_tok.line, "expected 'while' after do statement");
+            return;
+        }
+        next_token();
+        expect(T_LPAREN, "expected '(' after do/while");
+        if (cc_error_flag) return;
+        parse_expr();
+        if (cc_error_flag) return;
+        expect(T_RPAREN, "expected ')' after do/while condition");
+        if (cc_error_flag) return;
+        expect(T_SEMI, "expected ';' after do/while");
+        if (cc_error_flag) return;
+
+        gen_test_eax_eax();
+        uint32_t exit_at = gen_jz_placeholder();
+        gen_jmp_to(body_start);
+        patch_jump_here(exit_at);
+
+        for (ci = 0; ci < ctx.break_count; ci++)
+            patch_jump_here(ctx.break_patches[ci]);
+        (void)cond_start;
+        return;
+    }
+
     if (cur_tok.type == T_WHILE) {
         next_token();
         uint32_t loop_start = code_len;
@@ -981,7 +1241,7 @@ static void parse_stmt(void) {
         next_token();
         expect(T_LPAREN, "expected '(' after for"); if (cc_error_flag) return;
         if (cur_tok.type != T_SEMI) {
-            if (cur_tok.type == T_INT) parse_local_decl();
+            if (is_type_start(cur_tok.type)) parse_local_decl();
             else parse_expr();
             if (cc_error_flag) return;
         }
@@ -1077,7 +1337,7 @@ static void parse_stmt(void) {
         return;
     }
 
-    if (cur_tok.type == T_INT) {
+    if (is_type_start(cur_tok.type)) {
         parse_local_decl();
         expect(T_SEMI, "expected ';' after declaration");
         return;
@@ -1126,7 +1386,7 @@ static void parse_function(const char* name) {
         next_token();
     } else if (cur_tok.type != T_RPAREN) {
         for (;;) {
-            expect(T_INT, "expected 'int' in parameter list"); if (cc_error_flag) return;
+            consume_scalar_type(); if (cc_error_flag) return;
             if (cur_tok.type == T_STAR) next_token(); // pointer param, parsed and ignored (plain int under the hood)
             if (cur_tok.type != T_IDENT) { cc_seterr(cur_tok.line, "expected parameter name"); return; }
             char pname[64];
@@ -1178,8 +1438,12 @@ static void parse_function(const char* name) {
 static void parse_program(void) {
     while (!cc_error_flag && cur_tok.type != T_EOF) {
         int is_void = (cur_tok.type == T_VOID);
-        if (cur_tok.type != T_INT && !is_void) { cc_seterr(cur_tok.line, "expected 'int' or 'void' (only int globals/functions supported)"); return; }
-        next_token();
+        if (!is_void && !is_type_start(cur_tok.type)) {
+            cc_seterr(cur_tok.line, "expected a C type");
+            return;
+        }
+        if (is_void) next_token();
+        else consume_scalar_type();
         int is_ptr = 0;
         if (cur_tok.type == T_STAR) { is_ptr = 1; next_token(); } // parsed and ignored - plain int under the hood
         (void)is_ptr;
@@ -1195,41 +1459,92 @@ static void parse_program(void) {
         } else if (is_void) {
             cc_seterr(decl_line, "'void' is only valid as a function return type");
             return;
-        } else if (cur_tok.type == T_LBRACKET) {
-            next_token();
-            if (cur_tok.type != T_NUM || cur_tok.ival <= 0) { cc_seterr(cur_tok.line, "array size must be a positive constant"); return; }
-            int len = cur_tok.ival;
-            next_token();
-            expect(T_RBRACKET, "expected ']'"); if (cc_error_flag) return;
-            if (global_count >= MAX_GLOBALS) { cc_seterr(cur_tok.line, "too many globals"); return; }
-            if (global_array_pool_used + len > GLOBAL_ARRAY_POOL_SIZE) { cc_seterr(cur_tok.line, "global arrays too large in total"); return; }
-            uint32_t base = (uint32_t)&global_array_pool[global_array_pool_used];
-            global_array_pool_used += len;
-            int j = 0; while (name[j] && j < 31) { globals[global_count].name[j] = name[j]; j++; }
-            globals[global_count].name[j] = 0;
-            globals[global_count].addr = base;
-            globals[global_count].is_array = 1;
-            globals[global_count].array_len = len;
-            global_count++;
-            expect(T_SEMI, "expected ';' after global array declaration");
         } else {
-            if (global_count >= MAX_GLOBALS) { cc_seterr(cur_tok.line, "too many globals"); return; }
-            int32_t init = 0;
-            if (cur_tok.type == T_ASSIGN) {
+            for (;;) {
+                if (global_count >= MAX_GLOBALS) {
+                    cc_seterr(cur_tok.line, "too many globals");
+                    return;
+                }
+
+                if (cur_tok.type == T_LBRACKET) {
+                    next_token();
+                    if (cur_tok.type != T_NUM || cur_tok.ival <= 0) {
+                        cc_seterr(cur_tok.line, "array size must be a positive constant");
+                        return;
+                    }
+                    int len = cur_tok.ival;
+                    next_token();
+                    expect(T_RBRACKET, "expected ']'");
+                    if (cc_error_flag) return;
+                    if (global_array_pool_used + len > GLOBAL_ARRAY_POOL_SIZE) {
+                        cc_seterr(cur_tok.line, "global arrays too large in total");
+                        return;
+                    }
+
+                    uint32_t base =
+                        (uint32_t)&global_array_pool[global_array_pool_used];
+                    global_array_pool_used += len;
+
+                    int j = 0;
+                    while (name[j] && j < 31) {
+                        globals[global_count].name[j] = name[j];
+                        j++;
+                    }
+                    globals[global_count].name[j] = 0;
+                    globals[global_count].addr = base;
+                    globals[global_count].is_array = 1;
+                    globals[global_count].array_len = len;
+                    global_count++;
+                } else {
+                    int32_t init = 0;
+                    if (cur_tok.type == T_ASSIGN) {
+                        next_token();
+                        int neg = 0;
+                        if (cur_tok.type == T_MINUS) {
+                            neg = 1;
+                            next_token();
+                        }
+                        if (cur_tok.type != T_NUM) {
+                            cc_seterr(cur_tok.line,
+                                      "global initializer must be a constant");
+                            return;
+                        }
+                        init = neg ? -cur_tok.ival : cur_tok.ival;
+                        next_token();
+                    }
+
+                    globals_data[global_count] = init;
+                    int j = 0;
+                    while (name[j] && j < 31) {
+                        globals[global_count].name[j] = name[j];
+                        j++;
+                    }
+                    globals[global_count].name[j] = 0;
+                    globals[global_count].addr =
+                        (uint32_t)&globals_data[global_count];
+                    globals[global_count].is_array = 0;
+                    globals[global_count].array_len = 0;
+                    global_count++;
+                }
+
+                if (cur_tok.type != T_COMMA)
+                    break;
+
                 next_token();
-                int neg = 0;
-                if (cur_tok.type == T_MINUS) { neg = 1; next_token(); }
-                if (cur_tok.type != T_NUM) { cc_seterr(cur_tok.line, "global initializer must be a constant"); return; }
-                init = neg ? -cur_tok.ival : cur_tok.ival;
+                if (cur_tok.type != T_IDENT) {
+                    cc_seterr(cur_tok.line,
+                              "expected identifier after ','");
+                    return;
+                }
+                int n = 0;
+                while (cur_tok.sval[n] && n < 63) {
+                    name[n] = cur_tok.sval[n];
+                    n++;
+                }
+                name[n] = 0;
                 next_token();
             }
-            globals_data[global_count] = init;
-            int j = 0; while (name[j] && j < 31) { globals[global_count].name[j] = name[j]; j++; }
-            globals[global_count].name[j] = 0;
-            globals[global_count].addr = (uint32_t)&globals_data[global_count];
-            globals[global_count].is_array = 0;
-            globals[global_count].array_len = 0;
-            global_count++;
+
             expect(T_SEMI, "expected ';' after global declaration");
         }
     }
@@ -1244,9 +1559,113 @@ void cc_print_int(int32_t n) {
     print_dec((uint32_t)n);
 }
 
+void cc_print_hex(uint32_t n) {
+    print_hex(n);
+}
+
+static int cc_bin_magic_ok(const uint8_t* image, unsigned int len) {
+    return image && len >= TJBIN_HEADER_SIZE &&
+           image[0] == 'T' && image[1] == 'J' &&
+           image[2] == 'B' && image[3] == 'N' &&
+           image[4] == 1;
+}
+
+static void cc_bin_u32(uint8_t* p, uint32_t v) {
+    p[0] = (uint8_t)(v & 0xFF);
+    p[1] = (uint8_t)((v >> 8) & 0xFF);
+    p[2] = (uint8_t)((v >> 16) & 0xFF);
+    p[3] = (uint8_t)((v >> 24) & 0xFF);
+}
+
+static uint32_t cc_bin_get_u32(const uint8_t* p) {
+    return (uint32_t)p[0] |
+           ((uint32_t)p[1] << 8) |
+           ((uint32_t)p[2] << 16) |
+           ((uint32_t)p[3] << 24);
+}
+
 // ------------------------------------------------------------
 // Entry point
 // ------------------------------------------------------------
+static int cc_compile(const char* source, unsigned int len, func_t** out_mainfn);
+
+int cc_compile_to_binary(const char* source, unsigned int len,
+                         uint8_t* out, unsigned int out_cap,
+                         unsigned int* out_len) {
+    func_t* mainfn;
+
+    if (!out || !out_len || out_cap < TJBIN_HEADER_SIZE) return -1;
+    if (cc_compile(source, len, &mainfn) != 0) return -1;
+
+    /*
+     * Append a tiny startup wrapper. It reinitializes file-scope globals
+     * every time the binary starts, so a program's state cannot leak from
+     * the previous binary that happened to use the compiler's shared
+     * runtime storage. The wrapper then calls the real main().
+     */
+    uint32_t entry = code_len;
+
+    for (int i = 0; i < global_count; i++) {
+        if (!globals[i].is_array)
+            gen_mov_abs_imm32(globals[i].addr, (uint32_t)globals_data[i]);
+    }
+
+    if (global_array_pool_used > 0) {
+        /* rep stosd: clear the entire array backing pool in one go. */
+        gen_mov_eax_imm32(0);
+        emit_u8(0xBF); emit_u32((uint32_t)&global_array_pool[0]); /* mov edi, base */
+        emit_u8(0xB9); emit_u32((uint32_t)global_array_pool_used); /* temporary count */
+        /* Convert element count to dword count; it is already elements. */
+        emit_u8(0xF3); emit_u8(0xAB); /* rep stosd, ECX elements */
+    }
+
+    gen_call_abs(mainfn->addr);
+    emit_u8(0xC3); /* ret */
+
+    if (entry >= code_len || code_len + TJBIN_HEADER_SIZE > out_cap) {
+        print("Compiler: output binary is too large\n");
+        return -1;
+    }
+
+    out[0] = 'T'; out[1] = 'J'; out[2] = 'B'; out[3] = 'N';
+    out[4] = 1; out[5] = 0; out[6] = 0; out[7] = 0;
+    cc_bin_u32(out + 8, entry);
+
+    for (uint32_t i = 0; i < code_len; i++)
+        out[TJBIN_HEADER_SIZE + i] = code_buf[i];
+
+    *out_len = TJBIN_HEADER_SIZE + code_len;
+    return 0;
+}
+
+int cc_execute_binary(const uint8_t* image, unsigned int len) {
+    if (!cc_bin_magic_ok(image, len)) {
+        print("exec: not a TanjaOS binary\n");
+        return -1;
+    }
+
+    uint32_t code_size = len - TJBIN_HEADER_SIZE;
+    uint32_t entry = cc_bin_get_u32(image + 8);
+
+    if (code_size > CODE_BUF_SIZE || entry >= code_size) {
+        print("exec: invalid TanjaOS binary\n");
+        return -1;
+    }
+
+    for (uint32_t i = 0; i < code_size; i++)
+        code_buf[i] = image[TJBIN_HEADER_SIZE + i];
+
+    code_len = code_size;
+
+    int (*entry_fn)(void) =
+        (int (*)(void))(void*)((uint32_t)code_buf + entry);
+
+    int rc = entry_fn();
+    print("Program exited with code ");
+    print_dec((uint32_t)rc);
+    print("\n");
+    return rc;
+}
 
 // Debug/test accessor - lets a host-side test harness get the code
 // buffer's address and length to inspect (e.g. disassemble) what was

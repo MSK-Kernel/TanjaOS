@@ -27,11 +27,12 @@ static int strlen_safe(const char* s) {
 
 #define MAX_F 32
 #define MAX_D 16
+#define MAX_FILE_DATA 3072
 
 int fs_delete_directory_recursive(const char *path);
 
 static char fname[MAX_F][64];
-static char fdata[MAX_F][1024];
+static char fdata[MAX_F][MAX_FILE_DATA];
 static int fsize[MAX_F];
 static int fused[MAX_F];
 
@@ -242,7 +243,7 @@ int fs_write_file(const char* path, const char* data, uint32_t size) {
             if (fused[i] && strcmp_safe(fname[i], full)) { idx = i; break; }
         if (idx == -1) return -1;
     }
-    if (size > 1000) size = 1000;
+    if (size > MAX_FILE_DATA - 1) size = MAX_FILE_DATA - 1;
     for (i = 0; i < (int)size; i++) fdata[idx][i] = data[i];
     fdata[idx][size] = 0;
     fsize[idx] = size;
@@ -259,8 +260,31 @@ int fs_read_file(const char* path, char* buffer, uint32_t* size) {
     for (i = 0; i < MAX_F; i++) {
         if (fused[i] && strcmp_safe(fname[i], full)) {
             int sz = fsize[i];
-            if (sz > 1000) sz = 1000;
+            if (sz > MAX_FILE_DATA - 1) sz = MAX_FILE_DATA - 1;
             int j;
+            for (j = 0; j < sz; j++) buffer[j] = fdata[i][j];
+            buffer[sz] = 0;
+            *size = sz;
+            return 0;
+        }
+    }
+    return -1;
+}
+
+int fs_read_file_prefix(const char* path, char* buffer, uint32_t capacity, uint32_t* size) {
+    if (!path || !buffer || !size || capacity == 0) return -1;
+    *size = 0;
+    buffer[0] = 0;
+
+    char full[256];
+    abs_path(path, full);
+
+    int i;
+    for (i = 0; i < MAX_F; i++) {
+        if (fused[i] && strcmp_safe(fname[i], full)) {
+            uint32_t sz = (uint32_t)fsize[i];
+            if (sz > capacity - 1) sz = capacity - 1;
+            uint32_t j;
             for (j = 0; j < sz; j++) buffer[j] = fdata[i][j];
             buffer[sz] = 0;
             *size = sz;
@@ -388,11 +412,11 @@ int parse_path(const char* a, char* b, char* c) { (void)a; if(b)b[0]=0; if(c)c[0
 //   MAX_F    bytes   fused[]
 //   MAX_F*4  bytes   fsize[]   (little-endian)
 //   MAX_F*64 bytes   fname[][64]
-//   MAX_F*1024 bytes fdata[][1024]
+//   MAX_F*MAX_FILE_DATA bytes fdata[][MAX_FILE_DATA]
 //   256      bytes   cwd
 // ============================================================
 
-#define STORE_VERSION 1
+#define STORE_VERSION 2
 
 uint32_t fs_store_size(void) {
     return 8
@@ -401,7 +425,7 @@ uint32_t fs_store_size(void) {
         + MAX_F
         + (MAX_F * 4)
         + (MAX_F * 64)
-        + (MAX_F * 1024)
+        + (MAX_F * MAX_FILE_DATA)
         + 256;
 }
 
@@ -431,7 +455,7 @@ int fs_serialize(uint8_t* buf, uint32_t buf_size) {
     for (i = 0; i < MAX_F; i++)
         for (j = 0; j < 64; j++) buf[p++] = (uint8_t)fname[i][j];
     for (i = 0; i < MAX_F; i++)
-        for (j = 0; j < 1024; j++) buf[p++] = (uint8_t)fdata[i][j];
+        for (j = 0; j < MAX_FILE_DATA; j++) buf[p++] = (uint8_t)fdata[i][j];
 
     for (j = 0; j < 256; j++) buf[p++] = (uint8_t)cwd[j];
 
@@ -464,7 +488,7 @@ int fs_deserialize(const uint8_t* buf, uint32_t buf_size) {
     for (i = 0; i < MAX_F; i++)
         for (j = 0; j < 64; j++) fname[i][j] = (char)buf[p++];
     for (i = 0; i < MAX_F; i++)
-        for (j = 0; j < 1024; j++) fdata[i][j] = (char)buf[p++];
+        for (j = 0; j < MAX_FILE_DATA; j++) fdata[i][j] = (char)buf[p++];
 
     for (j = 0; j < 256; j++) cwd[j] = (char)buf[p++];
 

@@ -34,7 +34,7 @@ static uint32_t store_lba = STORE_FALLBACK_LBA;
 
 // Sized generously above fs_store_size() (checked at runtime below) so
 // bumping MAX_F/MAX_D in fs.c doesn't silently overflow this buffer.
-#define STORE_BUF_SECTORS 80
+#define STORE_BUF_SECTORS 255
 #define STORE_BUF_BYTES   (STORE_BUF_SECTORS * 512)
 
 static uint8_t store_buf[STORE_BUF_BYTES];

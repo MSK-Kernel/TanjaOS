@@ -15,35 +15,49 @@ static int ls_name_cmp(const char* a, const char* b) {
     return *a ? 1 : -1;
 }
 
-// Does any line in the file start with a word that matches a
-// registered command name? If so, treat it as a script.
-static int ls_looks_like_script(const char* path) {
-    extern int fs_read_file(const char* path, char* buffer, uint32_t* size);
+// Only inspect a tiny prefix. `ls` must stay fast even when a directory
+// contains large files, and fs_read_file() is intentionally a whole-file API.
+static int ls_is_binary(const char* path) {
+    extern int fs_read_file_prefix(const char* path, char* buffer,
+                                   uint32_t capacity, uint32_t* size);
 
-    char fbuf[4096];
+    unsigned char fbuf[8];
     uint32_t fsize = 0;
+    if (fs_read_file_prefix(path, (char*)fbuf, sizeof(fbuf), &fsize) != 0)
+        return 0;
 
-    if (fs_read_file(path, fbuf, &fsize) != 0) return 0;
+    return fsize >= 5 &&
+           fbuf[0] == 'T' && fbuf[1] == 'J' &&
+           fbuf[2] == 'B' && fbuf[3] == 'N' && fbuf[4] == 1;
+}
+
+// Shell scripts are identified from their first line only.
+static int ls_looks_like_script(const char* path) {
+    extern int fs_read_file_prefix(const char* path, char* buffer,
+                                   uint32_t capacity, uint32_t* size);
+
+    char fbuf[256];
+    uint32_t fsize = 0;
+    if (fs_read_file_prefix(path, fbuf, sizeof(fbuf), &fsize) != 0)
+        return 0;
 
     uint32_t k = 0;
-    while (k < fsize) {
-        while (k < fsize && (fbuf[k] == ' ' || fbuf[k] == '\t' ||
-               fbuf[k] == '\n' || fbuf[k] == '\r')) k++;
-        if (k >= fsize) break;
+    while (k < fsize && (fbuf[k] == ' ' || fbuf[k] == '\t' ||
+           fbuf[k] == '\r' || fbuf[k] == '\n')) k++;
+    if (k >= fsize) return 0;
 
-        char word[32];
-        int w = 0;
-        while (k < fsize && fbuf[k] != ' ' && fbuf[k] != '\t' &&
-               fbuf[k] != '\n' && fbuf[k] != '\r' && w < 31) {
-            word[w++] = fbuf[k++];
-        }
-        word[w] = 0;
+    if (fsize >= 5 && fbuf[0] == 'T' && fbuf[1] == 'J' &&
+        fbuf[2] == 'B' && fbuf[3] == 'N' && fbuf[4] == 1)
+        return 0;
 
-        if (cmd_exists(word)) return 1;
+    char word[32];
+    int w = 0;
+    while (k < fsize && fbuf[k] != ' ' && fbuf[k] != '\t' &&
+           fbuf[k] != '\r' && fbuf[k] != '\n' && w < 31)
+        word[w++] = fbuf[k++];
+    word[w] = 0;
 
-        while (k < fsize && fbuf[k] != '\n') k++;
-    }
-    return 0;
+    return cmd_exists(word);
 }
 
 // Build the full path to `child` under `base_args` (whatever the
@@ -137,7 +151,7 @@ void cmd_ls(char* args) {
             char path[300];
             ls_build_path(args, names[i], path, sizeof(path));
             disp_len[i] = len;
-            color[i] = ls_looks_like_script(path) ? COLOR_LIGHT_GREEN : COLOR_WHITE;
+            color[i] = (ls_is_binary(path) || ls_looks_like_script(path)) ? COLOR_LIGHT_GREEN : COLOR_WHITE;
         }
 
         if (disp_len[i] > max_len) max_len = disp_len[i];

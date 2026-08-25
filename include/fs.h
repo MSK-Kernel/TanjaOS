@@ -6,7 +6,7 @@
 
 #define MAX_PATH 256
 #define MAX_FILENAME 64
-#define MAX_FILE_SIZE 1024
+#define MAX_FILE_SIZE 3072
 
 typedef enum {
     FS_FILE,
@@ -20,6 +20,7 @@ int fs_delete_file(const char* path);
 int fs_delete_directory(const char* path);
 int fs_write_file(const char* path, const char* data, uint32_t size);
 int fs_read_file(const char* path, char* buffer, uint32_t* size);
+int fs_read_file_prefix(const char* path, char* buffer, uint32_t capacity, uint32_t* size);
 int fs_file_exists(const char* path);
 int fs_directory_exists(const char* path);
 int fs_list_directory(const char* path, char* buffer, uint32_t* size);
