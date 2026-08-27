@@ -1,5 +1,6 @@
 #include <stdint.h>
 #include "../include/cc.h"
+#include "../include/fs.h"
 
 extern void putc(char c);
 extern int putchar(int c);
@@ -56,6 +57,189 @@ extern int cc_printf_7(unsigned int,unsigned int,unsigned int,unsigned int,unsig
 extern int cc_printf_8(unsigned int,unsigned int,unsigned int,unsigned int,unsigned int,unsigned int,unsigned int,const char*);
 extern int cc_printf_9(unsigned int,unsigned int,unsigned int,unsigned int,unsigned int,unsigned int,unsigned int,unsigned int,const char*);
 extern int cc_scanf_2(unsigned int,const char*);
+
+/* ------------------------------------------------------------------
+ * C standard-library compatibility layer
+ *
+ * These implementations are deliberately kept inside the compiler
+ * runtime because TanjaOS C programs do not have a conventional libc
+ * linker.  Only functions that have a real implementation are exposed
+ * below.  Floating-point and FILE/locale/threads APIs are not advertised
+ * until the compiler has the type/runtime support needed to implement
+ * their actual C semantics.
+ * ------------------------------------------------------------------ */
+
+#define CC_HEAP_SIZE 65536
+static uint8_t cc_heap[CC_HEAP_SIZE];
+static uint32_t cc_heap_pos;
+static char cc_tok_state[256];
+static const char* cc_tok_next;
+
+static void* cc_malloc(unsigned int n) {
+    /* Header stores the requested size for realloc. */
+    uint32_t total = n + 8;
+    uint32_t pos = (cc_heap_pos + 3u) & ~3u;
+    if (n == 0) n = 1;
+    total = n + 8;
+    if (pos + total > CC_HEAP_SIZE) return (void*)0;
+    *(uint32_t*)(void*)(cc_heap + pos) = n;
+    *(uint32_t*)(void*)(cc_heap + pos + 4) = 0x434D414Cull; /* CMAL */
+    cc_heap_pos = pos + total;
+    return (void*)(cc_heap + pos + 8);
+}
+
+static void cc_free(void* p) {
+    /* The kernel heap is a monotonic arena.  Individual blocks are not
+       returned to the arena, but free is a real, safe no-op for this
+       runtime. */
+    (void)p;
+}
+
+static void* cc_calloc(unsigned int count, unsigned int size) {
+    if (count != 0 && size > 0xFFFFFFFFu / count) return (void*)0;
+    unsigned int total = count * size;
+    void* p = cc_malloc(total);
+    if (p) memset(p, 0, total);
+    return p;
+}
+
+static void* cc_realloc(void* p, unsigned int n) {
+    if (!p) return cc_malloc(n);
+    if (n == 0) { cc_free(p); return (void*)0; }
+    uint8_t* b = (uint8_t*)p;
+    if (b < cc_heap + 8 || b >= cc_heap + CC_HEAP_SIZE) return (void*)0;
+    uint32_t old = *(uint32_t*)(void*)(b - 8);
+    void* q = cc_malloc(n);
+    if (!q) return (void*)0;
+    unsigned int copy = old < n ? old : n;
+    memcpy(q, p, copy);
+    return q;
+}
+
+static long cc_atol(const char* s) { return (long)atoi(s); }
+static long cc_labs(long n) { return n < 0 ? -n : n; }
+
+static long cc_strtol(const char* s, char** endp, int base) {
+    const char* p = s;
+    int neg = 0;
+    unsigned long v = 0;
+    int digit;
+    if (!p) { if (endp) *endp = (char*)s; return 0; }
+    while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r' || *p == '\f' || *p == '\v') p++;
+    if (*p == '+' || *p == '-') { neg = (*p == '-'); p++; }
+    if (base == 0) {
+        if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) { base = 16; p += 2; }
+        else if (p[0] == '0') base = 8;
+        else base = 10;
+    } else if (base == 16 && p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) p += 2;
+    const char* start = p;
+    while (*p) {
+        char c = *p;
+        if (c >= '0' && c <= '9') digit = c - '0';
+        else if (c >= 'a' && c <= 'z') digit = c - 'a' + 10;
+        else if (c >= 'A' && c <= 'Z') digit = c - 'A' + 10;
+        else break;
+        if (digit >= base) break;
+        v = v * (unsigned)base + (unsigned)digit;
+        p++;
+    }
+    if (endp) *endp = (char*)(p == start ? s : p);
+    return neg ? -(long)v : (long)v;
+}
+
+static unsigned long cc_strtoul(const char* s, char** endp, int base) {
+    return (unsigned long)cc_strtol(s, endp, base);
+}
+
+static char* cc_strncat(char* dst, const char* src, unsigned int n) {
+    unsigned int i = 0, d = (unsigned int)strlen(dst);
+    while (i < n && src[i]) { dst[d++] = src[i++]; }
+    dst[d] = 0;
+    return dst;
+}
+
+static void* cc_memchr(const void* s, int c, unsigned int n) {
+    const unsigned char* p = (const unsigned char*)s;
+    for (unsigned int i = 0; i < n; i++) if (p[i] == (unsigned char)c) return (void*)(p + i);
+    return (void*)0;
+}
+
+static unsigned int cc_strspn(const char* s, const char* accept) {
+    unsigned int n = 0;
+    while (s[n]) { int found = 0; for (unsigned int j = 0; accept[j]; j++) if (s[n] == accept[j]) { found = 1; break; } if (!found) break; n++; }
+    return n;
+}
+
+static unsigned int cc_strcspn(const char* s, const char* reject) {
+    unsigned int n = 0;
+    while (s[n]) { int found = 0; for (unsigned int j = 0; reject[j]; j++) if (s[n] == reject[j]) { found = 1; break; } if (found) break; n++; }
+    return n;
+}
+
+static char* cc_strpbrk(const char* s, const char* accept) {
+    while (*s) { for (unsigned int j = 0; accept[j]; j++) if (*s == accept[j]) return (char*)s; s++; }
+    return (char*)0;
+}
+
+static char* cc_strtok(char* s, const char* delim) {
+    if (s) cc_tok_next = s;
+    if (!cc_tok_next) return (char*)0;
+    while (*cc_tok_next) { int d = 0; for (unsigned int j = 0; delim[j]; j++) if (*cc_tok_next == delim[j]) { d = 1; break; } if (!d) break; cc_tok_next++; }
+    if (!*cc_tok_next) { cc_tok_next = (const char*)0; return (char*)0; }
+    char* out = (char*)cc_tok_next;
+    while (*cc_tok_next) { int d = 0; for (unsigned int j = 0; delim[j]; j++) if (*cc_tok_next == delim[j]) { d = 1; break; } if (d) { *((char*)cc_tok_next) = 0; cc_tok_next++; return out; } cc_tok_next++; }
+    cc_tok_next = (const char*)0;
+    return out;
+}
+
+static char* cc_strdup(const char* s) {
+    unsigned int n = strlen(s) + 1;
+    char* p = (char*)cc_malloc(n);
+    if (!p) return (char*)0;
+    memcpy(p, s, n);
+    return p;
+}
+
+static char* cc_strndup(const char* s, unsigned int n) {
+    unsigned int len = strlen(s); if (len > n) len = n;
+    char* p = (char*)cc_malloc(len + 1);
+    if (!p) return (char*)0;
+    memcpy(p, s, len); p[len] = 0; return p;
+}
+
+static int cc_isgraph(int c) { return c > 32 && c < 127; }
+static int cc_isprint(int c) { return c >= 32 && c < 127; }
+static int cc_ispunct(int c) { return cc_isgraph(c) && !isalnum(c); }
+static int cc_iscntrl(int c) { return (c >= 0 && c < 32) || c == 127; }
+
+static int cc_strcoll(const char* a, const char* b) { return strcmp(a, b); }
+
+static unsigned int cc_strxfrm(char* dst, const char* src, unsigned int n) {
+    unsigned int len = strlen(src);
+    if (n) { unsigned int copy = len < (n - 1) ? len : (n - 1); memcpy(dst, src, copy); dst[copy] = 0; }
+    return len;
+}
+
+static int cc_remove(const char* path) {
+    if (fs_file_exists(path)) return fs_delete_file(path) == 0 ? 0 : -1;
+    if (fs_directory_exists(path)) return fs_delete_directory(path) == 0 ? 0 : -1;
+    return -1;
+}
+
+static void cc_perror(const char* s) {
+    if (s && *s) { puts(s); }
+    puts("error");
+}
+
+static char* cc_strerror(int err) {
+    static char msg[32];
+    if (err == 0) { strcpy(msg, "no error"); return msg; }
+    if (err == 1) { strcpy(msg, "operation failed"); return msg; }
+    strcpy(msg, "error");
+    return msg;
+}
+
+static void cc_heap_reset(void) { cc_heap_pos = 0; cc_tok_next = (const char*)0; }
 
 // ------------------------------------------------------------
 // Code buffer
@@ -644,6 +828,22 @@ static void parse_call_args_and_call(func_t* fn, const char* builtin_name) {
         else if (str_eq(builtin_name, "strncmp") || str_eq(builtin_name, "strncpy") ||
                  str_eq(builtin_name, "memset") || str_eq(builtin_name, "memcpy") ||
                  str_eq(builtin_name, "memmove") || str_eq(builtin_name, "memcmp")) expected = 3;
+        else if (str_eq(builtin_name, "strcoll")) expected = 2;
+        else if (str_eq(builtin_name, "strxfrm")) expected = 3;
+        else if (str_eq(builtin_name, "remove") || str_eq(builtin_name, "perror")) expected = 1;
+        else if (str_eq(builtin_name, "strncat") || str_eq(builtin_name, "strpbrk") ||
+                 str_eq(builtin_name, "strtok") || str_eq(builtin_name, "strdup") ||
+                 str_eq(builtin_name, "strndup")) expected = 2;
+        else if (str_eq(builtin_name, "memchr") || str_eq(builtin_name, "strspn") ||
+                 str_eq(builtin_name, "strcspn") || str_eq(builtin_name, "strtol") ||
+                 str_eq(builtin_name, "strtoul")) expected = 3;
+        else if (str_eq(builtin_name, "malloc") || str_eq(builtin_name, "free") ||
+                 str_eq(builtin_name, "atol") || str_eq(builtin_name, "labs") ||
+                 str_eq(builtin_name, "strerror") || str_eq(builtin_name, "isgraph") ||
+                 str_eq(builtin_name, "isprint") || str_eq(builtin_name, "ispunct") ||
+                 str_eq(builtin_name, "iscntrl")) expected = 1;
+        else if (str_eq(builtin_name, "calloc") || str_eq(builtin_name, "realloc")) expected = 2;
+        else if (str_eq(builtin_name, "strerror")) expected = 1;
         else if (str_eq(builtin_name, "cmd_c") || str_eq(builtin_name, "cmd_cat") ||
                  str_eq(builtin_name, "cmd_cd") || str_eq(builtin_name, "cmd_clear") ||
                  str_eq(builtin_name, "cmd_cp") || str_eq(builtin_name, "cmd_datareset") ||
@@ -705,6 +905,31 @@ static void parse_call_args_and_call(func_t* fn, const char* builtin_name) {
         else if (str_eq(builtin_name, "isxdigit")) target = (uint32_t)(void*)isxdigit;
         else if (str_eq(builtin_name, "tolower")) target = (uint32_t)(void*)tolower;
         else if (str_eq(builtin_name, "toupper")) target = (uint32_t)(void*)toupper;
+        else if (str_eq(builtin_name, "malloc")) target = (uint32_t)(void*)cc_malloc;
+        else if (str_eq(builtin_name, "calloc")) target = (uint32_t)(void*)cc_calloc;
+        else if (str_eq(builtin_name, "realloc")) target = (uint32_t)(void*)cc_realloc;
+        else if (str_eq(builtin_name, "free")) { target = (uint32_t)(void*)cc_free; returns_value = 0; }
+        else if (str_eq(builtin_name, "atol")) target = (uint32_t)(void*)cc_atol;
+        else if (str_eq(builtin_name, "labs")) target = (uint32_t)(void*)cc_labs;
+        else if (str_eq(builtin_name, "strtol")) target = (uint32_t)(void*)cc_strtol;
+        else if (str_eq(builtin_name, "strtoul")) target = (uint32_t)(void*)cc_strtoul;
+        else if (str_eq(builtin_name, "strcoll")) target = (uint32_t)(void*)cc_strcoll;
+        else if (str_eq(builtin_name, "strxfrm")) target = (uint32_t)(void*)cc_strxfrm;
+        else if (str_eq(builtin_name, "remove")) target = (uint32_t)(void*)cc_remove;
+        else if (str_eq(builtin_name, "perror")) { target = (uint32_t)(void*)cc_perror; returns_value = 0; }
+        else if (str_eq(builtin_name, "strncat")) target = (uint32_t)(void*)cc_strncat;
+        else if (str_eq(builtin_name, "memchr")) target = (uint32_t)(void*)cc_memchr;
+        else if (str_eq(builtin_name, "strspn")) target = (uint32_t)(void*)cc_strspn;
+        else if (str_eq(builtin_name, "strcspn")) target = (uint32_t)(void*)cc_strcspn;
+        else if (str_eq(builtin_name, "strpbrk")) target = (uint32_t)(void*)cc_strpbrk;
+        else if (str_eq(builtin_name, "strtok")) target = (uint32_t)(void*)cc_strtok;
+        else if (str_eq(builtin_name, "strdup")) target = (uint32_t)(void*)cc_strdup;
+        else if (str_eq(builtin_name, "strndup")) target = (uint32_t)(void*)cc_strndup;
+        else if (str_eq(builtin_name, "isgraph")) target = (uint32_t)(void*)cc_isgraph;
+        else if (str_eq(builtin_name, "isprint")) target = (uint32_t)(void*)cc_isprint;
+        else if (str_eq(builtin_name, "ispunct")) target = (uint32_t)(void*)cc_ispunct;
+        else if (str_eq(builtin_name, "iscntrl")) target = (uint32_t)(void*)cc_iscntrl;
+        else if (str_eq(builtin_name, "strerror")) target = (uint32_t)(void*)cc_strerror;
         else {
             /* TanjaOS-specific command API: these are deliberately the
              * only non-standard C names exposed by the builtin library. */
@@ -869,7 +1094,18 @@ static void parse_primary(void) {
                     str_eq(name, "isalnum") || str_eq(name, "islower") ||
                     str_eq(name, "isupper") || str_eq(name, "isspace") ||
                     str_eq(name, "isxdigit") || str_eq(name, "tolower") ||
-                    str_eq(name, "toupper") || str_eq(name, "clear_screen") ||
+                    str_eq(name, "toupper") || str_eq(name, "malloc") ||
+                    str_eq(name, "calloc") || str_eq(name, "realloc") ||
+                    str_eq(name, "free") || str_eq(name, "atol") ||
+                    str_eq(name, "labs") || str_eq(name, "strtol") ||
+                    str_eq(name, "strtoul") || str_eq(name, "strncat") ||
+                    str_eq(name, "memchr") || str_eq(name, "strspn") ||
+                    str_eq(name, "strcspn") || str_eq(name, "strpbrk") ||
+                    str_eq(name, "strtok") || str_eq(name, "strdup") ||
+                    str_eq(name, "strndup") || str_eq(name, "isgraph") ||
+                    str_eq(name, "isprint") || str_eq(name, "ispunct") ||
+                    str_eq(name, "iscntrl") || str_eq(name, "strerror") ||
+                    str_eq(name, "clear_screen") ||
                     str_eq(name, "cmd_c") || str_eq(name, "cmd_cat") ||
                     str_eq(name, "cmd_cd") || str_eq(name, "cmd_clear") ||
                     str_eq(name, "cmd_cp") || str_eq(name, "cmd_datareset") ||
@@ -1749,6 +1985,7 @@ int cc_compile_to_binary(const char* source, unsigned int len,
 }
 
 int cc_execute_binary(const uint8_t* image, unsigned int len) {
+    cc_heap_reset();
     if (!cc_bin_magic_ok(image, len)) {
         print("exec: not a TanjaOS binary\n");
         return -1;
@@ -1771,9 +2008,6 @@ int cc_execute_binary(const uint8_t* image, unsigned int len) {
         (int (*)(void))(void*)((uint32_t)code_buf + entry);
 
     int rc = entry_fn();
-    print("Program exited with code ");
-    print_dec((uint32_t)rc);
-    print("\n");
     return rc;
 }
 
@@ -1828,12 +2062,10 @@ int cc_compile_only(const char* source, unsigned int len) {
 }
 
 void cc_compile_and_run(const char* source, unsigned int len) {
+    cc_heap_reset();
     func_t* entryfn;
     if (cc_compile(source, len, &entryfn) != 0) return;
 
     int (*entry)(void) = (int (*)(void))(void*)entryfn->addr;
     int rc = entry();
-    print("Program exited with code ");
-    print_dec((uint32_t)rc);
-    print("\n");
 }

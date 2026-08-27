@@ -36,10 +36,20 @@ static int strlen_editor(const char *s)
     return i;
 }
 
-/* Visual column: tabs occupy four terminal cells, but remain one byte in
- * the editable buffer. This makes TAB behave like a real editor tab stop
- * while keeping source files compact and preserving actual tab characters. */
-static int line_start(const char *text, int pos);
+static int line_start(const char *text, int pos)
+{
+    while (pos > 0 && text[pos - 1] != '\n')
+        pos--;
+    return pos;
+}
+
+static int line_end(const char *text, int pos)
+{
+    int len = strlen_editor(text);
+    while (pos < len && text[pos] != '\n')
+        pos++;
+    return pos;
+}
 
 static int visual_col(const char *text, int pos)
 {
@@ -56,24 +66,72 @@ static int visual_col(const char *text, int pos)
     return col;
 }
 
-static int line_start(const char *text, int pos)
+static int is_leading_space_tab(const char *text, int pos)
 {
-    while (pos > 0 && text[pos - 1] != '\n')
-        pos--;
+    int start = line_start(text, pos);
+    int offset = pos - start;
+
+    /* offset == 0 means "no spaces behind the cursor on this line" (e.g.
+     * cursor sits right at the start of a line). That must NOT count as a
+     * tab block, otherwise backspace/left-arrow "smart" jumps of TAB_WIDTH
+     * happen right at a line boundary and eat into (or past) the previous
+     * line's content/newline. */
+    if (offset <= 0 || offset % TAB_WIDTH != 0)
+        return 0;
+
+    for (int i = start; i < pos; i++) {
+        if (text[i] != ' ')
+            return 0;
+    }
+    return 1;
+}
+
+/* Forward-looking counterpart used by the right-arrow "smart" jump: is
+ * there a full TAB_WIDTH-aligned block of spaces starting at pos, without
+ * running past the end of the current line? This must never look past the
+ * line's terminating '\n' (or end of text), otherwise it can misread the
+ * next line's leading whitespace as part of the current line's block. */
+static int is_space_block_forward(const char *text, int pos)
+{
+    int start = line_start(text, pos);
+    int end = line_end(text, pos);
+    int offset = pos - start;
+
+    if (offset % TAB_WIDTH != 0)
+        return 0;
+    if (pos + TAB_WIDTH > end)
+        return 0;
+
+    for (int i = pos; i < pos + TAB_WIDTH; i++) {
+        if (text[i] != ' ')
+            return 0;
+    }
+    return 1;
+}
+
+static int snap_to_tab_stop(const char *text, int pos)
+{
+    int start = line_start(text, pos);
+    int col = visual_col(text, pos);
+
+    /* Check if target area is purely spaces */
+    int all_spaces = 1;
+    for (int i = start; i < pos; i++) {
+        if (text[i] != ' ') {
+            all_spaces = 0;
+            break;
+        }
+    }
+
+    /* Snap to nearest multiple of TAB_WIDTH within leading whitespace */
+    if (all_spaces) {
+        int snapped_col = (col / TAB_WIDTH) * TAB_WIDTH;
+        return start + snapped_col;
+    }
+
     return pos;
 }
 
-static int line_end(const char *text, int pos)
-{
-    int len = strlen_editor(text);
-    while (pos < len && text[pos] != '\n')
-        pos++;
-    return pos;
-}
-
-/* Return the first byte position on the line whose visual column is closest
- * to target. We deliberately stop before the character that would put the
- * cursor beyond target, so left/right and up/down feel like a normal editor. */
 static int pos_at_visual_col(const char *text, int start, int target)
 {
     int len = strlen_editor(text);
@@ -81,33 +139,22 @@ static int pos_at_visual_col(const char *text, int start, int target)
     int col = 0;
 
     while (pos < len && text[pos] != '\n') {
-        int width;
+        int width = (text[pos] == '\t') ? (TAB_WIDTH - (col % TAB_WIDTH)) : 1;
 
-        if (text[pos] == '\t')
-            width = TAB_WIDTH - (col % TAB_WIDTH);
-        else
-            width = 1;
-
-        /*
-         * If the desired visual column falls inside this character,
-         * place the cursor at this byte position rather than changing
-         * the contents of the line.
-         */
         if (target < col + width)
-            return pos;
+            return snap_to_tab_stop(text, pos);
 
         col += width;
         pos++;
     }
 
-    return pos;
+    return snap_to_tab_stop(text, pos);
 }
 
 static int line_number_at(const char *text, int pos)
 {
     int line = 0;
-    int i;
-    for (i = 0; i < pos && text[i]; i++)
+    for (int i = 0; i < pos && text[i]; i++)
         if (text[i] == '\n') line++;
     return line;
 }
@@ -124,10 +171,6 @@ static int line_start_number(const char *text, int wanted)
     return i;
 }
 
-/* Draw only the visible part of the file. The old editor printed the entire
- * file and then tried to derive a cursor offset from byte positions. That
- * breaks as soon as the file exceeds the VGA screen, and it also counts tabs
- * as one cell. A real viewport fixes both problems. */
 static void draw_editor(const char *text, int pos, int scroll_line)
 {
     clear_screen();
@@ -148,80 +191,60 @@ static void draw_editor(const char *text, int pos, int scroll_line)
         if (!text[i] && line != current_line)
             break;
 
-        /* Draw this source line directly into VGA memory. */
         while (i < MAX_TEXT && text[i] && text[i] != '\n') {
             if (text[i] == '\t') {
                 int width = TAB_WIDTH - (col % TAB_WIDTH);
-
                 for (int k = 0; k < width && col < EDITOR_COLS; k++) {
-                    VGA[screen_row * EDITOR_COLS + col] =
-                        VGA_COLOR | ' ';
+                    VGA[screen_row * EDITOR_COLS + col] = VGA_COLOR | ' ';
                     col++;
                 }
             } else {
                 if (col < EDITOR_COLS) {
-                    VGA[screen_row * EDITOR_COLS + col] =
-                        VGA_COLOR | (uint8_t)text[i];
+                    VGA[screen_row * EDITOR_COLS + col] = VGA_COLOR | (uint8_t)text[i];
                     col++;
                 }
             }
-
             i++;
-
-            if (col >= EDITOR_COLS)
-                break;
+            if (col >= EDITOR_COLS) break;
         }
 
-        /* Clear the rest of the screen row. */
         while (col < EDITOR_COLS) {
-            VGA[screen_row * EDITOR_COLS + col] =
-                VGA_COLOR | ' ';
+            VGA[screen_row * EDITOR_COLS + col] = VGA_COLOR | ' ';
             col++;
         }
 
-        /*
-         * If this is the line containing the text cursor,
-         * calculate its VISUAL column and put the hardware cursor there.
-         */
         if (line == current_line) {
             int c = visual_col(text, pos);
+            int line_offset = c / EDITOR_COLS;
+            int col_offset = c % EDITOR_COLS;
 
-            if (c >= EDITOR_COLS)
-                c = EDITOR_COLS - 1;
+            int final_row = screen_row + line_offset;
+            if (final_row > EDITOR_BOTTOM_ROW) final_row = EDITOR_BOTTOM_ROW;
 
-            cursor = screen_row * EDITOR_COLS + c;
+            cursor = final_row * EDITOR_COLS + col_offset;
         }
 
-        /* Move to the next source line. */
-        while (i < MAX_TEXT && text[i] && text[i] != '\n')
-            i++;
-
-        if (i < MAX_TEXT && text[i] == '\n')
-            i++;
+        while (i < MAX_TEXT && text[i] && text[i] != '\n') i++;
+        if (i < MAX_TEXT && text[i] == '\n') i++;
 
         start = i;
         line++;
         screen_row++;
 
-        if (!text[start] && line > current_line)
-            break;
+        if (!text[start] && line > current_line) break;
     }
 
-    /*
-     * Handle the cursor when it is on the blank line at EOF.
-     */
     if (current_line >= scroll_line) {
         int row = EDITOR_TOP_ROW + (current_line - scroll_line);
-
-        if (row > EDITOR_BOTTOM_ROW)
-            row = EDITOR_BOTTOM_ROW;
-
         int c = visual_col(text, pos);
 
-        if (c >= EDITOR_COLS)
-            c = EDITOR_COLS - 1;
+        int line_offset = c / EDITOR_COLS;
+        int col_offset = c % EDITOR_COLS;
 
-        cursor = row * EDITOR_COLS + c;
+        int final_row = row + line_offset;
+        if (final_row > EDITOR_BOTTOM_ROW) final_row = EDITOR_BOTTOM_ROW;
+
+        cursor = final_row * EDITOR_COLS + col_offset;
     }
 
     sync_cursor();
@@ -254,22 +277,13 @@ static void insert_byte(char *text, int *pos, char ch)
     (*pos)++;
 }
 
-/* Keep normal typing from running off the right edge of the VGA text area.
- * A source line can be much longer than the screen, but while editing we
- * automatically start a new source line when the cursor reaches column 80.
- * This is especially important with key-repeat: every repeated character
- * continues naturally onto the next line instead of getting stuck at the
- * right edge. */
 static void insert_wrapped(char *text, int *pos, char ch)
 {
     int col = visual_col(text, *pos);
 
     if (ch != '\n') {
-        int width = (ch == '\t')
-            ? TAB_WIDTH - (col % TAB_WIDTH)
-            : 1;
-
-        if (col >= EDITOR_COLS || col + width > EDITOR_COLS) {
+        int width = (ch == '\t') ? (TAB_WIDTH - (col % TAB_WIDTH)) : 1;
+        if (col + width > EDITOR_COLS) {
             insert_byte(text, pos, '\n');
         }
     }
@@ -277,20 +291,30 @@ static void insert_wrapped(char *text, int *pos, char ch)
     insert_byte(text, pos, ch);
 }
 
-/* Backspace treats a stored TAB as one logical editing unit. It therefore
- * removes the complete four-cell indentation with one keypress. */
+static void delete_bytes(char *text, int *pos, int count)
+{
+    if (*pos < count)
+        count = *pos;
+
+    int len = strlen_editor(text);
+    for (int i = *pos - count; i <= len - count; i++) {
+        text[i] = text[i + count];
+    }
+    *pos -= count;
+}
+
 static void editor_backspace(char *text, int *pos)
 {
     if (*pos <= 0)
         return;
 
-    int p = *pos - 1;
-    int len = strlen_editor(text);
+    /* Smart Backspace: Delete 4 spaces if cursor is on a tab-aligned block of spaces */
+    if (is_leading_space_tab(text, *pos)) {
+        delete_bytes(text, pos, TAB_WIDTH);
+        return;
+    }
 
-    for (int i = p; i < len; i++)
-        text[i] = text[i + 1];
-
-    *pos = p;
+    delete_bytes(text, pos, 1);
 }
 
 void cmd_editor(char *args)
@@ -341,14 +365,28 @@ void cmd_editor(char *args)
         }
 
         if (key == KEY_LEFT) {
-            if (pos > 0)
-                pos--;
+            if (pos > 0) {
+                /* Smart Arrow Left: jump entire tab block if aligned */
+                if (is_leading_space_tab(text, pos)) {
+                    pos -= TAB_WIDTH;
+                } else {
+                    pos--;
+                }
+            }
             continue;
         }
 
         if (key == KEY_RIGHT) {
-            if (pos < strlen_editor(text))
-                pos++;
+            int len = strlen_editor(text);
+            if (pos < len) {
+                /* Smart Arrow Right: jump entire tab block if aligned,
+                 * but never past the current line's end. */
+                if (is_space_block_forward(text, pos)) {
+                    pos += TAB_WIDTH;
+                } else {
+                    pos++;
+                }
+            }
             continue;
         }
 
@@ -382,7 +420,11 @@ void cmd_editor(char *args)
         }
 
         if (key == TAB_KEY) {
-            /* Store a real tab, not four literal spaces. */
+            /* Insert an actual tab byte (0x09), not spaces. The renderer
+             * and cursor-movement code already expand '\t' to the next
+             * TAB_WIDTH-column stop when displaying/measuring it (see
+             * visual_col / draw_editor / pos_at_visual_col), so a single
+             * real tab character is all that's needed here. */
             insert_wrapped(text, &pos, '\t');
             continue;
         }
