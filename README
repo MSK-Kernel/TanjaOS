@@ -20,3 +20,25 @@ To use Makefile.bsd, use 'gmake <option> -f Makefile.bsd'.
 | 2) nasm                 |
 | 3) gcc                  |
 |_________________________|
+
+
+TanjaOS C notes
+---------------
+The compiler exposes standard C library names for the freestanding TanjaOS
+environment: putchar(), getchar(), puts(), printf(), scanf(), strlen(),
+strcmp(), strncmp(), strcpy(), strncpy(), strcat(), strchr(), strrchr(),
+strstr(), memset(), memcpy(), memmove(), memcmp(), atoi(), abs(), rand(),
+srand(), and ctype functions such as isdigit(), isalpha(), isalnum(),
+isspace(), tolower(), and toupper().
+
+The only TanjaOS-specific C APIs intentionally exposed are clear_screen()
+and the cmd_*() shell-command functions. Legacy non-standard helpers such as
+print(), print_int(), print_hex(), read_int(), read_line(), min(), max(), and
+sleep_ms() are no longer C built-ins.
+
+Every shell command is also callable from C using its cmd_* function:
+cmd_mkdir("games"), cmd_ls(""), cmd_echo("hello"), cmd_cp("a b"), etc.
+
+Interactive shell C-style calls are supported too, for example:
+cmd_mkdir("games");
+cmd_ls("");

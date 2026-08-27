@@ -208,6 +208,12 @@ void putc(char c) {
     putc_color(c, VGA_COLOR);
 }
 
+/* ISO C-style console functions exposed to TanjaOS C programs. */
+int get_key(void);
+int putchar(int c) { putc((char)c); return c; }
+int getchar(void) { return get_key(); }
+int puts(const char* s) { if (s) { while (*s) putc(*s++); } putc('\n'); return 0; }
+
 void print(const char* s) {
     if (!s) return;
     while (*s) putc(*s++);
@@ -524,45 +530,125 @@ int read_int(void) {
 }
 
 
-int cc_strlen(const char* s) {
+int strlen(const char* s) {
     int n = 0;
     if (!s) return 0;
     while (s[n]) n++;
     return n;
 }
 
-int cc_strcmp(const char* a, const char* b) {
+int strcmp(const char* a, const char* b) {
     if (!a || !b) return a == b ? 0 : (a ? 1 : -1);
     while (*a && *b && *a == *b) { a++; b++; }
     return (unsigned char)*a - (unsigned char)*b;
 }
 
-char* cc_strcpy(char* dst, const char* src) {
+int strncmp(const char* a, const char* b, unsigned int n) {
+    unsigned int i = 0;
+    if (n == 0) return 0;
+    if (!a || !b) return a == b ? 0 : (a ? 1 : -1);
+    while (i < n && a[i] && b[i] && a[i] == b[i]) i++;
+    if (i == n) return 0;
+    return (unsigned char)a[i] - (unsigned char)b[i];
+}
+
+char* strcpy(char* dst, const char* src) {
     char* start = dst;
     if (!dst || !src) return dst;
     while ((*dst++ = *src++)) {}
     return start;
 }
 
-void* cc_memset(void* dst, int value, int count) {
+char* strncpy(char* dst, const char* src, unsigned int n) {
+    unsigned int i = 0;
+    if (!dst || !src) return dst;
+    while (i < n && src[i]) { dst[i] = src[i]; i++; }
+    while (i < n) dst[i++] = 0;
+    return dst;
+}
+
+char* strcat(char* dst, const char* src) {
+    char* start = dst;
+    if (!dst || !src) return dst;
+    while (*dst) dst++;
+    while ((*dst++ = *src++)) {}
+    return start;
+}
+
+char* strchr(const char* s, int c) {
+    if (!s) return 0;
+    while (*s) {
+        if ((unsigned char)*s == (unsigned char)c) return (char*)s;
+        s++;
+    }
+    return c == 0 ? (char*)s : 0;
+}
+
+char* strrchr(const char* s, int c) {
+    const char* last = 0;
+    if (!s) return 0;
+    while (*s) {
+        if ((unsigned char)*s == (unsigned char)c) last = s;
+        s++;
+    }
+    if (c == 0) return (char*)s;
+    return (char*)last;
+}
+
+char* strstr(const char* haystack, const char* needle) {
+    int i, j;
+    if (!haystack || !needle) return 0;
+    if (!needle[0]) return (char*)haystack;
+    for (i = 0; haystack[i]; i++) {
+        for (j = 0; needle[j] && haystack[i + j] == needle[j]; j++) {}
+        if (!needle[j]) return (char*)&haystack[i];
+    }
+    return 0;
+}
+
+void* memset(void* dst, int value, unsigned int count) {
     unsigned char* p = (unsigned char*)dst;
-    if (!p || count < 0) return dst;
+    if (!p) return dst;
     while (count-- > 0) *p++ = (unsigned char)value;
     return dst;
 }
 
-void* cc_memcpy(void* dst, const void* src, int count) {
+void* memcpy(void* dst, const void* src, unsigned int count) {
     unsigned char* d = (unsigned char*)dst;
     const unsigned char* s = (const unsigned char*)src;
-    if (!d || !s || count < 0) return dst;
+    if (!d || !s) return dst;
     while (count-- > 0) *d++ = *s++;
     return dst;
 }
 
-int cc_atoi(const char* s) {
+void* memmove(void* dst, const void* src, unsigned int count) {
+    unsigned char* d = (unsigned char*)dst;
+    const unsigned char* s = (const unsigned char*)src;
+    unsigned int i;
+    if (!d || !s || d == s) return dst;
+    if (d < s) {
+        for (i = 0; i < count; i++) d[i] = s[i];
+    } else {
+        for (i = count; i > 0; i--) d[i - 1] = s[i - 1];
+    }
+    return dst;
+}
+
+int memcmp(const void* a, const void* b, unsigned int count) {
+    const unsigned char* x = (const unsigned char*)a;
+    const unsigned char* y = (const unsigned char*)b;
+    unsigned int i;
+    if (!x || !y) return x == y ? 0 : (x ? 1 : -1);
+    for (i = 0; i < count; i++) {
+        if (x[i] != y[i]) return (int)x[i] - (int)y[i];
+    }
+    return 0;
+}
+
+int atoi(const char* s) {
     int sign = 1, value = 0, i = 0;
     if (!s) return 0;
-    while (s[i] == ' ' || s[i] == '\t') i++;
+    while (s[i] == ' ' || s[i] == '\t' || s[i] == '\n' || s[i] == '\r' || s[i] == '\f' || s[i] == '\v') i++;
     if (s[i] == '-') { sign = -1; i++; }
     else if (s[i] == '+') i++;
     while (s[i] >= '0' && s[i] <= '9') {
@@ -572,9 +658,122 @@ int cc_atoi(const char* s) {
     return value * sign;
 }
 
-int cc_abs(int n) { return n < 0 ? -n : n; }
-int cc_min(int a, int b) { return a < b ? a : b; }
-int cc_max(int a, int b) { return a > b ? a : b; }
+int abs(int n) { return n < 0 ? -n : n; }
+
+static unsigned int c_rand_state = 1;
+int rand(void) {
+    c_rand_state = c_rand_state * 1103515245u + 12345u;
+    return (int)((c_rand_state >> 16) & 0x7FFF);
+}
+void srand(unsigned int seed) { c_rand_state = seed ? seed : 1; }
+
+int isdigit(int c) { return c >= '0' && c <= '9'; }
+int isalpha(int c) { return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z'); }
+int isalnum(int c) { return isalpha(c) || isdigit(c); }
+int islower(int c) { return c >= 'a' && c <= 'z'; }
+int isupper(int c) { return c >= 'A' && c <= 'Z'; }
+int isspace(int c) { return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' || c == '\v'; }
+int isxdigit(int c) { return isdigit(c) || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'); }
+int tolower(int c) { return isupper(c) ? c + ('a' - 'A') : c; }
+int toupper(int c) { return islower(c) ? c - ('a' - 'A') : c; }
+
+
+
+static void cc_print_uint(unsigned int n, unsigned int base, int upper) {
+    char buf[33];
+    const char* digits = upper ? "0123456789ABCDEF" : "0123456789abcdef";
+    int i = 32;
+    buf[i] = 0;
+    if (n == 0) { putc('0'); return; }
+    while (n && i > 0) { buf[--i] = digits[n % base]; n /= base; }
+    while (buf[i]) putc(buf[i++]);
+}
+
+static int cc_printf_impl(const char* fmt, int argc, const unsigned int* args) {
+    int ai = 0, count = 0;
+    if (!fmt) return 0;
+    while (*fmt) {
+        if (*fmt != '%') { putc(*fmt++); count++; continue; }
+        fmt++;
+        if (*fmt == '%') { putc('%'); fmt++; count++; continue; }
+        if (ai >= argc) { putc('%'); count++; continue; }
+        if (*fmt == 'd' || *fmt == 'i') {
+            int v = (int)args[ai++];
+            if (v < 0) { putc('-'); count++; v = -v; }
+            cc_print_uint((unsigned int)v, 10, 0);
+            fmt++;
+        } else if (*fmt == 'u') {
+            cc_print_uint(args[ai++], 10, 0); fmt++;
+        } else if (*fmt == 'x' || *fmt == 'X') {
+            cc_print_uint(args[ai++], 16, *fmt == 'X'); fmt++;
+        } else if (*fmt == 'c') {
+            putc((char)args[ai++]); fmt++; count++;
+        } else if (*fmt == 's') {
+            const char* str = (const char*)args[ai++];
+            if (str) while (*str) { putc(*str++); count++; }
+            fmt++;
+        } else {
+            putc('%'); count++;
+        }
+    }
+    return count;
+}
+
+int cc_printf_1(const char* fmt) { return cc_printf_impl(fmt, 0, 0); }
+int cc_printf_2(unsigned int a1, const char* fmt) { unsigned int a[1]={a1}; return cc_printf_impl(fmt,1,a); }
+int cc_printf_3(unsigned int a2, unsigned int a1, const char* fmt) { unsigned int a[2]={a1,a2}; return cc_printf_impl(fmt,2,a); }
+int cc_printf_4(unsigned int a3, unsigned int a2, unsigned int a1, const char* fmt) { unsigned int a[3]={a1,a2,a3}; return cc_printf_impl(fmt,3,a); }
+int cc_printf_5(unsigned int a4, unsigned int a3, unsigned int a2, unsigned int a1, const char* fmt) { unsigned int a[4]={a1,a2,a3,a4}; return cc_printf_impl(fmt,4,a); }
+int cc_printf_6(unsigned int a5, unsigned int a4, unsigned int a3, unsigned int a2, unsigned int a1, const char* fmt) { unsigned int a[5]={a1,a2,a3,a4,a5}; return cc_printf_impl(fmt,5,a); }
+int cc_printf_7(unsigned int a6, unsigned int a5, unsigned int a4, unsigned int a3, unsigned int a2, unsigned int a1, const char* fmt) { unsigned int a[6]={a1,a2,a3,a4,a5,a6}; return cc_printf_impl(fmt,6,a); }
+int cc_printf_8(unsigned int a7, unsigned int a6, unsigned int a5, unsigned int a4, unsigned int a3, unsigned int a2, unsigned int a1, const char* fmt) { unsigned int a[7]={a1,a2,a3,a4,a5,a6,a7}; return cc_printf_impl(fmt,7,a); }
+int cc_printf_9(unsigned int a8, unsigned int a7, unsigned int a6, unsigned int a5, unsigned int a4, unsigned int a3, unsigned int a2, unsigned int a1, const char* fmt) { unsigned int a[8]={a1,a2,a3,a4,a5,a6,a7,a8}; return cc_printf_impl(fmt,8,a); }
+
+static int cc_scanf_one(const char* fmt, unsigned int ptr) {
+    char buffer[128];
+    int value = 0, sign = 1, i = 0;
+    read_line(buffer, sizeof(buffer));
+    if (!fmt || !ptr) return 0;
+    while (buffer[i] == ' ' || buffer[i] == '\t') i++;
+    if (*fmt == '%') fmt++;
+    if (*fmt == 'c') { *(char*)ptr = buffer[0]; return 1; }
+    if (*fmt == 's') { strcpy((char*)ptr, buffer); return 1; }
+    if (buffer[i] == '-') { sign = -1; i++; }
+    if (fmt[0] == 'x' || fmt[0] == 'X') {
+        unsigned int v=0, d;
+        while (buffer[i]) {
+            char c=buffer[i++];
+            if (c>='0'&&c<='9') d=(unsigned int)(c-'0');
+            else if (c>='a'&&c<='f') d=(unsigned int)(c-'a'+10);
+            else if (c>='A'&&c<='F') d=(unsigned int)(c-'A'+10);
+            else break;
+            v=(v<<4)|d;
+        }
+        *(unsigned int*)ptr=v; return 1;
+    }
+    while (buffer[i] >= '0' && buffer[i] <= '9') { value=value*10+(buffer[i]-'0'); i++; }
+    if (i == 0) return 0;
+    *(int*)ptr=value*sign;
+    return 1;
+}
+int cc_scanf_2(unsigned int ptr, const char* fmt) { return cc_scanf_one(fmt, ptr); }
+/*
+ * The tiny C compiler uses a historical left-to-right argument push
+ * convention.  These private bridges reverse arguments before calling the
+ * real ISO C functions, so programs still see normal C argument order.
+ */
+int cc_strcmp_bridge(const char* b, const char* a) { return strcmp(a, b); }
+int cc_strncmp_bridge(unsigned int n, const char* b, const char* a) { return strncmp(a, b, n); }
+char* cc_strcpy_bridge(const char* src, char* dst) { return strcpy(dst, src); }
+char* cc_strncpy_bridge(unsigned int n, const char* src, char* dst) { return strncpy(dst, src, n); }
+char* cc_strcat_bridge(const char* src, char* dst) { return strcat(dst, src); }
+char* cc_strchr_bridge(int c, const char* s) { return strchr(s, c); }
+char* cc_strrchr_bridge(int c, const char* s) { return strrchr(s, c); }
+char* cc_strstr_bridge(const char* needle, const char* haystack) { return strstr(haystack, needle); }
+void* cc_memset_bridge(unsigned int n, int value, void* dst) { return memset(dst, value, n); }
+void* cc_memcpy_bridge(unsigned int n, const void* src, void* dst) { return memcpy(dst, src, n); }
+void* cc_memmove_bridge(unsigned int n, const void* src, void* dst) { return memmove(dst, src, n); }
+int cc_memcmp_bridge(unsigned int n, const void* b, const void* a) { return memcmp(a, b, n); }
 
 
 // ============================================================
@@ -655,7 +854,81 @@ void list_commands(void) {
 
 extern int exec_file(const char* path);
 
+void cmd_exit(char* args);
+
+/* Interactive-only C-style command calls.
+ * Examples: cmd_mkdir("games");  cmd_ls("");  clear_screen();
+ * These are deliberately NOT used by exec_file(), so shell scripts keep
+ * their normal line-oriented shell syntax. */
+static int execute_c_style_command(const char* line) {
+    int len = 0;
+    while (line[len]) len++;
+    if (len < 4 || line[len - 1] != ';') return 0;
+
+    int p = 0;
+    while (line[p] == ' ' || line[p] == '\t') p++;
+    char name[40];
+    int n = 0;
+    while (line[p] && line[p] != '(' && n < 39) name[n++] = line[p++];
+    name[n] = 0;
+    if (!line[p] || line[len - 1] != ';') return 0;
+    if (p == 0 || line[p] != '(') return 0;
+
+    /* Only accept identifiers and C-style calls; ordinary shell commands
+     * still go through the normal command table. */
+    for (int i = 0; name[i]; i++)
+        if (!((name[i] >= 'a' && name[i] <= 'z') ||
+              (name[i] >= 'A' && name[i] <= 'Z') ||
+              (name[i] >= '0' && name[i] <= '9') || name[i] == '_'))
+            return 0;
+
+    p++;
+    while (line[p] == ' ' || line[p] == '\t') p++;
+
+    char args[256];
+    int a = 0;
+    if (line[p] == ')') {
+        p++;
+    } else if (line[p] == '"') {
+        p++;
+        while (line[p] && line[p] != '"' && a < 255) {
+            if (line[p] == '\\' && line[p+1]) {
+                p++;
+                if (line[p] == 'n') args[a++] = '\n';
+                else if (line[p] == 't') args[a++] = '\t';
+                else args[a++] = line[p];
+                p++;
+            } else args[a++] = line[p++];
+        }
+        if (line[p] != '"') return 0;
+        p++;
+        while (line[p] == ' ' || line[p] == '\t') p++;
+        if (line[p] != ')') return 0;
+        p++;
+    } else {
+        return 0;
+    }
+
+    while (line[p] == ' ' || line[p] == '\t') p++;
+    if (line[p] != ';' || line[p+1] != 0) return 0;
+    args[a] = 0;
+
+    if (streq(name, "clear_screen")) { clear_screen(); return 1; }
+    if (streq(name, "print")) { print(args); return 1; }
+    if (streq(name, "puts")) { puts(args); return 1; }
+    if (streq(name, "cmd_exit")) { cmd_exit(args); return 1; }
+    if (name[0]=='c' && name[1]=='m' && name[2]=='d' && name[3]=='_') {
+        Command* cmd = cmd_table;
+        while (cmd) {
+            if (streq(cmd->name, name + 4)) { cmd->func(args); return 1; }
+            cmd = cmd->next;
+        }
+    }
+    return 0;
+}
+
 void execute_command(const char* cmd_line) {
+
     while (*cmd_line == ' ')
         cmd_line++;
 
@@ -765,6 +1038,11 @@ void print_prompt_path() {
     }
 }
 
+static void execute_interactive_command(const char* cmd_line) {
+    if (execute_c_style_command(cmd_line)) return;
+    execute_command(cmd_line);
+}
+
 void shell() {
     shell_exit_flag = 0; char buf[4096];
     while (1) {
@@ -772,7 +1050,7 @@ void shell() {
         print_prompt_path();
         print("$ ");
         read_line(buf, 4096); clean(buf);
-        if (buf[0]) execute_command(buf);
+        if (buf[0]) execute_interactive_command(buf);
         if (shell_exit_flag) { clear_screen(); break; }
     }
 }

@@ -1,49 +1,61 @@
-// ============================================================
-// C compiler ("c" command)
-//
-// A real, single-pass, x86-32 machine-code-emitting compiler for a
-// deliberately small subset of C. No linker, no object files, no
-// libc: source goes in, machine code comes out into an executable
-// buffer, and the first function definition gets called directly as the program entry point.
-//
-// Supported: int type only (plus void as a function return type and
-// as "(void)" for an explicit empty parameter list - there's no void*
-// or void variables), functions (params/return int, must be defined
-// before first use - self-recursion is fine), global and local
-// variables, fixed-size int arrays (arr[N], both global and local,
-// with indexing as lvalue/rvalue), pointers (&, *, including
-// *p = value), ++/-- (prefix and postfix, simple variables only),
-// compound assignment (+=, -=, *=, /=, %=, on variables and array
-// elements), if/else, while, for (including "for (int i = ...; ...;
-// ...)"), break/continue, return, the usual arithmetic/comparison/
-// logical operators with correct precedence and && / || short-
-// circuiting, // and /* */ comments. Built-in I/O: putchar(int),
-// print_int(int), print("literal") / print_str("literal") (identical,
-// print is just a shorter alias - string literals only work as a
-// direct argument to these, there's no general char* string type).
-//
-// Additional built-ins: strlen, strcmp, strcpy, memset, memcpy, atoi, abs, min, max.\n// NOT supported: structs/unions/typedefs, the preprocessor, floats,
-// multi-dimensional arrays, pointer arithmetic beyond plain
-// assignment/deref, compound-assign through a pointer (*p += 1),
-// multiple translation units.
-//
-// This kernel has no paging/memory protection, so a plain static
-// buffer is already both writable and executable - no mprotect
-// dance needed to run generated code.
-// ============================================================
-
 #include <stdint.h>
 #include "../include/cc.h"
 
+extern void putc(char c);
+extern int putchar(int c);
+extern int getchar(void);
+extern int puts(const char* s);
+extern int strlen(const char* s);
+extern int strcmp(const char* a, const char* b);
+extern int strncmp(const char* a, const char* b, unsigned int n);
+extern char* strcpy(char* dst, const char* src);
+extern char* strncpy(char* dst, const char* src, unsigned int n);
+extern char* strcat(char* dst, const char* src);
+extern char* strchr(const char* s, int c);
+extern char* strrchr(const char* s, int c);
+extern char* strstr(const char* haystack, const char* needle);
+extern void* memset(void* dst, int value, unsigned int n);
+extern void* memcpy(void* dst, const void* src, unsigned int n);
+extern void* memmove(void* dst, const void* src, unsigned int n);
+extern int memcmp(const void* a, const void* b, unsigned int n);
+extern int atoi(const char* s);
+extern int abs(int n);
+extern int rand(void);
+extern void srand(unsigned int seed);
+extern int isdigit(int c);
+extern int isalpha(int c);
+extern int isalnum(int c);
+extern int islower(int c);
+extern int isupper(int c);
+extern int isspace(int c);
+extern int isxdigit(int c);
+extern int tolower(int c);
+extern int toupper(int c);
+extern void clear_screen(void);
+/* Kernel-internal output used by the compiler itself; these are NOT exposed
+ * as C built-ins to TanjaOS programs. */
 extern void print(const char* s);
 extern void print_dec(uint32_t n);
-extern void print_hex(uint32_t n);
-extern void putc(char c);
-extern int get_key(void);
-extern void read_line(char* buffer, int max_len);
-extern int read_int(void);
-extern void clear_screen(void);
-extern void timer_delay_ms(uint32_t ms);
+extern int cc_strcmp_bridge(const char*, const char*);
+extern int cc_strncmp_bridge(unsigned int, const char*, const char*);
+extern char* cc_strcpy_bridge(const char*, char*);
+extern char* cc_strncpy_bridge(unsigned int, const char*, char*);
+extern char* cc_strcat_bridge(const char*, char*);
+extern char* cc_strchr_bridge(int, const char*);
+extern char* cc_strrchr_bridge(int, const char*);
+extern char* cc_strstr_bridge(const char*, const char*);
+extern void* cc_memset_bridge(unsigned int, int, void*);
+extern void* cc_memcpy_bridge(unsigned int, const void*, void*);
+extern void* cc_memmove_bridge(unsigned int, const void*, void*);
+extern int cc_memcmp_bridge(unsigned int, const void*, const void*);
+extern int cc_printf_1(const char*); extern int cc_printf_2(unsigned int,const char*);
+extern int cc_printf_3(unsigned int,unsigned int,const char*); extern int cc_printf_4(unsigned int,unsigned int,unsigned int,const char*);
+extern int cc_printf_5(unsigned int,unsigned int,unsigned int,unsigned int,const char*);
+extern int cc_printf_6(unsigned int,unsigned int,unsigned int,unsigned int,unsigned int,const char*);
+extern int cc_printf_7(unsigned int,unsigned int,unsigned int,unsigned int,unsigned int,unsigned int,const char*);
+extern int cc_printf_8(unsigned int,unsigned int,unsigned int,unsigned int,unsigned int,unsigned int,unsigned int,const char*);
+extern int cc_printf_9(unsigned int,unsigned int,unsigned int,unsigned int,unsigned int,unsigned int,unsigned int,unsigned int,const char*);
+extern int cc_scanf_2(unsigned int,const char*);
 
 // ------------------------------------------------------------
 // Code buffer
@@ -581,7 +593,7 @@ static void parse_call_args_and_call(func_t* fn, const char* builtin_name) {
     if (cur_tok.type != T_RPAREN) {
         // We must push args in reverse order for our calling convention,
         // but we only get to parse them left-to-right (single pass), and
-        // print_str needs special literal handling. To keep this simple
+        // String arguments are handled by the normal expression machinery.
         // and correct without buffering, we evaluate left-to-right but
         // push immediately, then before the call we've pushed in
         // left-to-right order onto a LIFO stack, which is backwards from
@@ -614,74 +626,119 @@ static void parse_call_args_and_call(func_t* fn, const char* builtin_name) {
         uint32_t target = 0;
         int returns_value = 1;
 
-        if (str_eq(builtin_name, "putchar") || str_eq(builtin_name, "print_int") ||
-            str_eq(builtin_name, "print_hex") || str_eq(builtin_name, "print_str") ||
-            str_eq(builtin_name, "print") ||
-            str_eq(builtin_name, "getchar") || str_eq(builtin_name, "strlen") ||
-            str_eq(builtin_name, "atoi") || str_eq(builtin_name, "abs")) expected = 1;
-        else if (str_eq(builtin_name, "getchar") ||
-                 str_eq(builtin_name, "read_int") ||
-                 str_eq(builtin_name, "clear_screen")) expected = 0;
-        else if (str_eq(builtin_name, "read_line")) expected = 2;
-        else if (str_eq(builtin_name, "strcmp")) expected = 2;
-        else if (str_eq(builtin_name, "strcpy")) expected = 2;
-        else if (str_eq(builtin_name, "memset") || str_eq(builtin_name, "memcpy") ||
-                 str_eq(builtin_name, "min") || str_eq(builtin_name, "max")) expected = 3;
-        else if (str_eq(builtin_name, "sleep_ms")) expected = 1;
+        if (str_eq(builtin_name, "printf")) expected = argc;
+        else if (str_eq(builtin_name, "scanf")) expected = 2;
+        else if (str_eq(builtin_name, "putchar") || str_eq(builtin_name, "strlen") ||
+            str_eq(builtin_name, "atoi") || str_eq(builtin_name, "abs") ||
+            str_eq(builtin_name, "rand") || str_eq(builtin_name, "getchar") ||
+            str_eq(builtin_name, "puts") || str_eq(builtin_name, "isdigit") ||
+            str_eq(builtin_name, "isalpha") || str_eq(builtin_name, "isalnum") ||
+            str_eq(builtin_name, "islower") || str_eq(builtin_name, "isupper") ||
+            str_eq(builtin_name, "isspace") || str_eq(builtin_name, "isxdigit") ||
+            str_eq(builtin_name, "tolower") || str_eq(builtin_name, "toupper")) expected = 1;
+        else if (str_eq(builtin_name, "srand")) expected = 1;
+        else if (str_eq(builtin_name, "clear_screen")) expected = 0;
+        else if (str_eq(builtin_name, "strcmp") || str_eq(builtin_name, "strcpy") ||
+                 str_eq(builtin_name, "strcat") || str_eq(builtin_name, "strchr") ||
+                 str_eq(builtin_name, "strrchr") || str_eq(builtin_name, "strstr")) expected = 2;
+        else if (str_eq(builtin_name, "strncmp") || str_eq(builtin_name, "strncpy") ||
+                 str_eq(builtin_name, "memset") || str_eq(builtin_name, "memcpy") ||
+                 str_eq(builtin_name, "memmove") || str_eq(builtin_name, "memcmp")) expected = 3;
+        else if (str_eq(builtin_name, "cmd_c") || str_eq(builtin_name, "cmd_cat") ||
+                 str_eq(builtin_name, "cmd_cd") || str_eq(builtin_name, "cmd_clear") ||
+                 str_eq(builtin_name, "cmd_cp") || str_eq(builtin_name, "cmd_datareset") ||
+                 str_eq(builtin_name, "cmd_echo") || str_eq(builtin_name, "cmd_editor") ||
+                 str_eq(builtin_name, "cmd_exec") || str_eq(builtin_name, "cmd_grep") ||
+                 str_eq(builtin_name, "cmd_help") || str_eq(builtin_name, "cmd_ls") ||
+                 str_eq(builtin_name, "cmd_mkdir") || str_eq(builtin_name, "cmd_mv") ||
+                 str_eq(builtin_name, "cmd_pwd") || str_eq(builtin_name, "cmd_reboot") ||
+                 str_eq(builtin_name, "cmd_rm") || str_eq(builtin_name, "cmd_rmdir") ||
+                 str_eq(builtin_name, "cmd_sync") || str_eq(builtin_name, "cmd_touch") ||
+                 str_eq(builtin_name, "cmd_uptime") || str_eq(builtin_name, "cmd_exit") ||
+                 str_eq(builtin_name, "cmd_hostname")) expected = 1;
 
-        if (argc != expected) {
+        if (str_eq(builtin_name, "printf")) {
+            if (argc < 1 || argc > 9) { cc_seterr(cur_tok.line, "printf supports 1 to 9 arguments"); return; }
+        } else if (argc != expected) {
             cc_seterr(cur_tok.line, "wrong number of arguments to builtin");
             return;
         }
 
-        if (str_eq(builtin_name, "putchar")) target = (uint32_t)(void*)putc;
-        else if (str_eq(builtin_name, "print_int")) {
-            extern void cc_print_int(int32_t n);
-            target = (uint32_t)(void*)cc_print_int;
-        } else if (str_eq(builtin_name, "print_hex")) {
-            extern void cc_print_hex(uint32_t n);
-            target = (uint32_t)(void*)cc_print_hex;
-        } else if (str_eq(builtin_name, "print_str") || str_eq(builtin_name, "print")) {
-            target = (uint32_t)(void*)print;
-        } else if (str_eq(builtin_name, "getchar")) {
-            target = (uint32_t)(void*)get_key;
-        } else if (str_eq(builtin_name, "read_line")) {
-            target = (uint32_t)(void*)read_line;
-            returns_value = 0;
-        } else if (str_eq(builtin_name, "read_int")) {
-            target = (uint32_t)(void*)read_int;
-        } else if (str_eq(builtin_name, "strlen")) {
-            extern int cc_strlen(const char* s);
-            target = (uint32_t)(void*)cc_strlen;
-        } else if (str_eq(builtin_name, "strcmp")) {
-            extern int cc_strcmp(const char* a, const char* b);
-            target = (uint32_t)(void*)cc_strcmp;
-        } else if (str_eq(builtin_name, "strcpy")) {
-            extern char* cc_strcpy(char* dst, const char* src);
-            target = (uint32_t)(void*)cc_strcpy;
-        } else if (str_eq(builtin_name, "memset")) {
-            extern void* cc_memset(void* dst, int value, int count);
-            target = (uint32_t)(void*)cc_memset;
-        } else if (str_eq(builtin_name, "memcpy")) {
-            extern void* cc_memcpy(void* dst, const void* src, int count);
-            target = (uint32_t)(void*)cc_memcpy;
-        } else if (str_eq(builtin_name, "atoi")) {
-            extern int cc_atoi(const char* s);
-            target = (uint32_t)(void*)cc_atoi;
-        } else if (str_eq(builtin_name, "abs")) {
-            extern int cc_abs(int n);
-            target = (uint32_t)(void*)cc_abs;
-        } else if (str_eq(builtin_name, "min")) {
-            extern int cc_min(int a, int b);
-            target = (uint32_t)(void*)cc_min;
-        } else if (str_eq(builtin_name, "max")) {
-            extern int cc_max(int a, int b);
-            target = (uint32_t)(void*)cc_max;
-        } else if (str_eq(builtin_name, "clear_screen")) {
-            target = (uint32_t)(void*)clear_screen;
-            returns_value = 0;
-        } else if (str_eq(builtin_name, "sleep_ms")) {
-            target = (uint32_t)(void*)timer_delay_ms;
+        if (str_eq(builtin_name, "printf")) {
+            if (argc == 1) target=(uint32_t)(void*)cc_printf_1;
+            else if (argc == 2) target=(uint32_t)(void*)cc_printf_2;
+            else if (argc == 3) target=(uint32_t)(void*)cc_printf_3;
+            else if (argc == 4) target=(uint32_t)(void*)cc_printf_4;
+            else if (argc == 5) target=(uint32_t)(void*)cc_printf_5;
+            else if (argc == 6) target=(uint32_t)(void*)cc_printf_6;
+            else if (argc == 7) target=(uint32_t)(void*)cc_printf_7;
+            else if (argc == 8) target=(uint32_t)(void*)cc_printf_8;
+            else target=(uint32_t)(void*)cc_printf_9;
+        } else if (str_eq(builtin_name, "scanf")) target=(uint32_t)(void*)cc_scanf_2;
+        else if (str_eq(builtin_name, "putchar")) target = (uint32_t)(void*)putchar;
+        else if (str_eq(builtin_name, "getchar")) target = (uint32_t)(void*)getchar;
+        else if (str_eq(builtin_name, "puts")) target = (uint32_t)(void*)puts;
+        else if (str_eq(builtin_name, "clear_screen")) { target = (uint32_t)(void*)clear_screen; returns_value = 0; }
+        else if (str_eq(builtin_name, "strlen")) target = (uint32_t)(void*)strlen;
+        else if (str_eq(builtin_name, "strcmp")) target = (uint32_t)(void*)cc_strcmp_bridge;
+        else if (str_eq(builtin_name, "strncmp")) target = (uint32_t)(void*)cc_strncmp_bridge;
+        else if (str_eq(builtin_name, "strcpy")) target = (uint32_t)(void*)cc_strcpy_bridge;
+        else if (str_eq(builtin_name, "strncpy")) target = (uint32_t)(void*)cc_strncpy_bridge;
+        else if (str_eq(builtin_name, "strcat")) target = (uint32_t)(void*)cc_strcat_bridge;
+        else if (str_eq(builtin_name, "strchr")) target = (uint32_t)(void*)cc_strchr_bridge;
+        else if (str_eq(builtin_name, "strrchr")) target = (uint32_t)(void*)cc_strrchr_bridge;
+        else if (str_eq(builtin_name, "strstr")) target = (uint32_t)(void*)cc_strstr_bridge;
+        else if (str_eq(builtin_name, "memset")) target = (uint32_t)(void*)cc_memset_bridge;
+        else if (str_eq(builtin_name, "memcpy")) target = (uint32_t)(void*)cc_memcpy_bridge;
+        else if (str_eq(builtin_name, "memmove")) target = (uint32_t)(void*)cc_memmove_bridge;
+        else if (str_eq(builtin_name, "memcmp")) target = (uint32_t)(void*)cc_memcmp_bridge;
+        else if (str_eq(builtin_name, "atoi")) target = (uint32_t)(void*)atoi;
+        else if (str_eq(builtin_name, "abs")) target = (uint32_t)(void*)abs;
+        else if (str_eq(builtin_name, "rand")) target = (uint32_t)(void*)rand;
+        else if (str_eq(builtin_name, "srand")) { target = (uint32_t)(void*)srand; returns_value = 0; }
+        else if (str_eq(builtin_name, "isdigit")) target = (uint32_t)(void*)isdigit;
+        else if (str_eq(builtin_name, "isalpha")) target = (uint32_t)(void*)isalpha;
+        else if (str_eq(builtin_name, "isalnum")) target = (uint32_t)(void*)isalnum;
+        else if (str_eq(builtin_name, "islower")) target = (uint32_t)(void*)islower;
+        else if (str_eq(builtin_name, "isupper")) target = (uint32_t)(void*)isupper;
+        else if (str_eq(builtin_name, "isspace")) target = (uint32_t)(void*)isspace;
+        else if (str_eq(builtin_name, "isxdigit")) target = (uint32_t)(void*)isxdigit;
+        else if (str_eq(builtin_name, "tolower")) target = (uint32_t)(void*)tolower;
+        else if (str_eq(builtin_name, "toupper")) target = (uint32_t)(void*)toupper;
+        else {
+            /* TanjaOS-specific command API: these are deliberately the
+             * only non-standard C names exposed by the builtin library. */
+            extern void cmd_c(char*); extern void cmd_cat(char*); extern void cmd_cd(char*);
+            extern void cmd_clear(char*); extern void cmd_cp(char*); extern void cmd_datareset(char*);
+            extern void cmd_echo(char*); extern void cmd_editor(char*); extern void cmd_exec(char*);
+            extern void cmd_grep(char*); extern void cmd_help(char*); extern void cmd_ls(char*);
+            extern void cmd_mkdir(char*); extern void cmd_mv(char*); extern void cmd_pwd(char*);
+            extern void cmd_reboot(char*); extern void cmd_rm(char*); extern void cmd_rmdir(char*);
+            extern void cmd_sync(char*); extern void cmd_touch(char*); extern void cmd_uptime(char*);
+            extern void cmd_exit(char*); extern void cmd_hostname(char*);
+            if (str_eq(builtin_name,"cmd_c")) target=(uint32_t)(void*)cmd_c;
+            else if (str_eq(builtin_name,"cmd_cat")) target=(uint32_t)(void*)cmd_cat;
+            else if (str_eq(builtin_name,"cmd_cd")) target=(uint32_t)(void*)cmd_cd;
+            else if (str_eq(builtin_name,"cmd_clear")) target=(uint32_t)(void*)cmd_clear;
+            else if (str_eq(builtin_name,"cmd_cp")) target=(uint32_t)(void*)cmd_cp;
+            else if (str_eq(builtin_name,"cmd_datareset")) target=(uint32_t)(void*)cmd_datareset;
+            else if (str_eq(builtin_name,"cmd_echo")) target=(uint32_t)(void*)cmd_echo;
+            else if (str_eq(builtin_name,"cmd_editor")) target=(uint32_t)(void*)cmd_editor;
+            else if (str_eq(builtin_name,"cmd_exec")) target=(uint32_t)(void*)cmd_exec;
+            else if (str_eq(builtin_name,"cmd_grep")) target=(uint32_t)(void*)cmd_grep;
+            else if (str_eq(builtin_name,"cmd_help")) target=(uint32_t)(void*)cmd_help;
+            else if (str_eq(builtin_name,"cmd_ls")) target=(uint32_t)(void*)cmd_ls;
+            else if (str_eq(builtin_name,"cmd_mkdir")) target=(uint32_t)(void*)cmd_mkdir;
+            else if (str_eq(builtin_name,"cmd_mv")) target=(uint32_t)(void*)cmd_mv;
+            else if (str_eq(builtin_name,"cmd_pwd")) target=(uint32_t)(void*)cmd_pwd;
+            else if (str_eq(builtin_name,"cmd_reboot")) target=(uint32_t)(void*)cmd_reboot;
+            else if (str_eq(builtin_name,"cmd_rm")) target=(uint32_t)(void*)cmd_rm;
+            else if (str_eq(builtin_name,"cmd_rmdir")) target=(uint32_t)(void*)cmd_rmdir;
+            else if (str_eq(builtin_name,"cmd_sync")) target=(uint32_t)(void*)cmd_sync;
+            else if (str_eq(builtin_name,"cmd_touch")) target=(uint32_t)(void*)cmd_touch;
+            else if (str_eq(builtin_name,"cmd_uptime")) target=(uint32_t)(void*)cmd_uptime;
+            else if (str_eq(builtin_name,"cmd_exit")) target=(uint32_t)(void*)cmd_exit;
+            else if (str_eq(builtin_name,"cmd_hostname")) target=(uint32_t)(void*)cmd_hostname;
             returns_value = 0;
         }
 
@@ -797,16 +854,34 @@ static void parse_primary(void) {
             func_t* fn = find_func(name);
             const char* builtin = 0;
             if (!fn) {
-                if (str_eq(name, "putchar") || str_eq(name, "print_int") ||
-                    str_eq(name, "print_hex") || str_eq(name, "print_str") ||
-                    str_eq(name, "print") || str_eq(name, "getchar") ||
-                    str_eq(name, "read_line") || str_eq(name, "read_int") ||
-                    str_eq(name, "clear_screen") || str_eq(name, "sleep_ms") ||
-                    str_eq(name, "strlen") || str_eq(name, "strcmp") ||
-                    str_eq(name, "strcpy") || str_eq(name, "memset") ||
-                    str_eq(name, "memcpy") || str_eq(name, "atoi") ||
-                    str_eq(name, "abs") || str_eq(name, "min") ||
-                    str_eq(name, "max")) builtin = name;
+                if (str_eq(name, "printf") || str_eq(name, "scanf") ||
+                    str_eq(name, "putchar") || str_eq(name, "getchar") ||
+                    str_eq(name, "puts") || str_eq(name, "strlen") ||
+                    str_eq(name, "strcmp") || str_eq(name, "strncmp") ||
+                    str_eq(name, "strcpy") || str_eq(name, "strncpy") ||
+                    str_eq(name, "strcat") || str_eq(name, "strchr") ||
+                    str_eq(name, "strrchr") || str_eq(name, "strstr") ||
+                    str_eq(name, "memset") || str_eq(name, "memcpy") ||
+                    str_eq(name, "memmove") || str_eq(name, "memcmp") ||
+                    str_eq(name, "atoi") || str_eq(name, "abs") ||
+                    str_eq(name, "rand") || str_eq(name, "srand") ||
+                    str_eq(name, "isdigit") || str_eq(name, "isalpha") ||
+                    str_eq(name, "isalnum") || str_eq(name, "islower") ||
+                    str_eq(name, "isupper") || str_eq(name, "isspace") ||
+                    str_eq(name, "isxdigit") || str_eq(name, "tolower") ||
+                    str_eq(name, "toupper") || str_eq(name, "clear_screen") ||
+                    str_eq(name, "cmd_c") || str_eq(name, "cmd_cat") ||
+                    str_eq(name, "cmd_cd") || str_eq(name, "cmd_clear") ||
+                    str_eq(name, "cmd_cp") || str_eq(name, "cmd_datareset") ||
+                    str_eq(name, "cmd_echo") || str_eq(name, "cmd_editor") ||
+                    str_eq(name, "cmd_exec") || str_eq(name, "cmd_grep") ||
+                    str_eq(name, "cmd_help") || str_eq(name, "cmd_ls") ||
+                    str_eq(name, "cmd_mkdir") || str_eq(name, "cmd_mv") ||
+                    str_eq(name, "cmd_pwd") || str_eq(name, "cmd_reboot") ||
+                    str_eq(name, "cmd_rm") || str_eq(name, "cmd_rmdir") ||
+                    str_eq(name, "cmd_sync") || str_eq(name, "cmd_touch") ||
+                    str_eq(name, "cmd_uptime") || str_eq(name, "cmd_exit") ||
+                    str_eq(name, "cmd_hostname")) builtin = name;
                 else { cc_seterr(line, "call to undefined function"); return; }
             }
             parse_call_args_and_call(fn, builtin);
@@ -1597,15 +1672,6 @@ static void parse_program(void) {
 // ------------------------------------------------------------
 // Builtin runtime helpers (called directly from generated code)
 // ------------------------------------------------------------
-
-void cc_print_int(int32_t n) {
-    if (n < 0) { putc('-'); n = -n; }
-    print_dec((uint32_t)n);
-}
-
-void cc_print_hex(uint32_t n) {
-    print_hex(n);
-}
 
 static int cc_bin_magic_ok(const uint8_t* image, unsigned int len) {
     return image && len >= TJBIN_HEADER_SIZE &&
