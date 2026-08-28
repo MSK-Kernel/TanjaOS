@@ -18,6 +18,30 @@ extern void list_commands(void);
 extern uint8_t inb(uint16_t port);
 extern void outb(uint16_t port, uint8_t val);
 
+// Timing (see kernel/kernel.c - PIT-driven, hlt-based, doesn't busy-spin)
+extern uint32_t get_uptime_ms(void);
+extern void timer_delay_ms(uint32_t ms);
+
+// Shell environment variables ($VAR expansion happens in execute_command
+// before a command's args are handed to it; `read` is the exception,
+// since it needs the literal variable name rather than its expansion)
+extern void set_env(const char* name, const char* value);
+extern const char* get_env(const char* name);
+
+// String/number helpers already implemented in kernel/kernel.c
+extern int strlen(const char* s);
+extern char* strcpy(char* dst, const char* src);
+extern char* strncpy(char* dst, const char* src, unsigned int n);
+extern int streq(const char* a, const char* b);
+extern int atoi(const char* s);
+extern void print_dec(uint32_t n);
+
+// Extended key codes returned by get_key() - must match kernel/kernel.c
+#define KEY_LEFT      0x82
+#define KEY_RIGHT     0x83
+#define KEY_ENTER     0x84
+#define KEY_BACKSPACE 0x85
+
 // VGA text-mode colors (attribute already shifted into the high byte,
 // same convention as VGA_COLOR in kernel.c: (fg << 8) with black bg).
 #define COLOR_WHITE       (0x0F << 8) // normal files

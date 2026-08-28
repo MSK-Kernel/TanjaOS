@@ -317,7 +317,10 @@ char keymap_caps[128] = {
 
 int get_key() {
     while (1) {
-        if (!(inb(0x64) & 1)) continue;
+        if (!(inb(0x64) & 1)) {
+            asm volatile ("hlt");
+            continue;
+        }
         uint8_t sc = inb(0x60);
         if (sc == 0x2A || sc == 0x36) { shift = 1; continue; }
         if (sc == 0x1D) { ctrl = 1; continue; }
@@ -927,6 +930,95 @@ static int execute_c_style_command(const char* line) {
     return 0;
 }
 
+// ============================================================
+// SHELL ENVIRONMENT VARIABLES ($VAR expansion for scripts)
+// ============================================================
+
+#define MAX_ENV_VARS 32
+#define ENV_NAME_LEN 32
+#define ENV_VALUE_LEN 256
+
+typedef struct {
+    char name[ENV_NAME_LEN];
+    char value[ENV_VALUE_LEN];
+    int used;
+} EnvVar;
+
+static EnvVar env_vars[MAX_ENV_VARS];
+
+// Sets (or creates) a shell variable. Used by `read` to store what the
+// user typed, so a later `$NAME` in the script expands to it.
+void set_env(const char* name, const char* value) {
+    if (!name || !*name) return;
+
+    for (int i = 0; i < MAX_ENV_VARS; i++) {
+        if (env_vars[i].used && streq(env_vars[i].name, name)) {
+            strncpy(env_vars[i].value, value ? value : "", ENV_VALUE_LEN - 1);
+            env_vars[i].value[ENV_VALUE_LEN - 1] = 0;
+            return;
+        }
+    }
+
+    for (int i = 0; i < MAX_ENV_VARS; i++) {
+        if (!env_vars[i].used) {
+            env_vars[i].used = 1;
+            strncpy(env_vars[i].name, name, ENV_NAME_LEN - 1);
+            env_vars[i].name[ENV_NAME_LEN - 1] = 0;
+            strncpy(env_vars[i].value, value ? value : "", ENV_VALUE_LEN - 1);
+            env_vars[i].value[ENV_VALUE_LEN - 1] = 0;
+            return;
+        }
+    }
+    // Out of variable slots - silently drop, same spirit as running out
+    // of shell memory on a real system.
+}
+
+// Unset variables expand to "" (empty string), same as a POSIX shell.
+const char* get_env(const char* name) {
+    if (!name || !*name) return "";
+    for (int i = 0; i < MAX_ENV_VARS; i++) {
+        if (env_vars[i].used && streq(env_vars[i].name, name))
+            return env_vars[i].value;
+    }
+    return "";
+}
+
+// Expands $VAR and ${VAR} references found in `in`, writing the result
+// into `out` (which must be at least outsize bytes). A '$' not followed
+// by a valid identifier or '{' is copied through literally.
+void expand_vars(const char* in, char* out, int outsize) {
+    int oi = 0;
+    if (!in) { if (outsize > 0) out[0] = 0; return; }
+
+    while (*in && oi < outsize - 1) {
+        if (*in == '$' && (isalpha((unsigned char)in[1]) || in[1] == '_')) {
+            in++;
+            char varname[ENV_NAME_LEN];
+            int vi = 0;
+            while ((isalnum((unsigned char)*in) || *in == '_') && vi < ENV_NAME_LEN - 1)
+                varname[vi++] = *in++;
+            varname[vi] = 0;
+
+            const char* val = get_env(varname);
+            while (*val && oi < outsize - 1) out[oi++] = *val++;
+        } else if (*in == '$' && in[1] == '{') {
+            in += 2;
+            char varname[ENV_NAME_LEN];
+            int vi = 0;
+            while (*in && *in != '}' && vi < ENV_NAME_LEN - 1)
+                varname[vi++] = *in++;
+            varname[vi] = 0;
+            if (*in == '}') in++;
+
+            const char* val = get_env(varname);
+            while (*val && oi < outsize - 1) out[oi++] = *val++;
+        } else {
+            out[oi++] = *in++;
+        }
+    }
+    out[oi] = 0;
+}
+
 void execute_command(const char* cmd_line) {
 
     while (*cmd_line == ' ')
@@ -950,6 +1042,15 @@ void execute_command(const char* cmd_line) {
     while (*args == ' ')
         args++;
 
+    // `read NAME` (or `read $NAME`) needs the literal variable name to
+    // fill in, so it's the one command that opts out of $VAR expansion.
+    static char expanded_args[512];
+    const char* final_args = args;
+    if (!streq(cmd_name, "read")) {
+        expand_vars(args, expanded_args, sizeof(expanded_args));
+        final_args = expanded_args;
+    }
+
     Command* cmd = cmd_table;
 
     while (cmd) {
@@ -970,7 +1071,7 @@ void execute_command(const char* cmd_line) {
         }
 
         if (match && *a == 0 && *b == 0) {
-            cmd->func((char*)args);
+            cmd->func((char*)final_args);
             return;
         }
 
