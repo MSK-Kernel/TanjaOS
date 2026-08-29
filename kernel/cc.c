@@ -33,8 +33,6 @@ extern int isxdigit(int c);
 extern int tolower(int c);
 extern int toupper(int c);
 extern void clear_screen(void);
-/* Kernel-internal output used by the compiler itself; these are NOT exposed
- * as C built-ins to TanjaOS programs. */
 extern void print(const char* s);
 extern void print_dec(uint32_t n);
 extern int cc_strcmp_bridge(const char*, const char*);
@@ -58,17 +56,6 @@ extern int cc_printf_8(unsigned int,unsigned int,unsigned int,unsigned int,unsig
 extern int cc_printf_9(unsigned int,unsigned int,unsigned int,unsigned int,unsigned int,unsigned int,unsigned int,unsigned int,const char*);
 extern int cc_scanf_2(unsigned int,const char*);
 
-/* ------------------------------------------------------------------
- * C standard-library compatibility layer
- *
- * These implementations are deliberately kept inside the compiler
- * runtime because TanjaOS C programs do not have a conventional libc
- * linker.  Only functions that have a real implementation are exposed
- * below.  Floating-point and FILE/locale/threads APIs are not advertised
- * until the compiler has the type/runtime support needed to implement
- * their actual C semantics.
- * ------------------------------------------------------------------ */
-
 #define CC_HEAP_SIZE 65536
 static uint8_t cc_heap[CC_HEAP_SIZE];
 static uint32_t cc_heap_pos;
@@ -83,15 +70,12 @@ static void* cc_malloc(unsigned int n) {
     total = n + 8;
     if (pos + total > CC_HEAP_SIZE) return (void*)0;
     *(uint32_t*)(void*)(cc_heap + pos) = n;
-    *(uint32_t*)(void*)(cc_heap + pos + 4) = 0x434D414Cull; /* CMAL */
+    *(uint32_t*)(void*)(cc_heap + pos + 4) = 0x434D414Cull;
     cc_heap_pos = pos + total;
     return (void*)(cc_heap + pos + 8);
 }
 
 static void cc_free(void* p) {
-    /* The kernel heap is a monotonic arena.  Individual blocks are not
-       returned to the arena, but free is a real, safe no-op for this
-       runtime. */
     (void)p;
 }
 
@@ -306,7 +290,7 @@ typedef struct {
     int32_t ival;
     char sval[256];
     int line;
-    uint32_t start_pos; // byte offset in source where this token began
+    uint32_t start_pos;
 } token_t;
 
 static const char* src;
@@ -314,7 +298,7 @@ static uint32_t src_len;
 static uint32_t src_pos;
 static int cur_line;
 static token_t cur_tok;
-static uint32_t token_count; // safety net against pathological input
+static uint32_t token_count;
 
 static int str_eq(const char* a, const char* b) {
     int i = 0;

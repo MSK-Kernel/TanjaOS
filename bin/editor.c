@@ -17,6 +17,8 @@
 #define EDITOR_ROWS (EDITOR_BOTTOM_ROW - EDITOR_TOP_ROW + 1)
 #define EDITOR_COLS 80
 #define TAB_WIDTH 4
+#define VGA_HEIGHT 25
+#define VGA_TOTAL_CELLS (EDITOR_COLS * VGA_HEIGHT)
 
 extern void print(const char*);
 extern void clear_screen(void);
@@ -280,6 +282,7 @@ static void insert_byte(char *text, int *pos, char ch)
 
 static void insert_wrapped(char *text, int *pos, char ch)
 {
+
     insert_byte(text, pos, ch);
 }
 
@@ -343,6 +346,11 @@ void cmd_editor(char *args)
     int pos = strlen_editor(text);
     int scroll_line = 0;
 
+    uint16_t saved_screen[VGA_TOTAL_CELLS];
+    for (int i = 0; i < VGA_TOTAL_CELLS; i++)
+        saved_screen[i] = VGA[i];
+    int saved_cursor = cursor;
+
     while (1) {
         ensure_visible(text, pos, &scroll_line);
         draw_editor(text, pos, scroll_line);
@@ -351,8 +359,10 @@ void cmd_editor(char *args)
 
         if (key == CTRL_X) {
             fs_write_file(args, text, strlen_editor(text));
-            clear_screen();
-            print("\n");
+            for (int i = 0; i < VGA_TOTAL_CELLS; i++)
+                VGA[i] = saved_screen[i];
+            cursor = saved_cursor;
+            sync_cursor();
             return;
         }
 

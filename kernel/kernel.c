@@ -63,6 +63,10 @@ user_config_t config = { .is_setup = 0 };
 
 int shell_exit_flag = 0;
 
+// Packs/unpacks `config` (login + hostname) into a flat blob so
+// store.c can save it alongside the filesystem, letting the setup
+// wizard's "create a login" step actually stick across reboots
+// instead of running every single boot.
 uint32_t config_store_size(void) {
     return MAX_USERNAME + MAX_PASSWORD + MAX_HOSTNAME + 1; // +1 for is_setup
 }
@@ -89,6 +93,8 @@ int config_deserialize(const uint8_t* buf, uint32_t buf_size) {
     return 0;
 }
 
+// Reset the account configuration to the same state as a fresh install.
+// This deliberately clears all fields and marks setup as incomplete.
 void config_reset(void) {
     int i;
     for (i = 0; i < MAX_USERNAME; i++) config.username[i] = 0;
@@ -107,6 +113,9 @@ void outb(uint16_t port, uint8_t val) {
 
 void timer_init()
 {
+    // PIT channel 0, rate generator mode, ~1000Hz (~1ms per tick).
+    // idt_init() is what actually turns these ticks into a counted
+    // value via IRQ0 - this alone just sets the rate.
     outb(0x43, 0x34);
 
     uint16_t divisor = 1193180 / 1000; // ~1ms ticks
@@ -119,7 +128,7 @@ void timer_delay_ms(uint32_t ms)
 {
     uint32_t start = get_uptime_ms();
     while (get_uptime_ms() - start < ms) {
-        asm volatile("hlt");
+        asm volatile("hlt"); // sleep until the next interrupt (IRQ0 wakes us every ~1ms)
     }
 }
 
@@ -199,6 +208,7 @@ void putc(char c) {
     putc_color(c, VGA_COLOR);
 }
 
+/* ISO C-style console functions exposed to TanjaOS C programs. */
 int get_key(void);
 int putchar(int c) { putc((char)c); return c; }
 int getchar(void) { return get_key(); }
@@ -847,79 +857,6 @@ void list_commands(void) {
 
 extern int exec_file(const char* path);
 
-void cmd_exit(char* args);
-
-/* Interactive-only C-style command calls.
- * Examples: cmd_mkdir("games");  cmd_ls("");  clear_screen();
- * These are deliberately NOT used by exec_file(), so shell scripts keep
- * their normal line-oriented shell syntax. */
-static int execute_c_style_command(const char* line) {
-    int len = 0;
-    while (line[len]) len++;
-    if (len < 4 || line[len - 1] != ';') return 0;
-
-    int p = 0;
-    while (line[p] == ' ' || line[p] == '\t') p++;
-    char name[40];
-    int n = 0;
-    while (line[p] && line[p] != '(' && n < 39) name[n++] = line[p++];
-    name[n] = 0;
-    if (!line[p] || line[len - 1] != ';') return 0;
-    if (p == 0 || line[p] != '(') return 0;
-
-    /* Only accept identifiers and C-style calls; ordinary shell commands
-     * still go through the normal command table. */
-    for (int i = 0; name[i]; i++)
-        if (!((name[i] >= 'a' && name[i] <= 'z') ||
-              (name[i] >= 'A' && name[i] <= 'Z') ||
-              (name[i] >= '0' && name[i] <= '9') || name[i] == '_'))
-            return 0;
-
-    p++;
-    while (line[p] == ' ' || line[p] == '\t') p++;
-
-    char args[256];
-    int a = 0;
-    if (line[p] == ')') {
-        p++;
-    } else if (line[p] == '"') {
-        p++;
-        while (line[p] && line[p] != '"' && a < 255) {
-            if (line[p] == '\\' && line[p+1]) {
-                p++;
-                if (line[p] == 'n') args[a++] = '\n';
-                else if (line[p] == 't') args[a++] = '\t';
-                else args[a++] = line[p];
-                p++;
-            } else args[a++] = line[p++];
-        }
-        if (line[p] != '"') return 0;
-        p++;
-        while (line[p] == ' ' || line[p] == '\t') p++;
-        if (line[p] != ')') return 0;
-        p++;
-    } else {
-        return 0;
-    }
-
-    while (line[p] == ' ' || line[p] == '\t') p++;
-    if (line[p] != ';' || line[p+1] != 0) return 0;
-    args[a] = 0;
-
-    if (streq(name, "clear_screen")) { clear_screen(); return 1; }
-    if (streq(name, "print")) { print(args); return 1; }
-    if (streq(name, "puts")) { puts(args); return 1; }
-    if (streq(name, "cmd_exit")) { cmd_exit(args); return 1; }
-    if (name[0]=='c' && name[1]=='m' && name[2]=='d' && name[3]=='_') {
-        Command* cmd = cmd_table;
-        while (cmd) {
-            if (streq(cmd->name, name + 4)) { cmd->func(args); return 1; }
-            cmd = cmd->next;
-        }
-    }
-    return 0;
-}
-
 // ============================================================
 // SHELL ENVIRONMENT VARIABLES ($VAR expansion for scripts)
 // ============================================================
@@ -1129,11 +1066,6 @@ void print_prompt_path() {
     }
 }
 
-static void execute_interactive_command(const char* cmd_line) {
-    if (execute_c_style_command(cmd_line)) return;
-    execute_command(cmd_line);
-}
-
 void shell() {
     shell_exit_flag = 0; char buf[4096];
     while (1) {
@@ -1141,7 +1073,7 @@ void shell() {
         print_prompt_path();
         print("$ ");
         read_line(buf, 4096); clean(buf);
-        if (buf[0]) execute_interactive_command(buf);
+        if (buf[0]) execute_command(buf);
         if (shell_exit_flag) { clear_screen(); break; }
     }
 }
