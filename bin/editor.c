@@ -104,7 +104,6 @@ static int snap_to_tab_stop(const char *text, int pos)
     int start = line_start(text, pos);
     int col = visual_col(text, pos);
 
-    /* Check if target area is purely spaces */
     int all_spaces = 1;
     for (int i = start; i < pos; i++) {
         if (text[i] != ' ') {
@@ -160,6 +159,12 @@ static int line_start_number(const char *text, int wanted)
     return i;
 }
 
+static int visual_rows_of_line(const char *text, int ls)
+{
+    int width = visual_col(text, line_end(text, ls));
+    return width / EDITOR_COLS + 1;
+}
+
 static void draw_editor(const char *text, int pos, int scroll_line)
 {
     clear_screen();
@@ -170,77 +175,56 @@ static void draw_editor(const char *text, int pos, int scroll_line)
 
     int line = scroll_line;
     int start = line_start_number(text, line);
-    int current_line = line_number_at(text, pos);
     int screen_row = EDITOR_TOP_ROW;
 
     while (screen_row <= EDITOR_BOTTOM_ROW) {
-        int i = start;
-        int col = 0;
+        int j = start;
 
-        if (!text[i] && line != current_line)
+        do {
+            int col = 0;
+            while (text[j] && text[j] != '\n' && col < EDITOR_COLS) {
+                if (text[j] == '\t') {
+                    int width = TAB_WIDTH - (col % TAB_WIDTH);
+                    for (int k = 0; k < width && col < EDITOR_COLS; k++) {
+                        VGA[screen_row * EDITOR_COLS + col] = VGA_COLOR | ' ';
+                        col++;
+                    }
+                } else {
+                    VGA[screen_row * EDITOR_COLS + col] = VGA_COLOR | (uint8_t)text[j];
+                    col++;
+                }
+                j++;
+            }
+            while (col < EDITOR_COLS) {
+                VGA[screen_row * EDITOR_COLS + col] = VGA_COLOR | ' ';
+                col++;
+            }
+            screen_row++;
+        } while (text[j] && text[j] != '\n' && screen_row <= EDITOR_BOTTOM_ROW);
+
+        if (!text[j])
             break;
-
-        while (i < MAX_TEXT && text[i] && text[i] != '\n') {
-            if (text[i] == '\t') {
-                int width = TAB_WIDTH - (col % TAB_WIDTH);
-                for (int k = 0; k < width && col < EDITOR_COLS; k++) {
-                    VGA[screen_row * EDITOR_COLS + col] = VGA_COLOR | ' ';
-                    col++;
-                }
-            } else {
-                if (col < EDITOR_COLS) {
-                    VGA[screen_row * EDITOR_COLS + col] = VGA_COLOR | (uint8_t)text[i];
-                    col++;
-                }
-            }
-            i++;
-            if (col >= EDITOR_COLS) break;
-        }
-
-        while (col < EDITOR_COLS) {
-            VGA[screen_row * EDITOR_COLS + col] = VGA_COLOR | ' ';
-            col++;
-        }
-
-        if (line == current_line) {
-            int c = visual_col(text, pos);
-            int line_offset = c / EDITOR_COLS;
-            int col_offset = c % EDITOR_COLS;
-
-            if (col_offset == 0 && line_offset > 0) {
-                line_offset--;
-                col_offset = EDITOR_COLS - 1;
-            }
-
-            int final_row = screen_row + line_offset;
-            if (final_row > EDITOR_BOTTOM_ROW) final_row = EDITOR_BOTTOM_ROW;
-
-            cursor = final_row * EDITOR_COLS + col_offset;
-        }
-
-        while (i < MAX_TEXT && text[i] && text[i] != '\n') i++;
-        if (i < MAX_TEXT && text[i] == '\n') i++;
-
-        start = i;
+        start = j + 1;
         line++;
-        screen_row++;
-
-        if (!text[start] && line > current_line) break;
     }
 
+    int current_line = line_number_at(text, pos);
     if (current_line >= scroll_line) {
-        int row = EDITOR_TOP_ROW + (current_line - scroll_line);
-        int c = visual_col(text, pos);
-
-        int line_offset = c / EDITOR_COLS;
-        int col_offset = c % EDITOR_COLS;
-
-        if (col_offset == 0 && line_offset > 0) {
-            line_offset--;
-            col_offset = EDITOR_COLS - 1;
+        int rows_before = 0;
+        int line_i = scroll_line;
+        int i = line_start_number(text, line_i);
+        while (line_i < current_line) {
+            rows_before += visual_rows_of_line(text, i);
+            i = line_end(text, i);
+            if (text[i] == '\n') i++;
+            line_i++;
         }
 
-        int final_row = row + line_offset;
+        int c = visual_col(text, pos);
+        int seg = c / EDITOR_COLS;
+        int col_offset = c % EDITOR_COLS;
+
+        int final_row = EDITOR_TOP_ROW + rows_before + seg;
         if (final_row > EDITOR_BOTTOM_ROW) final_row = EDITOR_BOTTOM_ROW;
 
         cursor = final_row * EDITOR_COLS + col_offset;
@@ -251,16 +235,34 @@ static void draw_editor(const char *text, int pos, int scroll_line)
 
 static void ensure_visible(const char *text, int pos, int *scroll_line)
 {
-    int line = line_number_at(text, pos);
+    int current_line = line_number_at(text, pos);
 
-    if (line < *scroll_line)
-        *scroll_line = line;
-
-    if (line >= *scroll_line + EDITOR_ROWS)
-        *scroll_line = line - EDITOR_ROWS + 1;
+    if (current_line < *scroll_line)
+        *scroll_line = current_line;
 
     if (*scroll_line < 0)
         *scroll_line = 0;
+
+    for (;;) {
+        int rows = 0;
+        int line = *scroll_line;
+        int i = line_start_number(text, line);
+
+        while (line < current_line) {
+            rows += visual_rows_of_line(text, i);
+            i = line_end(text, i);
+            if (text[i] == '\n') i++;
+            line++;
+        }
+        rows += visual_col(text, pos) / EDITOR_COLS;
+
+        if (rows < EDITOR_ROWS)
+            break;
+        if (*scroll_line >= current_line)
+            break;
+
+        (*scroll_line)++;
+    }
 }
 
 static void insert_byte(char *text, int *pos, char ch)
@@ -278,15 +280,6 @@ static void insert_byte(char *text, int *pos, char ch)
 
 static void insert_wrapped(char *text, int *pos, char ch)
 {
-    int col = visual_col(text, *pos);
-
-    if (ch != '\n') {
-        int width = (ch == '\t') ? (TAB_WIDTH - (col % TAB_WIDTH)) : 1;
-        if (col + width > EDITOR_COLS) {
-            insert_byte(text, pos, '\n');
-        }
-    }
-
     insert_byte(text, pos, ch);
 }
 
@@ -358,6 +351,7 @@ void cmd_editor(char *args)
 
         if (key == CTRL_X) {
             fs_write_file(args, text, strlen_editor(text));
+            clear_screen();
             print("\n");
             return;
         }

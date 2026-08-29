@@ -63,10 +63,6 @@ user_config_t config = { .is_setup = 0 };
 
 int shell_exit_flag = 0;
 
-// Packs/unpacks `config` (login + hostname) into a flat blob so
-// store.c can save it alongside the filesystem, letting the setup
-// wizard's "create a login" step actually stick across reboots
-// instead of running every single boot.
 uint32_t config_store_size(void) {
     return MAX_USERNAME + MAX_PASSWORD + MAX_HOSTNAME + 1; // +1 for is_setup
 }
@@ -93,8 +89,6 @@ int config_deserialize(const uint8_t* buf, uint32_t buf_size) {
     return 0;
 }
 
-// Reset the account configuration to the same state as a fresh install.
-// This deliberately clears all fields and marks setup as incomplete.
 void config_reset(void) {
     int i;
     for (i = 0; i < MAX_USERNAME; i++) config.username[i] = 0;
@@ -113,9 +107,6 @@ void outb(uint16_t port, uint8_t val) {
 
 void timer_init()
 {
-    // PIT channel 0, rate generator mode, ~1000Hz (~1ms per tick).
-    // idt_init() is what actually turns these ticks into a counted
-    // value via IRQ0 - this alone just sets the rate.
     outb(0x43, 0x34);
 
     uint16_t divisor = 1193180 / 1000; // ~1ms ticks
@@ -128,7 +119,7 @@ void timer_delay_ms(uint32_t ms)
 {
     uint32_t start = get_uptime_ms();
     while (get_uptime_ms() - start < ms) {
-        asm volatile("hlt"); // sleep until the next interrupt (IRQ0 wakes us every ~1ms)
+        asm volatile("hlt");
     }
 }
 
@@ -208,7 +199,6 @@ void putc(char c) {
     putc_color(c, VGA_COLOR);
 }
 
-/* ISO C-style console functions exposed to TanjaOS C programs. */
 int get_key(void);
 int putchar(int c) { putc((char)c); return c; }
 int getchar(void) { return get_key(); }
