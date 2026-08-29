@@ -71,11 +71,6 @@ static int is_leading_space_tab(const char *text, int pos)
     int start = line_start(text, pos);
     int offset = pos - start;
 
-    /* offset == 0 means "no spaces behind the cursor on this line" (e.g.
-     * cursor sits right at the start of a line). That must NOT count as a
-     * tab block, otherwise backspace/left-arrow "smart" jumps of TAB_WIDTH
-     * happen right at a line boundary and eat into (or past) the previous
-     * line's content/newline. */
     if (offset <= 0 || offset % TAB_WIDTH != 0)
         return 0;
 
@@ -86,11 +81,6 @@ static int is_leading_space_tab(const char *text, int pos)
     return 1;
 }
 
-/* Forward-looking counterpart used by the right-arrow "smart" jump: is
- * there a full TAB_WIDTH-aligned block of spaces starting at pos, without
- * running past the end of the current line? This must never look past the
- * line's terminating '\n' (or end of text), otherwise it can misread the
- * next line's leading whitespace as part of the current line's block. */
 static int is_space_block_forward(const char *text, int pos)
 {
     int start = line_start(text, pos);
@@ -123,7 +113,6 @@ static int snap_to_tab_stop(const char *text, int pos)
         }
     }
 
-    /* Snap to nearest multiple of TAB_WIDTH within leading whitespace */
     if (all_spaces) {
         int snapped_col = (col / TAB_WIDTH) * TAB_WIDTH;
         return start + snapped_col;
@@ -218,6 +207,11 @@ static void draw_editor(const char *text, int pos, int scroll_line)
             int line_offset = c / EDITOR_COLS;
             int col_offset = c % EDITOR_COLS;
 
+            if (col_offset == 0 && line_offset > 0) {
+                line_offset--;
+                col_offset = EDITOR_COLS - 1;
+            }
+
             int final_row = screen_row + line_offset;
             if (final_row > EDITOR_BOTTOM_ROW) final_row = EDITOR_BOTTOM_ROW;
 
@@ -240,6 +234,11 @@ static void draw_editor(const char *text, int pos, int scroll_line)
 
         int line_offset = c / EDITOR_COLS;
         int col_offset = c % EDITOR_COLS;
+
+        if (col_offset == 0 && line_offset > 0) {
+            line_offset--;
+            col_offset = EDITOR_COLS - 1;
+        }
 
         int final_row = row + line_offset;
         if (final_row > EDITOR_BOTTOM_ROW) final_row = EDITOR_BOTTOM_ROW;
@@ -308,7 +307,6 @@ static void editor_backspace(char *text, int *pos)
     if (*pos <= 0)
         return;
 
-    /* Smart Backspace: Delete 4 spaces if cursor is on a tab-aligned block of spaces */
     if (is_leading_space_tab(text, *pos)) {
         delete_bytes(text, pos, TAB_WIDTH);
         return;
@@ -366,7 +364,6 @@ void cmd_editor(char *args)
 
         if (key == KEY_LEFT) {
             if (pos > 0) {
-                /* Smart Arrow Left: jump entire tab block if aligned */
                 if (is_leading_space_tab(text, pos)) {
                     pos -= TAB_WIDTH;
                 } else {
@@ -379,8 +376,6 @@ void cmd_editor(char *args)
         if (key == KEY_RIGHT) {
             int len = strlen_editor(text);
             if (pos < len) {
-                /* Smart Arrow Right: jump entire tab block if aligned,
-                 * but never past the current line's end. */
                 if (is_space_block_forward(text, pos)) {
                     pos += TAB_WIDTH;
                 } else {
@@ -420,11 +415,6 @@ void cmd_editor(char *args)
         }
 
         if (key == TAB_KEY) {
-            /* Insert an actual tab byte (0x09), not spaces. The renderer
-             * and cursor-movement code already expand '\t' to the next
-             * TAB_WIDTH-column stop when displaying/measuring it (see
-             * visual_col / draw_editor / pos_at_visual_col), so a single
-             * real tab character is all that's needed here. */
             insert_wrapped(text, &pos, '\t');
             continue;
         }
