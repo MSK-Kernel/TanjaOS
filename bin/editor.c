@@ -70,27 +70,25 @@ static int visual_col(const char *text, int pos)
 
 static int is_leading_space_tab(const char *text, int pos)
 {
-    int start = line_start(text, pos);
-    int offset = pos - start;
-
-    if (offset <= 0 || offset % TAB_WIDTH != 0)
+    if (pos < TAB_WIDTH)
         return 0;
 
-    for (int i = start; i < pos; i++) {
+    for (int i = pos - TAB_WIDTH; i < pos; i++) {
         if (text[i] != ' ')
             return 0;
     }
+
     return 1;
 }
 
 static int is_space_block_forward(const char *text, int pos)
 {
-    int start = line_start(text, pos);
     int end = line_end(text, pos);
-    int offset = pos - start;
 
-    if (offset % TAB_WIDTH != 0)
-        return 0;
+    /*
+     * A TAB inserted by the editor is always four spaces, regardless
+     * of the cursor's current column.
+     */
     if (pos + TAB_WIDTH > end)
         return 0;
 
@@ -98,6 +96,7 @@ static int is_space_block_forward(const char *text, int pos)
         if (text[i] != ' ')
             return 0;
     }
+
     return 1;
 }
 
@@ -419,7 +418,16 @@ void cmd_editor(char *args)
         }
 
         if (key == TAB_KEY) {
-            insert_wrapped(text, &pos, '\t');
+            /*
+             * TanjaOS Editor TAB = exactly four spaces.
+             *
+             * Do NOT insert '\\t' here: a real tab character is
+             * rendered to the next tab stop, so after "ee" it would
+             * visually be only two spaces. We want a fixed-width
+             * four-space TAB every time.
+             */
+            for (int i = 0; i < TAB_WIDTH; i++)
+                insert_wrapped(text, &pos, ' ');
             continue;
         }
 

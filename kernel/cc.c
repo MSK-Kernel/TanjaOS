@@ -225,6 +225,133 @@ static char* cc_strerror(int err) {
 
 static void cc_heap_reset(void) { cc_heap_pos = 0; cc_tok_next = (const char*)0; }
 
+/*
+ * Generic TanjaOS shell-command bridge.
+ *
+ * Every command in bin/ is registered with the shell at boot, so the C
+ * compiler does not need to keep a second hard-coded list of commands.
+ * `cmd_foo(...)` is translated into a normal shell invocation of `foo`.
+ *
+ * Arguments are collected as either numbers or C strings.  String literals
+ * are marked by the compiler; numeric expressions are rendered in decimal.
+ * The shell command itself performs the normal command-specific parsing.
+ */
+#define CC_CMD_MAX_ARGS 8
+#define CC_CMD_LINE_SIZE 512
+static uint32_t cc_cmd_values[CC_CMD_MAX_ARGS];
+static uint8_t cc_cmd_string[CC_CMD_MAX_ARGS];
+static int cc_cmd_arg_count;
+static char cc_cmd_name[64];
+static char cc_cmd_line[CC_CMD_LINE_SIZE];
+
+extern void execute_command(const char* cmd_line);
+static int str_eq(const char* a, const char* b);
+
+static void cc_cmd_begin(const char* name) {
+    int i = 0;
+    while (name[i] && i < (int)sizeof(cc_cmd_name) - 1) {
+        cc_cmd_name[i] = name[i];
+        i++;
+    }
+    cc_cmd_name[i] = 0;
+    cc_cmd_arg_count = 0;
+}
+
+static void cc_cmd_set_arg(unsigned int index, unsigned int value,
+                           unsigned int is_string) {
+    if (index >= CC_CMD_MAX_ARGS) return;
+    cc_cmd_values[index] = value;
+    cc_cmd_string[index] = is_string ? 1 : 0;
+    if ((int)index + 1 > cc_cmd_arg_count)
+        cc_cmd_arg_count = (int)index + 1;
+}
+
+static void cc_cmd_append_char(int* pos, char c) {
+    if (*pos < CC_CMD_LINE_SIZE - 1)
+        cc_cmd_line[(*pos)++] = c;
+}
+
+static void cc_cmd_append_text(int* pos, const char* s) {
+    while (*s && *pos < CC_CMD_LINE_SIZE - 1)
+        cc_cmd_line[(*pos)++] = *s++;
+}
+
+static void cc_cmd_append_uint(int* pos, uint32_t v) {
+    char tmp[11];
+    int n = 0;
+    if (v == 0) {
+        cc_cmd_append_char(pos, '0');
+        return;
+    }
+    while (v && n < (int)sizeof(tmp)) {
+        tmp[n++] = (char)('0' + (v % 10));
+        v /= 10;
+    }
+    while (n--)
+        cc_cmd_append_char(pos, tmp[n]);
+}
+
+static void cc_cmd_append_string(int* pos, const char* s, int quote) {
+    if (!s) s = "";
+
+    if (!quote) {
+        cc_cmd_append_text(pos, s);
+        return;
+    }
+
+    cc_cmd_append_char(pos, '"');
+    while (*s && *pos < CC_CMD_LINE_SIZE - 2) {
+        if (*s == '"' || *s == '\\')
+            cc_cmd_append_char(pos, '\\');
+        cc_cmd_append_char(pos, *s++);
+    }
+    cc_cmd_append_char(pos, '"');
+}
+
+static void cc_cmd_end(void) {
+    int pos = 0;
+    int i;
+
+    cc_cmd_line[0] = 0;
+    cc_cmd_append_text(&pos, cc_cmd_name);
+
+    for (i = 0; i < cc_cmd_arg_count; i++) {
+        int quote = 0;
+        const char* s;
+
+        cc_cmd_append_char(&pos, ' ');
+
+        if (!cc_cmd_string[i]) {
+            cc_cmd_append_uint(&pos, cc_cmd_values[i]);
+            continue;
+        }
+
+        s = (const char*)(uintptr_t)cc_cmd_values[i];
+
+        /*
+         * `read` expects a literal variable name, not shell-style quotes.
+         * For other commands, quote strings containing whitespace or
+         * characters that the command parsers commonly treat specially.
+         */
+        if (!str_eq(cc_cmd_name, "read") && s) {
+            const char* p = s;
+            while (*p) {
+                if (*p == ' ' || *p == '\t' || *p == '\n' ||
+                    *p == '"' || *p == '\\') {
+                    quote = 1;
+                    break;
+                }
+                p++;
+            }
+        }
+
+        cc_cmd_append_string(&pos, s, quote);
+    }
+
+    cc_cmd_line[pos] = 0;
+    execute_command(cc_cmd_line);
+}
+
 // ------------------------------------------------------------
 // Code buffer
 // ------------------------------------------------------------
@@ -304,6 +431,14 @@ static int str_eq(const char* a, const char* b) {
     int i = 0;
     while (a[i] && b[i]) { if (a[i] != b[i]) return 0; i++; }
     return a[i] == b[i];
+}
+static int str_starts_with(const char* s, const char* prefix) {
+    int i = 0;
+    while (prefix[i]) {
+        if (s[i] != prefix[i]) return 0;
+        i++;
+    }
+    return 1;
 }
 
 static int peekc(void) { return src_pos < src_len ? (unsigned char)src[src_pos] : -1; }
@@ -828,19 +963,6 @@ static void parse_call_args_and_call(func_t* fn, const char* builtin_name) {
                  str_eq(builtin_name, "iscntrl")) expected = 1;
         else if (str_eq(builtin_name, "calloc") || str_eq(builtin_name, "realloc")) expected = 2;
         else if (str_eq(builtin_name, "strerror")) expected = 1;
-        else if (str_eq(builtin_name, "cmd_c") || str_eq(builtin_name, "cmd_cat") ||
-                 str_eq(builtin_name, "cmd_cd") || str_eq(builtin_name, "cmd_clear") ||
-                 str_eq(builtin_name, "cmd_cp") || str_eq(builtin_name, "cmd_datareset") ||
-                 str_eq(builtin_name, "cmd_echo") || str_eq(builtin_name, "cmd_editor") ||
-                 str_eq(builtin_name, "cmd_exec") || str_eq(builtin_name, "cmd_grep") ||
-                 str_eq(builtin_name, "cmd_help") || str_eq(builtin_name, "cmd_ls") ||
-                 str_eq(builtin_name, "cmd_mkdir") || str_eq(builtin_name, "cmd_mv") ||
-                 str_eq(builtin_name, "cmd_pwd") || str_eq(builtin_name, "cmd_reboot") ||
-                 str_eq(builtin_name, "cmd_rm") || str_eq(builtin_name, "cmd_rmdir") ||
-                 str_eq(builtin_name, "cmd_sync") || str_eq(builtin_name, "cmd_touch") ||
-                 str_eq(builtin_name, "cmd_uptime") || str_eq(builtin_name, "cmd_exit") ||
-                 str_eq(builtin_name, "cmd_hostname")) expected = 1;
-
         if (str_eq(builtin_name, "printf")) {
             if (argc < 1 || argc > 9) { cc_seterr(cur_tok.line, "printf supports 1 to 9 arguments"); return; }
         } else if (argc != expected) {
@@ -915,40 +1037,8 @@ static void parse_call_args_and_call(func_t* fn, const char* builtin_name) {
         else if (str_eq(builtin_name, "iscntrl")) target = (uint32_t)(void*)cc_iscntrl;
         else if (str_eq(builtin_name, "strerror")) target = (uint32_t)(void*)cc_strerror;
         else {
-            /* TanjaOS-specific command API: these are deliberately the
-             * only non-standard C names exposed by the builtin library. */
-            extern void cmd_c(char*); extern void cmd_cat(char*); extern void cmd_cd(char*);
-            extern void cmd_clear(char*); extern void cmd_cp(char*); extern void cmd_datareset(char*);
-            extern void cmd_echo(char*); extern void cmd_editor(char*); extern void cmd_exec(char*);
-            extern void cmd_grep(char*); extern void cmd_help(char*); extern void cmd_ls(char*);
-            extern void cmd_mkdir(char*); extern void cmd_mv(char*); extern void cmd_pwd(char*);
-            extern void cmd_reboot(char*); extern void cmd_rm(char*); extern void cmd_rmdir(char*);
-            extern void cmd_sync(char*); extern void cmd_touch(char*); extern void cmd_uptime(char*);
-            extern void cmd_exit(char*); extern void cmd_hostname(char*);
-            if (str_eq(builtin_name,"cmd_c")) target=(uint32_t)(void*)cmd_c;
-            else if (str_eq(builtin_name,"cmd_cat")) target=(uint32_t)(void*)cmd_cat;
-            else if (str_eq(builtin_name,"cmd_cd")) target=(uint32_t)(void*)cmd_cd;
-            else if (str_eq(builtin_name,"cmd_clear")) target=(uint32_t)(void*)cmd_clear;
-            else if (str_eq(builtin_name,"cmd_cp")) target=(uint32_t)(void*)cmd_cp;
-            else if (str_eq(builtin_name,"cmd_datareset")) target=(uint32_t)(void*)cmd_datareset;
-            else if (str_eq(builtin_name,"cmd_echo")) target=(uint32_t)(void*)cmd_echo;
-            else if (str_eq(builtin_name,"cmd_editor")) target=(uint32_t)(void*)cmd_editor;
-            else if (str_eq(builtin_name,"cmd_exec")) target=(uint32_t)(void*)cmd_exec;
-            else if (str_eq(builtin_name,"cmd_grep")) target=(uint32_t)(void*)cmd_grep;
-            else if (str_eq(builtin_name,"cmd_help")) target=(uint32_t)(void*)cmd_help;
-            else if (str_eq(builtin_name,"cmd_ls")) target=(uint32_t)(void*)cmd_ls;
-            else if (str_eq(builtin_name,"cmd_mkdir")) target=(uint32_t)(void*)cmd_mkdir;
-            else if (str_eq(builtin_name,"cmd_mv")) target=(uint32_t)(void*)cmd_mv;
-            else if (str_eq(builtin_name,"cmd_pwd")) target=(uint32_t)(void*)cmd_pwd;
-            else if (str_eq(builtin_name,"cmd_reboot")) target=(uint32_t)(void*)cmd_reboot;
-            else if (str_eq(builtin_name,"cmd_rm")) target=(uint32_t)(void*)cmd_rm;
-            else if (str_eq(builtin_name,"cmd_rmdir")) target=(uint32_t)(void*)cmd_rmdir;
-            else if (str_eq(builtin_name,"cmd_sync")) target=(uint32_t)(void*)cmd_sync;
-            else if (str_eq(builtin_name,"cmd_touch")) target=(uint32_t)(void*)cmd_touch;
-            else if (str_eq(builtin_name,"cmd_uptime")) target=(uint32_t)(void*)cmd_uptime;
-            else if (str_eq(builtin_name,"cmd_exit")) target=(uint32_t)(void*)cmd_exit;
-            else if (str_eq(builtin_name,"cmd_hostname")) target=(uint32_t)(void*)cmd_hostname;
-            returns_value = 0;
+            cc_seterr(cur_tok.line, "unknown builtin");
+            return;
         }
 
         gen_call_abs(target);
@@ -1061,6 +1151,96 @@ static void parse_primary(void) {
         if (cur_tok.type == T_LPAREN) {
             next_token();
             func_t* fn = find_func(name);
+
+            /*
+             * Any `cmd_<name>(...)` which is not a user-defined C function
+             * is a TanjaOS shell command.  This deliberately happens before
+             * the normal builtin-C list, so new commands added to bin/ are
+             * automatically available without changing kernel/cc.c.
+             */
+            if (!fn && str_starts_with(name, "cmd_") && name[4]) {
+                char command_name[64];
+                int name_len = 0;
+                int argc = 0;
+
+                while (name[4 + name_len] && name_len < (int)sizeof(command_name) - 1) {
+                    command_name[name_len] = name[4 + name_len];
+                    name_len++;
+                }
+                command_name[name_len] = 0;
+
+                /*
+                 * Begin the runtime command line.  Push arguments through a
+                 * small setter so evaluation still happens normally and all
+                 * ordinary C expressions remain fully supported.
+                 */
+                {
+                    uint32_t begin_target = (uint32_t)(void*)cc_cmd_begin;
+                    uint32_t set_target = (uint32_t)(void*)cc_cmd_set_arg;
+                    uint32_t end_target = (uint32_t)(void*)cc_cmd_end;
+                    uint32_t jmp_name = gen_jmp_placeholder();
+                    uint32_t name_addr = (uint32_t)code_buf + code_len;
+                    int j;
+
+                    for (j = 0; command_name[j]; j++) emit_u8((uint8_t)command_name[j]);
+                    emit_u8(0);
+                    patch_jump_here(jmp_name);
+
+                    gen_mov_eax_imm32(name_addr);
+                    gen_push_eax();
+                    gen_call_abs(begin_target);
+                    emit_u8(0x81); emit_u8(0xC4); emit_u32(4);
+
+                    if (cur_tok.type != T_RPAREN) {
+                        for (;;) {
+                            int is_string = (cur_tok.type == T_STR);
+                            if (cur_tok.type == T_IDENT) {
+                                local_t* al = find_local(cur_tok.sval);
+                                global_t* ag = find_global(cur_tok.sval);
+                                if ((al && al->is_array) || (ag && ag->is_array))
+                                    is_string = 1;
+                            }
+
+                            parse_expr();
+                            if (cc_error_flag) return;
+
+                            /*
+                             * cc_cmd_set_arg(index, value, is_string) is
+                             * called with the compiler's left-to-right
+                             * argument convention: push value, then type,
+                             * then index.
+                             */
+                            gen_push_eax();
+                            gen_mov_eax_imm32((uint32_t)is_string);
+                            gen_push_eax();
+                            gen_mov_eax_imm32((uint32_t)argc);
+                            gen_push_eax();
+                            gen_call_abs(set_target);
+                            emit_u8(0x81); emit_u8(0xC4); emit_u32(12);
+
+                            argc++;
+                            if (argc > CC_CMD_MAX_ARGS) {
+                                cc_seterr(cur_tok.line, "too many command arguments (maximum 8)");
+                                return;
+                            }
+
+                            if (cur_tok.type == T_COMMA) {
+                                next_token();
+                                continue;
+                            }
+                            break;
+                        }
+                    }
+
+                    expect(T_RPAREN, "expected ')' after command arguments");
+                    if (cc_error_flag) return;
+
+                    gen_call_abs(end_target);
+                    gen_mov_eax_imm32(0);
+                    return;
+                }
+            }
+
             const char* builtin = 0;
             if (!fn) {
                 if (str_eq(name, "printf") || str_eq(name, "scanf") ||
@@ -1090,18 +1270,7 @@ static void parse_primary(void) {
                     str_eq(name, "isprint") || str_eq(name, "ispunct") ||
                     str_eq(name, "iscntrl") || str_eq(name, "strerror") ||
                     str_eq(name, "clear_screen") ||
-                    str_eq(name, "cmd_c") || str_eq(name, "cmd_cat") ||
-                    str_eq(name, "cmd_cd") || str_eq(name, "cmd_clear") ||
-                    str_eq(name, "cmd_cp") || str_eq(name, "cmd_datareset") ||
-                    str_eq(name, "cmd_echo") || str_eq(name, "cmd_editor") ||
-                    str_eq(name, "cmd_exec") || str_eq(name, "cmd_grep") ||
-                    str_eq(name, "cmd_help") || str_eq(name, "cmd_ls") ||
-                    str_eq(name, "cmd_mkdir") || str_eq(name, "cmd_mv") ||
-                    str_eq(name, "cmd_pwd") || str_eq(name, "cmd_reboot") ||
-                    str_eq(name, "cmd_rm") || str_eq(name, "cmd_rmdir") ||
-                    str_eq(name, "cmd_sync") || str_eq(name, "cmd_touch") ||
-                    str_eq(name, "cmd_uptime") || str_eq(name, "cmd_exit") ||
-                    str_eq(name, "cmd_hostname")) builtin = name;
+                    str_eq(name, "clear_screen")) builtin = name;
                 else { cc_seterr(line, "call to undefined function"); return; }
             }
             parse_call_args_and_call(fn, builtin);
