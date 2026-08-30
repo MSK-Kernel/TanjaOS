@@ -68,7 +68,7 @@ static int visual_col(const char *text, int pos)
     return col;
 }
 
-static int is_leading_space_tab(const char *text, int pos)
+static int is_four_space_block_before(const char *text, int pos)
 {
     if (pos < TAB_WIDTH)
         return 0;
@@ -81,14 +81,10 @@ static int is_leading_space_tab(const char *text, int pos)
     return 1;
 }
 
-static int is_space_block_forward(const char *text, int pos)
+static int is_four_space_block_after(const char *text, int pos)
 {
     int end = line_end(text, pos);
 
-    /*
-     * A TAB inserted by the editor is always four spaces, regardless
-     * of the cursor's current column.
-     */
     if (pos + TAB_WIDTH > end)
         return 0;
 
@@ -302,7 +298,7 @@ static void editor_backspace(char *text, int *pos)
     if (*pos <= 0)
         return;
 
-    if (is_leading_space_tab(text, *pos)) {
+    if (is_four_space_block_before(text, *pos)) {
         delete_bytes(text, pos, TAB_WIDTH);
         return;
     }
@@ -367,7 +363,7 @@ void cmd_editor(char *args)
 
         if (key == KEY_LEFT) {
             if (pos > 0) {
-                if (is_leading_space_tab(text, pos)) {
+                if (is_four_space_block_before(text, pos)) {
                     pos -= TAB_WIDTH;
                 } else {
                     pos--;
@@ -379,7 +375,7 @@ void cmd_editor(char *args)
         if (key == KEY_RIGHT) {
             int len = strlen_editor(text);
             if (pos < len) {
-                if (is_space_block_forward(text, pos)) {
+                if (is_four_space_block_after(text, pos)) {
                     pos += TAB_WIDTH;
                 } else {
                     pos++;
@@ -418,14 +414,6 @@ void cmd_editor(char *args)
         }
 
         if (key == TAB_KEY) {
-            /*
-             * TanjaOS Editor TAB = exactly four spaces.
-             *
-             * Do NOT insert '\\t' here: a real tab character is
-             * rendered to the next tab stop, so after "ee" it would
-             * visually be only two spaces. We want a fixed-width
-             * four-space TAB every time.
-             */
             for (int i = 0; i < TAB_WIDTH; i++)
                 insert_wrapped(text, &pos, ' ');
             continue;
