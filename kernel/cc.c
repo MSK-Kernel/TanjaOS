@@ -2088,6 +2088,76 @@ static uint32_t cc_bin_get_u32(const uint8_t* p) {
 // ------------------------------------------------------------
 static int cc_compile(const char* source, unsigned int len, func_t** out_mainfn);
 
+// ------------------------------------------------------------
+// Style check: statements inside a block must be indented with a
+// literal tab character. A line consisting only of a closing brace
+// (optionally followed by more code, e.g. "} else {") is allowed to
+// sit back out at the enclosing indent level. Braces/newlines inside
+// string literals, char literals, and comments are not counted.
+// ------------------------------------------------------------
+static void cc_check_indentation(const char* s, unsigned int len) {
+    unsigned int i = 0;
+    int line = 1;
+    int depth = 0;
+    int line_start_depth = 0;
+    int at_line_start = 1;
+
+    while (i < len) {
+        char c = s[i];
+
+        if (at_line_start) {
+            unsigned int j = i;
+            while (j < len && (s[j] == ' ' || s[j] == '\t')) j++;
+            int line_is_blank = (j >= len || s[j] == '\n' || s[j] == '\r');
+            int first_is_close_brace = (j < len && s[j] == '}');
+
+            if (line_start_depth > 0 && !line_is_blank && !first_is_close_brace && c != '\t') {
+                cc_seterr(line, "statements must be indented with a tab character");
+                return;
+            }
+            at_line_start = 0;
+        }
+
+        if (c == '"' || c == '\'') {
+            char quote = c;
+            i++;
+            while (i < len && s[i] != quote) {
+                if (s[i] == '\\' && i + 1 < len) i++;
+                else if (s[i] == '\n') { line++; line_start_depth = depth; at_line_start = 1; }
+                i++;
+            }
+            if (i < len) i++;
+            continue;
+        }
+
+        if (c == '/' && i + 1 < len && s[i + 1] == '/') {
+            while (i < len && s[i] != '\n') i++;
+            continue;
+        }
+
+        if (c == '/' && i + 1 < len && s[i + 1] == '*') {
+            i += 2;
+            while (i < len && !(s[i] == '*' && i + 1 < len && s[i + 1] == '/')) {
+                if (s[i] == '\n') { line++; line_start_depth = depth; at_line_start = 1; }
+                i++;
+            }
+            i = (i < len) ? i + 2 : len;
+            continue;
+        }
+
+        if (c == '{') depth++;
+        else if (c == '}' && depth > 0) depth--;
+
+        if (c == '\n') {
+            line++;
+            line_start_depth = depth;
+            at_line_start = 1;
+        }
+
+        i++;
+    }
+}
+
 int cc_compile_to_binary(const char* source, unsigned int len,
                          uint8_t* out, unsigned int out_cap,
                          unsigned int* out_len) {
@@ -2183,8 +2253,12 @@ static int cc_compile(const char* source, unsigned int len, func_t** out_mainfn)
     cc_error_flag = 0; cc_error_line = 0; cc_error_msg[0] = 0;
     local_count = 0; func_count = 0; global_count = 0; token_count = 0; global_array_pool_used = 0;
 
-    next_token();
-    parse_program();
+    cc_check_indentation(source, len);
+
+    if (!cc_error_flag) {
+        next_token();
+        parse_program();
+    }
 
     if (cc_error_flag) {
         print("Compile error (line ");

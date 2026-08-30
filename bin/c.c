@@ -56,6 +56,13 @@ void cmd_c(char *args)
         return;
     }
 
+    if (fs_file_exists(output) || fs_directory_exists(output)) {
+        print("c: ");
+        print(output);
+        print(": File exists\n");
+        return;
+    }
+
     static char source[C_BUFFER];
     static uint8_t binary[C_BUFFER];
 
