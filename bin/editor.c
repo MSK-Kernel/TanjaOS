@@ -68,57 +68,6 @@ static int visual_col(const char *text, int pos)
     return col;
 }
 
-static int is_four_space_block_before(const char *text, int pos)
-{
-    if (pos < TAB_WIDTH)
-        return 0;
-
-    int start = line_start(text, pos);
-    if (pos - start < TAB_WIDTH)
-        return 0;
-
-    for (int i = pos - TAB_WIDTH; i < pos; i++) {
-        if (text[i] != ' ')
-            return 0;
-    }
-
-    for (int i = start; i < pos - TAB_WIDTH; i++) {
-        if (text[i] != ' ')
-            return 0;
-    }
-
-    int col = visual_col(text, pos);
-    if (col % TAB_WIDTH != 0)
-        return 0;
-
-    return 1;
-}
-
-static int is_four_space_block_after(const char *text, int pos)
-{
-    int start = line_start(text, pos);
-    int end = line_end(text, pos);
-
-    if (pos + TAB_WIDTH > end)
-        return 0;
-
-    for (int i = start; i < pos; i++) {
-        if (text[i] != ' ')
-            return 0;
-    }
-
-    for (int i = pos; i < pos + TAB_WIDTH; i++) {
-        if (text[i] != ' ')
-            return 0;
-    }
-
-    int col = visual_col(text, pos);
-    if (col % TAB_WIDTH != 0)
-        return 0;
-
-    return 1;
-}
-
 static int snap_to_tab_stop(const char *text, int pos)
 {
     int start = line_start(text, pos);
@@ -321,11 +270,10 @@ static void editor_backspace(char *text, int *pos)
     if (*pos <= 0)
         return;
 
-    if (is_four_space_block_before(text, *pos)) {
-        delete_bytes(text, pos, TAB_WIDTH);
-        return;
-    }
-
+    /* A tab is stored as a single '\t' byte, so deleting one byte
+     * naturally removes the whole tab stop in one keystroke.
+     * Literal spaces (e.g. from pressing space) are always deleted
+     * one at a time, no matter how many are in a row. */
     delete_bytes(text, pos, 1);
 }
 
@@ -385,25 +333,15 @@ void cmd_editor(char *args)
         }
 
         if (key == KEY_LEFT) {
-            if (pos > 0) {
-                if (is_four_space_block_before(text, pos)) {
-                    pos -= TAB_WIDTH;
-                } else {
-                    pos--;
-                }
-            }
+            if (pos > 0)
+                pos--;
             continue;
         }
 
         if (key == KEY_RIGHT) {
             int len = strlen_editor(text);
-            if (pos < len) {
-                if (is_four_space_block_after(text, pos)) {
-                    pos += TAB_WIDTH;
-                } else {
-                    pos++;
-                }
-            }
+            if (pos < len)
+                pos++;
             continue;
         }
 
@@ -437,8 +375,7 @@ void cmd_editor(char *args)
         }
 
         if (key == TAB_KEY) {
-            for (int i = 0; i < TAB_WIDTH; i++)
-                insert_wrapped(text, &pos, ' ');
+            insert_wrapped(text, &pos, '\t');
             continue;
         }
 
