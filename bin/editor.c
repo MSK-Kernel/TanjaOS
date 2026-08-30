@@ -73,25 +73,48 @@ static int is_four_space_block_before(const char *text, int pos)
     if (pos < TAB_WIDTH)
         return 0;
 
+    int start = line_start(text, pos);
+    if (pos - start < TAB_WIDTH)
+        return 0;
+
     for (int i = pos - TAB_WIDTH; i < pos; i++) {
         if (text[i] != ' ')
             return 0;
     }
+
+    for (int i = start; i < pos - TAB_WIDTH; i++) {
+        if (text[i] != ' ')
+            return 0;
+    }
+
+    int col = visual_col(text, pos);
+    if (col % TAB_WIDTH != 0)
+        return 0;
 
     return 1;
 }
 
 static int is_four_space_block_after(const char *text, int pos)
 {
+    int start = line_start(text, pos);
     int end = line_end(text, pos);
 
     if (pos + TAB_WIDTH > end)
         return 0;
 
+    for (int i = start; i < pos; i++) {
+        if (text[i] != ' ')
+            return 0;
+    }
+
     for (int i = pos; i < pos + TAB_WIDTH; i++) {
         if (text[i] != ' ')
             return 0;
     }
+
+    int col = visual_col(text, pos);
+    if (col % TAB_WIDTH != 0)
+        return 0;
 
     return 1;
 }

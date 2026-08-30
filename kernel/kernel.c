@@ -338,10 +338,16 @@ int get_key() {
         }
         if (sc & 0x80) continue;
         if (sc >= 128) continue;
+        /* Caps Lock should only flip the case of letters, not act like
+         * a second shift key for symbols/numbers. So: for letter keys,
+         * shift and caps_lock cancel each other out (shift while caps
+         * is on types lowercase). For everything else, only shift
+         * matters, exactly like caps_lock isn't pressed at all. */
         char res;
-        if (caps_lock && !shift) res = keymap_caps[sc];
-        else if (shift) res = keymap_shift[sc];
-        else res = keymap[sc];
+        char base = keymap[sc];
+        int is_letter = (base >= 'a' && base <= 'z');
+        int use_shift_map = is_letter ? (shift ^ caps_lock) : shift;
+        res = use_shift_map ? keymap_shift[sc] : keymap[sc];
         if (res == 0) continue;
         if (ctrl) {
             if (res == 'x') return 24;
