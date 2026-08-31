@@ -403,6 +403,7 @@ typedef enum {
     T_EOF, T_NUM, T_IDENT, T_STR,
     T_INT, T_VOID, T_CHAR, T_CONST, T_UNSIGNED, T_SIGNED, T_LONG, T_SHORT,
     T_IF, T_ELSE, T_WHILE, T_DO, T_FOR, T_RETURN, T_BREAK, T_CONTINUE,
+    T_SIZEOF, T_GOTO, T_SWITCH, T_CASE, T_DEFAULT,
     T_LPAREN, T_RPAREN, T_LBRACE, T_RBRACE, T_LBRACKET, T_RBRACKET, T_SEMI, T_COMMA,
     T_PLUS, T_MINUS, T_STAR, T_SLASH, T_PERCENT, T_AMP,
     T_ASSIGN, T_EQ, T_NE, T_LT, T_GT, T_LE, T_GE,
@@ -532,6 +533,11 @@ static void next_token(void) {
         else if (str_eq(cur_tok.sval, "return")) cur_tok.type = T_RETURN;
         else if (str_eq(cur_tok.sval, "break")) cur_tok.type = T_BREAK;
         else if (str_eq(cur_tok.sval, "continue")) cur_tok.type = T_CONTINUE;
+        else if (str_eq(cur_tok.sval, "sizeof")) cur_tok.type = T_SIZEOF;
+        else if (str_eq(cur_tok.sval, "goto")) cur_tok.type = T_GOTO;
+        else if (str_eq(cur_tok.sval, "switch")) cur_tok.type = T_SWITCH;
+        else if (str_eq(cur_tok.sval, "case")) cur_tok.type = T_CASE;
+        else if (str_eq(cur_tok.sval, "default")) cur_tok.type = T_DEFAULT;
         else if (str_eq(cur_tok.sval, "NULL") || str_eq(cur_tok.sval, "false")) {
             cur_tok.type = T_NUM; cur_tok.ival = 0;
         } else if (str_eq(cur_tok.sval, "true")) {
@@ -668,7 +674,7 @@ static void expect(token_type_t t, const char* what) {
 // ------------------------------------------------------------
 
 #define MAX_LOCALS 48
-typedef struct { char name[32]; int32_t offset; int is_array; int array_len; } local_t;
+typedef struct { char name[32]; int32_t offset; int is_array; int array_len; int elem_size; int ptr_depth; } local_t;
 static local_t locals[MAX_LOCALS];
 static int local_count;
 static int next_local_offset;
@@ -680,16 +686,31 @@ static func_t funcs[MAX_FUNCS];
 static int func_count;
 static uint32_t cur_func_start; // for self-recursion
 
+// Calls to a function that has only been prototyped so far (declared,
+// not yet defined) can't be resolved to a real address at the call
+// site. A placeholder call is emitted instead, and the patch is
+// resolved once every top-level declaration has been parsed (see
+// cc_resolve_pending_calls). Real C requires a prior prototype or
+// definition to call a function at all - an entirely unknown name is
+// still a hard "call to undefined function" error, matching this.
+#define MAX_PENDING_CALLS 32
+typedef struct { uint32_t patch_at; int func_index; int line; } pending_call_t;
+static pending_call_t pending_calls[MAX_PENDING_CALLS];
+static int pending_call_count;
+
 #define MAX_GLOBALS 24
-typedef struct { char name[32]; uint32_t addr; int is_array; int array_len; } global_t;
+typedef struct { char name[32]; uint32_t addr; int is_array; int array_len; int elem_size; int ptr_depth; } global_t;
 static int32_t globals_data[MAX_GLOBALS];
 static global_t globals[MAX_GLOBALS];
 static int global_count;
 
-// Separate backing pool for global ARRAYS (globals_data above is one
-// slot per scalar global; arrays need N consecutive slots).
-#define GLOBAL_ARRAY_POOL_SIZE 1024
-static int32_t global_array_pool[GLOBAL_ARRAY_POOL_SIZE];
+// Backing storage for global ARRAYS (globals_data above is one slot
+// per scalar global; arrays need contiguous space). Tracked in raw
+// BYTES (not elements) so char arrays can be genuinely byte-packed,
+// matching real C memory layout, while int arrays still use 4 bytes
+// per element.
+#define GLOBAL_ARRAY_POOL_BYTES 4096
+static uint8_t global_array_pool[GLOBAL_ARRAY_POOL_BYTES];
 static int global_array_pool_used;
 
 // break/continue support: tracks the innermost enclosing loop so
@@ -710,6 +731,43 @@ typedef struct {
     uint32_t continue_target;
 } loop_ctx_t;
 static loop_ctx_t* cur_loop = 0;
+
+// Nesting-order counters so a `break` inside a switch nested in a loop
+// (or vice versa) resolves to whichever construct is actually
+// innermost, while `continue` always stays keyed to the loop only.
+static int nest_seq_counter;
+static int cur_loop_seq = -1;
+static int cur_switch_seq = -1;
+
+#define MAX_SWITCH_CASES 32
+typedef struct {
+    int32_t case_values[MAX_SWITCH_CASES];
+    uint32_t case_addrs[MAX_SWITCH_CASES];
+    int case_count;
+    int has_default;
+    uint32_t default_addr;
+    uint32_t break_patches[MAX_BREAK_PATCHES];
+    int break_count;
+    int32_t value_slot; // ebp-relative slot holding the switch expression
+} switch_ctx_t;
+static switch_ctx_t* cur_switch = 0;
+
+// goto/label support: labels are function-scoped, reset per function.
+#define MAX_LABELS 16
+typedef struct { char name[32]; uint32_t addr; int defined; } label_t;
+static label_t func_labels[MAX_LABELS];
+static int func_label_count;
+
+#define MAX_LABEL_PATCHES 32
+typedef struct { char name[32]; uint32_t patch_at; int line; } label_patch_t;
+static label_patch_t label_patches[MAX_LABEL_PATCHES];
+static int label_patch_count;
+
+static label_t* find_label(const char* name) {
+    int i;
+    for (i = 0; i < func_label_count; i++) if (str_eq(func_labels[i].name, name)) return &func_labels[i];
+    return 0;
+}
 
 static local_t* find_local(const char* name) {
     int i;
@@ -773,6 +831,7 @@ static void gen_setcc_movzx(uint8_t setcc_op2) {
 static void gen_test_eax_eax(void) { emit_u8(0x85); emit_u8(0xC0); }
 static void gen_neg_eax(void) { emit_u8(0xF7); emit_u8(0xD8); }
 static void gen_cmp_eax_0(void) { emit_u8(0x3D); emit_u32(0); }
+static void gen_cmp_eax_imm32(uint32_t v) { emit_u8(0x3D); emit_u32(v); } // cmp eax, imm32
 
 static uint32_t gen_jz_placeholder(void) {
     emit_u8(0x0F); emit_u8(0x84); uint32_t at = code_len; emit_u32(0); return at;
@@ -787,6 +846,9 @@ static void patch_jump_here(uint32_t at) { patch_u32(at, code_len - (at + 4)); }
 static void gen_jmp_to(uint32_t target) {
     emit_u8(0xE9); emit_u32(target - (code_len + 4));
 }
+static void gen_je_to(uint32_t target) {
+    emit_u8(0x0F); emit_u8(0x84); emit_u32(target - (code_len + 4)); // je near
+}
 static void gen_call_abs(uint32_t target) {
     // `target` is an absolute runtime address (either a native kernel
     // function pointer, or code_buf+offset for a JIT'd function/
@@ -796,6 +858,36 @@ static void gen_call_abs(uint32_t target) {
     emit_u8(0xE8);
     emit_u32(target - ((uint32_t)code_buf + code_len + 4));
 }
+
+// A call to a function that isn't defined yet (only prototyped so
+// far). Emits a placeholder displacement and returns the position of
+// that 4-byte field, to be resolved later with patch_call_target once
+// the real function address is known.
+static uint32_t gen_call_placeholder(void) {
+    emit_u8(0xE8);
+    uint32_t at = code_len;
+    emit_u32(0);
+    return at;
+}
+static void patch_call_target(uint32_t at, uint32_t target_absolute) {
+    patch_u32(at, target_absolute - ((uint32_t)code_buf + at + 4));
+}
+
+// Like patch_jump_here, but patches a jump to a previously-recorded
+// target position instead of "wherever code_len happens to be right
+// now" - needed for forward gotos, which may be resolved well after
+// more code has already been emitted.
+static void patch_jump_to_target(uint32_t at, uint32_t target_pos) {
+    patch_u32(at, target_pos - (at + 4));
+}
+
+// Byte-sized indirect load/store, used when dereferencing a pointer or
+// indexing an array whose element type is `char` (1 byte), so that
+// memory layout genuinely matches real C - a `char[]` is byte-packed
+// and interoperates correctly with real byte-oriented string/memory
+// builtins, rather than every element silently occupying 4 bytes.
+static void gen_mov_eax_indirect_eax_byte(void) { emit_u8(0x0F); emit_u8(0xB6); emit_u8(0x00); } // movzx eax, byte [eax]
+static void gen_mov_indirect_ecx_al(void) { emit_u8(0x88); emit_u8(0x01); } // mov [ecx], al
 
 // ------------------------------------------------------------
 // Forward decls
@@ -847,21 +939,31 @@ static void gen_var_store_from_eax(const char* name, int line) {
 // Computes the address of arr[index] into eax. Caller has already
 // consumed IDENT and the '[' - this parses the index expression and
 // the closing ']'.
+static int lookup_elem_size(const char* name) {
+    local_t* l = find_local(name);
+    if (l) return l->elem_size ? l->elem_size : 4;
+    global_t* g = find_global(name);
+    if (g) return g->elem_size ? g->elem_size : 4;
+    return 4;
+}
+
 static void parse_array_index_addr(const char* name, int line) {
     local_t* l = find_local(name);
     global_t* g = l ? 0 : find_global(name);
     if (!l && !g) { cc_seterr(line, "undefined array"); return; }
     int is_array = (l && l->is_array) || (g && g->is_array);
     if (!is_array) { cc_seterr(line, "not an array"); return; }
+    int elem_size = l ? l->elem_size : g->elem_size;
+    if (elem_size == 0) elem_size = 4;
 
     if (l) gen_lea_eax_ebp_disp32(l->offset);
     else gen_mov_eax_imm32(g->addr);
     gen_push_eax();
     parse_expr(); // index -> eax
     if (cc_error_flag) return;
-    gen_shl_eax_2();
+    if (elem_size == 4) gen_shl_eax_2(); // else elem_size == 1: index is already a byte offset
     gen_pop_ecx();
-    gen_add_eax_ecx(); // eax = base + index*4
+    gen_add_eax_ecx(); // eax = base + index*elem_size
     expect(T_RBRACKET, "expected ']'");
 }
 
@@ -1046,10 +1148,26 @@ static void parse_call_args_and_call(func_t* fn, const char* builtin_name) {
             gen_mov_eax_imm32(0);
     } else {
         if (fn->nparams != argc) { cc_seterr(cur_tok.line, "wrong number of arguments"); return; }
-        gen_call_abs(fn->addr);
+        if (fn->addr != 0) {
+            gen_call_abs(fn->addr);
+        } else {
+            // Declared (prototyped) but not defined yet - emit a
+            // placeholder and resolve it once the whole file has been
+            // parsed, by which point the real definition (required to
+            // exist, just like real C) will have set fn->addr.
+            if (pending_call_count >= MAX_PENDING_CALLS) { cc_seterr(cur_tok.line, "too many forward-referenced calls"); return; }
+            int idx = (int)(fn - funcs);
+            pending_calls[pending_call_count].patch_at = gen_call_placeholder();
+            pending_calls[pending_call_count].func_index = idx;
+            pending_calls[pending_call_count].line = cur_tok.line;
+            pending_call_count++;
+        }
     }
     if (argc > 0) { emit_u8(0x81); emit_u8(0xC4); emit_u32((uint32_t)(argc * 4)); } // add esp, argc*4
 }
+
+static int is_type_start(token_type_t t);
+static int consume_scalar_type(void);
 
 static void parse_primary(void) {
     if (cc_error_flag) return;
@@ -1071,8 +1189,86 @@ static void parse_primary(void) {
         next_token();
         return;
     }
+    if (cur_tok.type == T_SIZEOF) {
+        next_token();
+        uint32_t size = 4;
+        int has_paren = (cur_tok.type == T_LPAREN);
+        if (has_paren) next_token();
+
+        if (cur_tok.type == T_VOID || is_type_start(cur_tok.type)) {
+            int is_char = 0;
+            if (cur_tok.type == T_VOID) next_token();
+            else { is_char = consume_scalar_type(); if (cc_error_flag) return; }
+            int stars = 0;
+            while (cur_tok.type == T_STAR) { stars++; next_token(); }
+            size = (stars > 0) ? 4 : (is_char ? 1 : 4);
+            if (has_paren) { expect(T_RPAREN, "expected ')' after sizeof type"); if (cc_error_flag) return; }
+        } else {
+            int stars = 0;
+            while (cur_tok.type == T_STAR) { stars++; next_token(); } // sizeof *p, sizeof **p, ...
+            int handled = 0;
+            if (cur_tok.type == T_IDENT) {
+                lexer_state_t save = lexer_save();
+                char name[64];
+                int i = 0; while (cur_tok.sval[i]) { name[i] = cur_tok.sval[i]; i++; } name[i] = 0;
+                int line = cur_tok.line;
+                next_token();
+                if (cur_tok.type != T_LBRACKET) {
+                    // Plain identifier (optionally star-prefixed) - its
+                    // static type is known without evaluating anything,
+                    // exactly what sizeof requires.
+                    local_t* l = find_local(name);
+                    global_t* g = l ? 0 : find_global(name);
+                    if (!l && !g) { cc_seterr(line, "undefined variable"); return; }
+                    int elem_size = l ? l->elem_size : g->elem_size;
+                    int ptr_depth = l ? l->ptr_depth : g->ptr_depth;
+                    int is_array = l ? l->is_array : g->is_array;
+                    int array_len = l ? l->array_len : g->array_len;
+                    if (stars > 0) size = (ptr_depth > stars) ? 4 : (elem_size ? (uint32_t)elem_size : 4);
+                    else if (is_array) size = (uint32_t)(array_len * (elem_size ? elem_size : 4));
+                    else if (ptr_depth > 0) size = 4;
+                    else size = (uint32_t)(elem_size ? elem_size : 4);
+                    handled = 1;
+                } else {
+                    lexer_restore(save);
+                }
+            }
+            if (!handled) {
+                // General expression - sizeof never evaluates its
+                // operand, so parse it purely to consume tokens
+                // correctly and then discard any code that got emitted.
+                uint32_t saved_len = code_len;
+                parse_expr();
+                if (cc_error_flag) return;
+                code_len = saved_len;
+                size = 4; // best-effort default, matching typical int-sized results
+            }
+            if (has_paren) { expect(T_RPAREN, "expected ')' after sizeof expression"); if (cc_error_flag) return; }
+        }
+
+        gen_mov_eax_imm32(size);
+        return;
+    }
     if (cur_tok.type == T_LPAREN) {
         next_token();
+        if (cur_tok.type == T_VOID || is_type_start(cur_tok.type)) {
+            // Explicit cast: (type)expr. The internal representation is
+            // a uniform 32-bit cell for everything, so a cast to char
+            // truncates to a single byte (matching real C's narrowing
+            // behavior on assignment/cast); casts to int-family types
+            // and pointer types are identity operations, since nothing
+            // in this compiler distinguishes signed/unsigned or pointee
+            // types at the register level.
+            int is_char = 0;
+            if (cur_tok.type == T_VOID) next_token();
+            else { is_char = consume_scalar_type(); if (cc_error_flag) return; }
+            while (cur_tok.type == T_STAR) next_token(); // pointer cast levels - accepted, no runtime effect
+            expect(T_RPAREN, "expected ')' after cast"); if (cc_error_flag) return;
+            parse_primary(); // operand -> eax
+            if (cc_error_flag) return;
+            if (is_char) { emit_u8(0x25); emit_u32(0x000000FF); } // and eax, 0xFF
+            return;
+        }
         parse_expr();
         expect(T_RPAREN, "expected ')'");
         return;
@@ -1100,11 +1296,30 @@ static void parse_primary(void) {
         return;
     }
     if (cur_tok.type == T_STAR) {
-        // pointer dereference (rvalue): *expr
-        next_token();
+        // pointer dereference (rvalue): *expr, **expr, ...
+        // Multiple leading stars are counted up front. When the
+        // innermost operand is a plain identifier, its declared
+        // pointer depth/element size are known statically, so the
+        // final indirection can use a byte-sized load for a char
+        // pointer; every level above that is always a plain 4-byte
+        // pointer value. For any other kind of operand (e.g. *(p+1),
+        // *f()) the element size defaults to 4, matching this
+        // compiler's existing behavior for non-identifier addresses.
+        int stars = 0;
+        while (cur_tok.type == T_STAR) { stars++; next_token(); }
+        int elem_size = 4;
+        if (cur_tok.type == T_IDENT) {
+            local_t* l = find_local(cur_tok.sval);
+            global_t* g = l ? 0 : find_global(cur_tok.sval);
+            if (l) elem_size = l->elem_size ? l->elem_size : 4;
+            else if (g) elem_size = g->elem_size ? g->elem_size : 4;
+        }
         parse_primary(); // address -> eax
         if (cc_error_flag) return;
-        gen_mov_eax_indirect_eax();
+        int k;
+        for (k = 0; k < stars - 1; k++) gen_mov_eax_indirect_eax(); // intermediate pointer levels
+        if (elem_size == 1) gen_mov_eax_indirect_eax_byte();
+        else gen_mov_eax_indirect_eax();
         return;
     }
     if (cur_tok.type == T_BITAND) {
@@ -1280,7 +1495,8 @@ static void parse_primary(void) {
             next_token();
             parse_array_index_addr(name, line); // element address -> eax
             if (cc_error_flag) return;
-            gen_mov_eax_indirect_eax(); // load value
+            if (lookup_elem_size(name) == 1) gen_mov_eax_indirect_eax_byte();
+            else gen_mov_eax_indirect_eax(); // load value
             return;
         }
         if (cur_tok.type == T_INC || cur_tok.type == T_DEC) {
@@ -1476,6 +1692,7 @@ static void parse_assign(void) {
             next_token(); // consume '['
             parse_array_index_addr(name, line); // element address -> eax
             if (cc_error_flag) return;
+            int elem_size = lookup_elem_size(name);
             token_type_t op = cur_tok.type;
             next_token(); // consume the assign/compound-assign operator
             if (op == T_ASSIGN) {
@@ -1483,11 +1700,13 @@ static void parse_assign(void) {
                 parse_assign();
                 if (cc_error_flag) return;
                 gen_pop_ecx();
-                gen_mov_indirect_ecx_eax();
+                if (elem_size == 1) gen_mov_indirect_ecx_al();
+                else gen_mov_indirect_ecx_eax();
             } else {
                 gen_push_eax();             // save element address
                 gen_mov_eax_esp0();         // peek address without popping
-                gen_mov_eax_indirect_eax(); // eax = old value
+                if (elem_size == 1) gen_mov_eax_indirect_eax_byte();
+                else gen_mov_eax_indirect_eax(); // eax = old value
                 gen_push_eax();             // stack: [addr, oldval]
                 parse_assign();             // RHS -> eax
                 if (cc_error_flag) return;
@@ -1505,7 +1724,8 @@ static void parse_assign(void) {
                     else gen_sar_eax_cl();
                 } else { gen_div_setup_and_idiv(); emit_u8(0x89); emit_u8(0xD0); } // %=
                 gen_pop_ecx();              // ecx = element address
-                gen_mov_indirect_ecx_eax();
+                if (elem_size == 1) gen_mov_indirect_ecx_al();
+                else gen_mov_indirect_ecx_eax();
             }
             return;
         }
@@ -1539,11 +1759,14 @@ static void parse_assign(void) {
         lexer_restore(save);
     }
 
-    // Pointer dereference assignment: *IDENT = expr (plain '=' only -
-    // compound-assign through a pointer isn't supported in this subset).
+    // Pointer dereference assignment: *IDENT = expr, **IDENT = expr, ...
+    // (plain '=' only - compound-assign through a pointer isn't
+    // supported in this subset). Restricted to a plain identifier
+    // after the star-chain, same scoping as the rvalue deref above.
     if (cur_tok.type == T_STAR) {
         lexer_state_t save = lexer_save();
-        next_token();
+        int stars = 0;
+        while (cur_tok.type == T_STAR) { stars++; next_token(); }
         if (cur_tok.type == T_IDENT) {
             char name[64];
             int i = 0; while (cur_tok.sval[i]) { name[i] = cur_tok.sval[i]; i++; } name[i] = 0;
@@ -1551,13 +1774,17 @@ static void parse_assign(void) {
             next_token();
             if (cur_tok.type == T_ASSIGN) {
                 next_token();
-                gen_var_load_to_eax(name, line); // pointer's value = target address
+                int elem_size = lookup_elem_size(name);
+                gen_var_load_to_eax(name, line); // level-1 pointer value -> eax
                 if (cc_error_flag) return;
-                gen_push_eax();
+                int k;
+                for (k = 0; k < stars - 1; k++) gen_mov_eax_indirect_eax(); // walk down remaining pointer levels
+                gen_push_eax(); // final target address
                 parse_assign(); // RHS -> eax
                 if (cc_error_flag) return;
                 gen_pop_ecx();
-                gen_mov_indirect_ecx_eax();
+                if (elem_size == 1) gen_mov_indirect_ecx_al();
+                else gen_mov_indirect_ecx_eax();
                 return;
             }
         }
@@ -1573,17 +1800,26 @@ static void parse_expr(void) { parse_assign(); }
 // Statements
 // ------------------------------------------------------------
 
-static void add_local(const char* name, int is_array, int array_len) {
+static void add_local(const char* name, int is_array, int array_len, int elem_size, int ptr_depth) {
     if (local_count >= MAX_LOCALS) { cc_seterr(cur_tok.line, "too many local variables"); return; }
     if (find_local(name)) { cc_seterr(cur_tok.line, "duplicate variable name"); return; }
     int i = 0; while (name[i] && i < 31) { locals[local_count].name[i] = name[i]; i++; }
     locals[local_count].name[i] = 0;
-    int slots = is_array ? array_len : 1;
-    next_local_offset -= slots * 4;
+    // Arrays are byte-packed at their declared element size (1 for
+    // char, 4 otherwise) so pointer arithmetic and indexing agree with
+    // real C memory layout; a plain scalar still gets a full 4-byte
+    // slot regardless of type, which is a legal implementation choice
+    // (the standard doesn't mandate tight packing for scalars, only
+    // that sizeof report the right value and array elements sit
+    // sizeof(T) bytes apart).
+    int bytes = is_array ? array_len * elem_size : 4;
+    next_local_offset -= bytes;
     if (next_local_offset < -2048) { cc_seterr(cur_tok.line, "too many/too large local variables (frame too large)"); return; }
     locals[local_count].offset = next_local_offset; // base offset = element 0 (lowest address)
     locals[local_count].is_array = is_array;
     locals[local_count].array_len = array_len;
+    locals[local_count].elem_size = elem_size;
+    locals[local_count].ptr_depth = ptr_depth;
     local_count++;
 }
 
@@ -1592,25 +1828,30 @@ static int is_type_start(token_type_t t) {
            t == T_UNSIGNED || t == T_SIGNED || t == T_LONG || t == T_SHORT;
 }
 
-static void consume_scalar_type(void) {
+static int consume_scalar_type(void) {
     int saw_base = 0;
+    int is_char = 0;
     while (cur_tok.type == T_CONST || cur_tok.type == T_UNSIGNED ||
            cur_tok.type == T_SIGNED || cur_tok.type == T_LONG ||
            cur_tok.type == T_SHORT || cur_tok.type == T_CHAR ||
            cur_tok.type == T_INT) {
         if (cur_tok.type == T_CHAR || cur_tok.type == T_INT) saw_base = 1;
+        if (cur_tok.type == T_CHAR) is_char = 1;
+        if (cur_tok.type == T_INT) is_char = 0; // `int` anywhere means it's not a plain char
         next_token();
     }
     if (!saw_base && !cc_error_flag)
         cc_seterr(cur_tok.line, "expected scalar type");
+    return is_char;
 }
 
 static void parse_local_decl(void) {
-    consume_scalar_type();
+    int is_char = consume_scalar_type();
     if (cc_error_flag) return;
 
     for (;;) {
-        if (cur_tok.type == T_STAR) next_token();
+        int ptr_depth = 0;
+        while (cur_tok.type == T_STAR) { ptr_depth++; next_token(); }
         if (cur_tok.type != T_IDENT) {
             cc_seterr(cur_tok.line, "expected identifier after type");
             return;
@@ -1622,6 +1863,12 @@ static void parse_local_decl(void) {
         name[i] = 0;
         next_token();
 
+        // A pointer's own storage is always a 4-byte address, but
+        // elem_size here tracks what it (ultimately) POINTS TO, which
+        // is what dereferencing/array-indexing need to pick the right
+        // load/store width - independent of how many `*` levels deep.
+        int elem_size = is_char ? 1 : 4;
+
         if (cur_tok.type == T_LBRACKET) {
             next_token();
             if (cur_tok.type != T_NUM || cur_tok.ival <= 0) {
@@ -1632,9 +1879,9 @@ static void parse_local_decl(void) {
             next_token();
             expect(T_RBRACKET, "expected ']'");
             if (cc_error_flag) return;
-            add_local(name, 1, len);
+            add_local(name, 1, len, is_char ? 1 : 4, 0);
         } else {
-            add_local(name, 0, 0);
+            add_local(name, 0, 0, elem_size, ptr_depth);
             if (cc_error_flag) return;
 
             if (cur_tok.type == T_ASSIGN) {
@@ -1688,9 +1935,12 @@ static void parse_stmt(void) {
         ctx.continue_target_known = 0;
 
         loop_ctx_t* prev_loop = cur_loop;
+        int prev_loop_seq = cur_loop_seq;
         cur_loop = &ctx;
+        cur_loop_seq = ++nest_seq_counter;
         parse_stmt();
         cur_loop = prev_loop;
+        cur_loop_seq = prev_loop_seq;
         if (cc_error_flag) return;
 
         uint32_t cond_start = code_len;
@@ -1735,8 +1985,10 @@ static void parse_stmt(void) {
         loop_ctx_t ctx; ctx.break_count = 0; ctx.continue_count = 0;
         ctx.continue_target_known = 1; ctx.continue_target = loop_start;
         loop_ctx_t* prev_loop = cur_loop; cur_loop = &ctx;
+        int prev_loop_seq = cur_loop_seq; cur_loop_seq = ++nest_seq_counter;
         parse_stmt();
         cur_loop = prev_loop;
+        cur_loop_seq = prev_loop_seq;
         if (cc_error_flag) return;
 
         gen_jmp_to(loop_start);
@@ -1790,8 +2042,10 @@ static void parse_stmt(void) {
         loop_ctx_t ctx; ctx.break_count = 0; ctx.continue_count = 0;
         ctx.continue_target_known = 0;
         loop_ctx_t* prev_loop = cur_loop; cur_loop = &ctx;
+        int prev_loop_seq = cur_loop_seq; cur_loop_seq = ++nest_seq_counter;
         parse_stmt();
         cur_loop = prev_loop;
+        cur_loop_seq = prev_loop_seq;
         if (cc_error_flag) return;
 
         uint32_t incr_label = code_len;
@@ -1816,9 +2070,14 @@ static void parse_stmt(void) {
     if (cur_tok.type == T_BREAK) {
         next_token();
         expect(T_SEMI, "expected ';' after break"); if (cc_error_flag) return;
-        if (!cur_loop) { cc_seterr(cur_tok.line, "'break' outside a loop"); return; }
-        if (cur_loop->break_count >= MAX_BREAK_PATCHES) { cc_seterr(cur_tok.line, "too many break statements in one loop"); return; }
-        cur_loop->break_patches[cur_loop->break_count++] = gen_jmp_placeholder();
+        if (!cur_loop && !cur_switch) { cc_seterr(cur_tok.line, "'break' outside a loop or switch"); return; }
+        if (cur_switch && cur_switch_seq > cur_loop_seq) {
+            if (cur_switch->break_count >= MAX_BREAK_PATCHES) { cc_seterr(cur_tok.line, "too many break statements in one switch"); return; }
+            cur_switch->break_patches[cur_switch->break_count++] = gen_jmp_placeholder();
+        } else {
+            if (cur_loop->break_count >= MAX_BREAK_PATCHES) { cc_seterr(cur_tok.line, "too many break statements in one loop"); return; }
+            cur_loop->break_patches[cur_loop->break_count++] = gen_jmp_placeholder();
+        }
         return;
     }
 
@@ -1845,6 +2104,150 @@ static void parse_stmt(void) {
         return;
     }
 
+    if (cur_tok.type == T_GOTO) {
+        next_token();
+        if (cur_tok.type != T_IDENT) { cc_seterr(cur_tok.line, "expected label name after goto"); return; }
+        char name[64];
+        int ni = 0; while (cur_tok.sval[ni] && ni < 31) { name[ni] = cur_tok.sval[ni]; ni++; } name[ni] = 0;
+        int line = cur_tok.line;
+        next_token();
+        expect(T_SEMI, "expected ';' after goto"); if (cc_error_flag) return;
+
+        label_t* lbl = find_label(name);
+        if (lbl && lbl->defined) {
+            gen_jmp_to(lbl->addr);
+        } else {
+            if (label_patch_count >= MAX_LABEL_PATCHES) { cc_seterr(line, "too many pending goto statements"); return; }
+            uint32_t at = gen_jmp_placeholder();
+            int k = 0; while (name[k] && k < 31) { label_patches[label_patch_count].name[k] = name[k]; k++; }
+            label_patches[label_patch_count].name[k] = 0;
+            label_patches[label_patch_count].patch_at = at;
+            label_patches[label_patch_count].line = line;
+            label_patch_count++;
+        }
+        return;
+    }
+
+    if (cur_tok.type == T_CASE) {
+        if (!cur_switch) { cc_seterr(cur_tok.line, "'case' outside a switch"); return; }
+        next_token();
+        int neg = 0;
+        if (cur_tok.type == T_MINUS) { neg = 1; next_token(); }
+        if (cur_tok.type != T_NUM) { cc_seterr(cur_tok.line, "case label must be a constant"); return; }
+        int32_t val = neg ? -cur_tok.ival : cur_tok.ival;
+        next_token();
+        expect(T_COLON, "expected ':' after case label"); if (cc_error_flag) return;
+        if (cur_switch->case_count >= MAX_SWITCH_CASES) { cc_seterr(cur_tok.line, "too many case labels in one switch"); return; }
+        cur_switch->case_values[cur_switch->case_count] = val;
+        cur_switch->case_addrs[cur_switch->case_count] = code_len;
+        cur_switch->case_count++;
+        return;
+    }
+
+    if (cur_tok.type == T_DEFAULT) {
+        if (!cur_switch) { cc_seterr(cur_tok.line, "'default' outside a switch"); return; }
+        next_token();
+        expect(T_COLON, "expected ':' after default"); if (cc_error_flag) return;
+        if (cur_switch->has_default) { cc_seterr(cur_tok.line, "multiple 'default' labels in one switch"); return; }
+        cur_switch->has_default = 1;
+        cur_switch->default_addr = code_len;
+        return;
+    }
+
+    if (cur_tok.type == T_SWITCH) {
+        next_token();
+        expect(T_LPAREN, "expected '(' after switch"); if (cc_error_flag) return;
+        parse_expr(); if (cc_error_flag) return; // switch value -> eax
+        expect(T_RPAREN, "expected ')' after switch expression"); if (cc_error_flag) return;
+
+        // Store the switch value in a hidden stack slot (not a named
+        // variable, so it can never collide with anything the user
+        // declared) so the dispatch code emitted after the body can
+        // reload it.
+        next_local_offset -= 4;
+        if (next_local_offset < -2048) { cc_seterr(cur_tok.line, "too many/too large local variables (frame too large)"); return; }
+        int32_t value_slot = next_local_offset;
+        gen_mov_ebp_disp32_eax(value_slot);
+
+        // Body first, dispatch table after: jump over the body (which
+        // is really just a sequence of statements with case/default
+        // labels recorded inline), then emit a linear chain of
+        // compares against the now-known case addresses, so every
+        // address referenced by the dispatch table is already known
+        // by the time it's generated - no separate backpatch pass
+        // needed for the case jumps themselves.
+        uint32_t to_dispatch = gen_jmp_placeholder();
+
+        switch_ctx_t ctx;
+        ctx.case_count = 0;
+        ctx.has_default = 0;
+        ctx.break_count = 0;
+        ctx.value_slot = value_slot;
+        switch_ctx_t* prev_switch = cur_switch;
+        int prev_switch_seq = cur_switch_seq;
+        cur_switch = &ctx;
+        cur_switch_seq = ++nest_seq_counter;
+
+        expect(T_LBRACE, "expected '{' after switch(...)");
+        if (!cc_error_flag) {
+            while (!cc_error_flag && cur_tok.type != T_RBRACE && cur_tok.type != T_EOF) {
+                parse_stmt();
+            }
+            expect(T_RBRACE, "expected '}'");
+        }
+
+        cur_switch = prev_switch;
+        cur_switch_seq = prev_switch_seq;
+        if (cc_error_flag) return;
+
+        patch_jump_here(to_dispatch);
+        gen_mov_eax_ebp_disp32(value_slot);
+        { int ci; for (ci = 0; ci < ctx.case_count; ci++) {
+            gen_cmp_eax_imm32((uint32_t)ctx.case_values[ci]);
+            gen_je_to(ctx.case_addrs[ci]);
+        } }
+        if (ctx.has_default) gen_jmp_to(ctx.default_addr);
+
+        { int bi; for (bi = 0; bi < ctx.break_count; bi++) patch_jump_here(ctx.break_patches[bi]); }
+        return;
+    }
+
+    if (cur_tok.type == T_IDENT) {
+        // A label definition: IDENT ':' - only possible at
+        // statement-start position, and unambiguous since a bare
+        // "identifier:" is never a valid C expression on its own.
+        lexer_state_t save = lexer_save();
+        char name[64];
+        int ni = 0; while (cur_tok.sval[ni] && ni < 31) { name[ni] = cur_tok.sval[ni]; ni++; } name[ni] = 0;
+        next_token();
+        if (cur_tok.type == T_COLON) {
+            next_token();
+            label_t* existing = find_label(name);
+            if (existing) {
+                if (existing->defined) { cc_seterr(cur_tok.line, "duplicate label"); return; }
+            } else {
+                if (func_label_count >= MAX_LABELS) { cc_seterr(cur_tok.line, "too many labels in one function"); return; }
+                existing = &func_labels[func_label_count++];
+                int k = 0; while (name[k] && k < 31) { existing->name[k] = name[k]; k++; } existing->name[k] = 0;
+            }
+            existing->addr = code_len;
+            existing->defined = 1;
+
+            // Resolve any gotos that were already waiting on this label.
+            int w, r = 0;
+            for (w = 0; w < label_patch_count; w++) {
+                if (str_eq(label_patches[w].name, name)) {
+                    patch_jump_to_target(label_patches[w].patch_at, code_len);
+                } else {
+                    label_patches[r++] = label_patches[w];
+                }
+            }
+            label_patch_count = r;
+            return;
+        }
+        lexer_restore(save);
+    }
+
     if (is_type_start(cur_tok.type)) {
         parse_local_decl();
         expect(T_SEMI, "expected ';' after declaration");
@@ -1869,17 +2272,81 @@ static void parse_block(void) {
 // Top level: functions and globals
 // ------------------------------------------------------------
 
-static void parse_function(const char* name) {
-    if (func_count >= MAX_FUNCS) { cc_seterr(cur_tok.line, "too many functions"); return; }
+// Parameter names/types are scanned before any codegen decisions are
+// made, since a `(...)` parameter list can turn out to belong to
+// either a full function definition (`{`) or a standalone forward
+// declaration (`;`) - only known after this list and the closing `)`
+// have already been consumed.
+typedef struct { char name[32]; int is_char; int ptr_depth; } param_scan_t;
 
-    func_t* fn = &funcs[func_count++];
-    int i = 0; while (name[i] && i < 31) { fn->name[i] = name[i]; i++; } fn->name[i] = 0;
+static int parse_param_list_prescan(param_scan_t* out, int max_out) {
+    int n = 0;
+    if (cur_tok.type == T_VOID) { next_token(); return 0; }
+    if (cur_tok.type == T_RPAREN) return 0;
+    for (;;) {
+        int is_char = consume_scalar_type();
+        if (cc_error_flag) return n;
+        int ptr_depth = 0;
+        while (cur_tok.type == T_STAR) { ptr_depth++; next_token(); }
+        if (cur_tok.type != T_IDENT) { cc_seterr(cur_tok.line, "expected parameter name"); return n; }
+        if (n >= max_out) { cc_seterr(cur_tok.line, "too many parameters"); return n; }
+        int k = 0; while (cur_tok.sval[k] && k < 31) { out[n].name[k] = cur_tok.sval[k]; k++; } out[n].name[k] = 0;
+        out[n].is_char = is_char;
+        out[n].ptr_depth = ptr_depth;
+        n++;
+        next_token();
+        if (cur_tok.type == T_COMMA) { next_token(); continue; }
+        break;
+    }
+    return n;
+}
+
+static void parse_function(const char* name) {
+    param_scan_t params[MAX_LOCALS];
+    int nparams = parse_param_list_prescan(params, MAX_LOCALS);
+    if (cc_error_flag) return;
+    expect(T_RPAREN, "expected ')'"); if (cc_error_flag) return;
+
+    if (cur_tok.type == T_SEMI) {
+        // Forward declaration only, e.g. `int bar(int x);` - real C
+        // requires exactly this (or a prior definition) before a
+        // function can be called ahead of its definition, which is
+        // what makes mutual recursion possible.
+        next_token();
+        func_t* existing = find_func(name);
+        if (existing) {
+            if (existing->nparams != nparams) {
+                cc_seterr(cur_tok.line, "conflicting declaration for function");
+                return;
+            }
+        } else {
+            if (func_count >= MAX_FUNCS) { cc_seterr(cur_tok.line, "too many functions"); return; }
+            func_t* fn = &funcs[func_count++];
+            int i = 0; while (name[i] && i < 31) { fn->name[i] = name[i]; i++; } fn->name[i] = 0;
+            fn->addr = 0; // declared, not yet defined
+            fn->nparams = nparams;
+        }
+        return;
+    }
+
+    func_t* fn = find_func(name);
+    if (fn) {
+        if (fn->addr != 0) { cc_seterr(cur_tok.line, "redefinition of function"); return; }
+        if (fn->nparams != nparams) { cc_seterr(cur_tok.line, "definition disagrees with earlier declaration"); return; }
+    } else {
+        if (func_count >= MAX_FUNCS) { cc_seterr(cur_tok.line, "too many functions"); return; }
+        fn = &funcs[func_count++];
+        int i = 0; while (name[i] && i < 31) { fn->name[i] = name[i]; i++; } fn->name[i] = 0;
+        fn->nparams = nparams;
+    }
     fn->addr = (uint32_t)code_buf + code_len;
     cur_func_start = fn->addr;
 
     local_count = 0;
     next_local_offset = 0;
     next_param_offset = 8;
+    func_label_count = 0;
+    label_patch_count = 0;
 
     // prologue
     emit_u8(0x55);             // push ebp
@@ -1887,34 +2354,20 @@ static void parse_function(const char* name) {
     uint32_t frame_patch = code_len;
     emit_u8(0x81); emit_u8(0xEC); emit_u32(0); // sub esp, <patched later>
 
-    int nparams = 0;
-    if (cur_tok.type == T_VOID) {
-        // "(void)" - explicit empty parameter list, matching standard
-        // C convention for "this function takes no arguments".
-        next_token();
-    } else if (cur_tok.type != T_RPAREN) {
-        for (;;) {
-            consume_scalar_type(); if (cc_error_flag) return;
-            if (cur_tok.type == T_STAR) next_token(); // pointer param, parsed and ignored (plain int under the hood)
-            if (cur_tok.type != T_IDENT) { cc_seterr(cur_tok.line, "expected parameter name"); return; }
-            char pname[64];
-            int j = 0; while (cur_tok.sval[j]) { pname[j] = cur_tok.sval[j]; j++; } pname[j] = 0;
-            next_token();
-            if (local_count >= MAX_LOCALS) { cc_seterr(cur_tok.line, "too many parameters"); return; }
-            int k = 0; while (pname[k] && k < 31) { locals[local_count].name[k] = pname[k]; k++; }
-            locals[local_count].name[k] = 0;
+    {
+        int k;
+        for (k = 0; k < nparams; k++) {
+            int m = 0; while (params[k].name[m] && m < 31) { locals[local_count].name[m] = params[k].name[m]; m++; }
+            locals[local_count].name[m] = 0;
             locals[local_count].offset = next_param_offset;
             locals[local_count].is_array = 0;
             locals[local_count].array_len = 0;
+            locals[local_count].elem_size = params[k].is_char ? 1 : 4;
+            locals[local_count].ptr_depth = params[k].ptr_depth;
             next_param_offset += 4;
             local_count++;
-            nparams++;
-            if (cur_tok.type == T_COMMA) { next_token(); continue; }
-            break;
         }
     }
-    fn->nparams = nparams;
-    expect(T_RPAREN, "expected ')'"); if (cc_error_flag) return;
 
     // Call sites push arguments left-to-right (evaluation order), which
     // is the reverse of what's needed for the first-declared parameter
@@ -1932,6 +2385,13 @@ static void parse_function(const char* name) {
     parse_block();
     if (cc_error_flag) return;
 
+    // Any goto that never found its label is a compile error, exactly
+    // as in real C.
+    if (label_patch_count > 0) {
+        cc_seterr(label_patches[0].line, "goto to undefined label");
+        return;
+    }
+
     // implicit "return 0;" if the function falls through without one
     gen_mov_eax_imm32(0);
     emit_u8(0xC9); // leave
@@ -1946,15 +2406,15 @@ static void parse_function(const char* name) {
 static void parse_program(void) {
     while (!cc_error_flag && cur_tok.type != T_EOF) {
         int is_void = (cur_tok.type == T_VOID);
+        int is_char = 0;
         if (!is_void && !is_type_start(cur_tok.type)) {
             cc_seterr(cur_tok.line, "expected a C type");
             return;
         }
         if (is_void) next_token();
-        else consume_scalar_type();
-        int is_ptr = 0;
-        if (cur_tok.type == T_STAR) { is_ptr = 1; next_token(); } // parsed and ignored - plain int under the hood
-        (void)is_ptr;
+        else is_char = consume_scalar_type();
+        int ptr_depth = 0;
+        while (cur_tok.type == T_STAR) { ptr_depth++; next_token(); }
         if (cur_tok.type != T_IDENT) { cc_seterr(cur_tok.line, "expected identifier"); return; }
         char name[64];
         int i = 0; while (cur_tok.sval[i]) { name[i] = cur_tok.sval[i]; i++; } name[i] = 0;
@@ -1968,6 +2428,7 @@ static void parse_program(void) {
             cc_seterr(decl_line, "'void' is only valid as a function return type");
             return;
         } else {
+            int elem_size = is_char ? 1 : 4;
             for (;;) {
                 if (global_count >= MAX_GLOBALS) {
                     cc_seterr(cur_tok.line, "too many globals");
@@ -1984,14 +2445,14 @@ static void parse_program(void) {
                     next_token();
                     expect(T_RBRACKET, "expected ']'");
                     if (cc_error_flag) return;
-                    if (global_array_pool_used + len > GLOBAL_ARRAY_POOL_SIZE) {
+                    if (global_array_pool_used + len * elem_size > GLOBAL_ARRAY_POOL_BYTES) {
                         cc_seterr(cur_tok.line, "global arrays too large in total");
                         return;
                     }
 
                     uint32_t base =
                         (uint32_t)&global_array_pool[global_array_pool_used];
-                    global_array_pool_used += len;
+                    global_array_pool_used += len * elem_size;
 
                     int j = 0;
                     while (name[j] && j < 31) {
@@ -2002,6 +2463,8 @@ static void parse_program(void) {
                     globals[global_count].addr = base;
                     globals[global_count].is_array = 1;
                     globals[global_count].array_len = len;
+                    globals[global_count].elem_size = elem_size;
+                    globals[global_count].ptr_depth = 0;
                     global_count++;
                 } else {
                     int32_t init = 0;
@@ -2032,6 +2495,8 @@ static void parse_program(void) {
                         (uint32_t)&globals_data[global_count];
                     globals[global_count].is_array = 0;
                     globals[global_count].array_len = 0;
+                    globals[global_count].elem_size = elem_size;
+                    globals[global_count].ptr_depth = ptr_depth;
                     global_count++;
                 }
 
@@ -2039,6 +2504,8 @@ static void parse_program(void) {
                     break;
 
                 next_token();
+                ptr_depth = 0;
+                while (cur_tok.type == T_STAR) { ptr_depth++; next_token(); }
                 if (cur_tok.type != T_IDENT) {
                     cc_seterr(cur_tok.line,
                               "expected identifier after ','");
@@ -2180,12 +2647,14 @@ int cc_compile_to_binary(const char* source, unsigned int len,
     }
 
     if (global_array_pool_used > 0) {
-        /* rep stosd: clear the entire array backing pool in one go. */
+        /* rep stosb: clear the entire array backing pool one byte at a
+         * time. global_array_pool_used is tracked in bytes, so this
+         * correctly zeroes byte-packed char arrays as well as
+         * dword-packed int arrays sharing the same pool. */
         gen_mov_eax_imm32(0);
         emit_u8(0xBF); emit_u32((uint32_t)&global_array_pool[0]); /* mov edi, base */
-        emit_u8(0xB9); emit_u32((uint32_t)global_array_pool_used); /* temporary count */
-        /* Convert element count to dword count; it is already elements. */
-        emit_u8(0xF3); emit_u8(0xAB); /* rep stosd, ECX elements */
+        emit_u8(0xB9); emit_u32((uint32_t)global_array_pool_used); /* byte count */
+        emit_u8(0xF3); emit_u8(0xAA); /* rep stosb, ECX bytes */
     }
 
     gen_call_abs(entryfn->addr);
@@ -2252,12 +2721,25 @@ static int cc_compile(const char* source, unsigned int len, func_t** out_mainfn)
     code_len = 0;
     cc_error_flag = 0; cc_error_line = 0; cc_error_msg[0] = 0;
     local_count = 0; func_count = 0; global_count = 0; token_count = 0; global_array_pool_used = 0;
+    pending_call_count = 0;
 
     cc_check_indentation(source, len);
 
     if (!cc_error_flag) {
         next_token();
         parse_program();
+    }
+
+    if (!cc_error_flag) {
+        int i;
+        for (i = 0; i < pending_call_count; i++) {
+            func_t* target = &funcs[pending_calls[i].func_index];
+            if (target->addr == 0) {
+                cc_seterr(pending_calls[i].line, "function declared but never defined");
+                break;
+            }
+            patch_call_target(pending_calls[i].patch_at, target->addr);
+        }
     }
 
     if (cc_error_flag) {
@@ -2275,10 +2757,24 @@ static int cc_compile(const char* source, unsigned int len, func_t** out_mainfn)
     }
 
     /* TanjaOS C has no linker or separate program-start convention.
-     * The first function defined in the source is the program entry point,
-     * so users can name it anything: int hello() { ... } works directly. */
-    *out_mainfn = &funcs[0];
-    return 0;
+     * The first function ACTUALLY DEFINED (not merely forward-declared)
+     * in the source is the program entry point, so users can name it
+     * anything: int hello() { ... } works directly. A function's
+     * array index reflects when it was first MENTIONED (which for a
+     * forward-declared function is its prototype, not its body), so
+     * entry point selection instead picks whichever defined function
+     * has the lowest code address - code_buf fills up in the order
+     * bodies are actually emitted, so the lowest address is always
+     * the one that appeared first as a real definition. */
+    int i;
+    func_t* entry = 0;
+    for (i = 0; i < func_count; i++) {
+        if (funcs[i].addr != 0 && (!entry || funcs[i].addr < entry->addr))
+            entry = &funcs[i];
+    }
+    if (entry) { *out_mainfn = entry; return 0; }
+    print("Compile error: no function definition\n");
+    return -1;
 }
 
 // Test-only entry point: compiles but never executes anything, safe
