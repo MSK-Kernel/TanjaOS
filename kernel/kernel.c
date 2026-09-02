@@ -1128,14 +1128,11 @@ void execute_command(const char* cmd_line) {
         cmd = cmd->next;
     }
 
-    /* Like a normal shell, fall back to executing a file when the command
-     * name is not a built-in. Compiled TanjaOS binaries and text scripts
-     * both go through exec_file(). */
-    if (fs_file_exists(cmd_name)) {
-        exec_file(cmd_name);
-        return;
-    }
-
+    /* Unlike a typical shell, bare filenames are NOT executed
+     * automatically - running a compiled TanjaOS binary or a text
+     * script requires the explicit `exec <file>` command (see
+     * bin/exec.c). This avoids accidentally running a file that just
+     * happens to share a name with something you meant to type. */
     print("error: Command not found: ");
     print(cmd_name);
     print("\n");
