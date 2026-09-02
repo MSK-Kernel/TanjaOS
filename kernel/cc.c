@@ -55,6 +55,14 @@ extern int cc_printf_7(unsigned int,unsigned int,unsigned int,unsigned int,unsig
 extern int cc_printf_8(unsigned int,unsigned int,unsigned int,unsigned int,unsigned int,unsigned int,unsigned int,const char*);
 extern int cc_printf_9(unsigned int,unsigned int,unsigned int,unsigned int,unsigned int,unsigned int,unsigned int,unsigned int,const char*);
 extern int cc_scanf_2(unsigned int,const char*);
+// Float-argument printf bridges (see printf's "use_float_printf" path
+// below): value arguments are passed as real 8-byte doubles rather
+// than 4-byte ints, so these need their own bridge family. Only 0-2
+// float value arguments are supported per call.
+extern int cc_printf_f2(double,const char*);
+extern int cc_printf_f3(double,double,const char*);
+extern int cc_printf_f4(double,double,double,const char*);
+extern int cc_printf_mixed(const char*, int, uint32_t, const uint64_t*);
 
 #define CC_HEAP_SIZE 65536
 static uint8_t cc_heap[CC_HEAP_SIZE];
@@ -402,6 +410,7 @@ static void cc_seterr(int line, const char* msg) {
 typedef enum {
     T_EOF, T_NUM, T_IDENT, T_STR,
     T_INT, T_VOID, T_CHAR, T_CONST, T_UNSIGNED, T_SIGNED, T_LONG, T_SHORT,
+    T_FLOAT, T_DOUBLE,
     T_IF, T_ELSE, T_WHILE, T_DO, T_FOR, T_RETURN, T_BREAK, T_CONTINUE,
     T_SIZEOF, T_GOTO, T_SWITCH, T_CASE, T_DEFAULT,
     T_LPAREN, T_RPAREN, T_LBRACE, T_RBRACE, T_LBRACKET, T_RBRACKET, T_SEMI, T_COMMA,
@@ -416,6 +425,9 @@ typedef enum {
 typedef struct {
     token_type_t type;
     int32_t ival;
+    double fval;
+    int is_float_lit;   // this T_NUM is actually a floating-point literal
+    int is_float_single; // literal had an 'f'/'F' suffix (float, not double)
     char sval[256];
     int line;
     uint32_t start_pos;
@@ -476,9 +488,29 @@ static void next_token(void) {
     cur_tok.start_pos = src_pos;
     cur_tok.line = cur_line;
     cur_tok.sval[0] = 0;
+    cur_tok.is_float_lit = 0;
+    cur_tok.is_float_single = 0;
 
     int c = peekc();
     if (c == -1) { cur_tok.type = T_EOF; return; }
+
+    if (c == '.' && src_pos + 1 < src_len && src[src_pos + 1] >= '0' && src[src_pos + 1] <= '9') {
+        // A float literal with no leading digit, e.g. ".5" (== 0.5) -
+        // valid in real C, so handled here before the digit-only path.
+        getc_src(); // consume '.'
+        double frac = 0.0;
+        double scale = 0.1;
+        while (peekc() >= '0' && peekc() <= '9') {
+            frac += (double)(getc_src() - '0') * scale;
+            scale *= 0.1;
+        }
+        cur_tok.fval = frac;
+        cur_tok.is_float_lit = 1;
+        if (peekc() == 'f' || peekc() == 'F') { getc_src(); cur_tok.is_float_single = 1; }
+        cur_tok.type = T_NUM;
+        cur_tok.ival = (int32_t)cur_tok.fval;
+        return;
+    }
 
     if (c >= '0' && c <= '9') {
         int32_t v = 0;
@@ -505,6 +537,23 @@ static void next_token(void) {
         } else {
             while (peekc() >= '0' && peekc() <= '9')
                 v = v * 10 + (getc_src() - '0');
+
+            if (peekc() == '.') {
+                // Floating-point literal: v '.' fractional-digits ['f'|'F']
+                getc_src(); // consume '.'
+                double frac = 0.0;
+                double scale = 0.1;
+                while (peekc() >= '0' && peekc() <= '9') {
+                    frac += (double)(getc_src() - '0') * scale;
+                    scale *= 0.1;
+                }
+                cur_tok.fval = (double)v + frac;
+                cur_tok.is_float_lit = 1;
+                if (peekc() == 'f' || peekc() == 'F') { getc_src(); cur_tok.is_float_single = 1; }
+                cur_tok.type = T_NUM;
+                cur_tok.ival = (int32_t)cur_tok.fval;
+                return;
+            }
         }
 
         cur_tok.type = T_NUM; cur_tok.ival = v; return;
@@ -525,6 +574,8 @@ static void next_token(void) {
         else if (str_eq(cur_tok.sval, "signed")) cur_tok.type = T_SIGNED;
         else if (str_eq(cur_tok.sval, "long")) cur_tok.type = T_LONG;
         else if (str_eq(cur_tok.sval, "short")) cur_tok.type = T_SHORT;
+        else if (str_eq(cur_tok.sval, "float")) cur_tok.type = T_FLOAT;
+        else if (str_eq(cur_tok.sval, "double")) cur_tok.type = T_DOUBLE;
         else if (str_eq(cur_tok.sval, "if")) cur_tok.type = T_IF;
         else if (str_eq(cur_tok.sval, "else")) cur_tok.type = T_ELSE;
         else if (str_eq(cur_tok.sval, "while")) cur_tok.type = T_WHILE;
@@ -674,7 +725,7 @@ static void expect(token_type_t t, const char* what) {
 // ------------------------------------------------------------
 
 #define MAX_LOCALS 48
-typedef struct { char name[32]; int32_t offset; int is_array; int array_len; int elem_size; int ptr_depth; } local_t;
+typedef struct { char name[32]; int32_t offset; int is_array; int array_len; int elem_size; int ptr_depth; int is_fp; int fp_double; } local_t;
 static local_t locals[MAX_LOCALS];
 static int local_count;
 static int next_local_offset;
@@ -699,8 +750,9 @@ static pending_call_t pending_calls[MAX_PENDING_CALLS];
 static int pending_call_count;
 
 #define MAX_GLOBALS 24
-typedef struct { char name[32]; uint32_t addr; int is_array; int array_len; int elem_size; int ptr_depth; } global_t;
+typedef struct { char name[32]; uint32_t addr; int is_array; int array_len; int elem_size; int ptr_depth; int is_fp; int fp_double; } global_t;
 static int32_t globals_data[MAX_GLOBALS];
+static double globals_fp_init[MAX_GLOBALS]; // initializer value for float/double globals, reapplied by the entry wrapper
 static global_t globals[MAX_GLOBALS];
 static int global_count;
 
@@ -802,7 +854,7 @@ static void gen_sub_eax_ecx(void) { emit_u8(0x29); emit_u8(0xC8); } // eax -= ec
 static void gen_pop_eax(void) { emit_u8(0x58); }
 static void gen_mov_eax_esp0(void) { emit_u8(0x8B); emit_u8(0x04); emit_u8(0x24); } // mov eax,[esp] (peek, no pop)
 static void gen_mov_eax_abs(uint32_t addr) { emit_u8(0xA1); emit_u32(addr); }
-static void gen_mov_abs_eax(uint32_t addr) { emit_u8(0xA3); emit_u32(addr); }
+static void gen_mov_abs_eax(uint32_t addr) { emit_u8(0x89); emit_u8(0x05); emit_u32(addr); } // mov [addr], eax
 static void gen_mov_abs_imm32(uint32_t addr, uint32_t value) {
     emit_u8(0xC7); emit_u8(0x05); emit_u32(addr); emit_u32(value);
 }
@@ -832,6 +884,76 @@ static void gen_test_eax_eax(void) { emit_u8(0x85); emit_u8(0xC0); }
 static void gen_neg_eax(void) { emit_u8(0xF7); emit_u8(0xD8); }
 static void gen_cmp_eax_0(void) { emit_u8(0x3D); emit_u32(0); }
 static void gen_cmp_eax_imm32(uint32_t v) { emit_u8(0x3D); emit_u32(v); } // cmp eax, imm32
+
+// ------------------------------------------------------------
+// x87 FPU codegen for float/double support. Values flow through the
+// FPU stack top (ST(0)) rather than EAX while a float expression is
+// being evaluated - a fundamentally different discipline than the
+// rest of this compiler, which is why float/double get their own
+// declaration/expression/statement code paths instead of being woven
+// into the existing int machinery.
+// ------------------------------------------------------------
+static void gen_fld_ebp_disp32(int32_t d, int is_double) {
+    if (is_double) { emit_u8(0xDD); emit_u8(0x85); emit_u32((uint32_t)d); } // fld qword [ebp+d]
+    else { emit_u8(0xD9); emit_u8(0x85); emit_u32((uint32_t)d); }          // fld dword [ebp+d]
+}
+static void gen_fstp_ebp_disp32(int32_t d, int is_double) {
+    if (is_double) { emit_u8(0xDD); emit_u8(0x9D); emit_u32((uint32_t)d); } // fstp qword [ebp+d]
+    else { emit_u8(0xD9); emit_u8(0x9D); emit_u32((uint32_t)d); }          // fstp dword [ebp+d]
+}
+static void gen_fld_abs(uint32_t addr, int is_double) {
+    if (is_double) { emit_u8(0xDD); emit_u8(0x05); emit_u32(addr); } // fld qword [addr]
+    else { emit_u8(0xD9); emit_u8(0x05); emit_u32(addr); }          // fld dword [addr]
+}
+static void gen_fstp_abs(uint32_t addr, int is_double) {
+    if (is_double) { emit_u8(0xDD); emit_u8(0x1D); emit_u32(addr); } // fstp qword [addr]
+    else { emit_u8(0xD9); emit_u8(0x1D); emit_u32(addr); }          // fstp dword [addr]
+}
+static void gen_faddp(void) { emit_u8(0xDE); emit_u8(0xC1); } // ST(1) += ST(0), pop
+static void gen_fsubp(void) { emit_u8(0xDE); emit_u8(0xE9); } // ST(1) -= ST(0), pop  -> gives (pushed-first - pushed-second)
+static void gen_fmulp(void) { emit_u8(0xDE); emit_u8(0xC9); } // ST(1) *= ST(0), pop
+static void gen_fdivp(void) { emit_u8(0xDE); emit_u8(0xF9); } // ST(1) /= ST(0), pop  -> gives (pushed-first / pushed-second)
+static void gen_fchs(void)  { emit_u8(0xD9); emit_u8(0xE0); } // negate ST(0)
+static void gen_fcompp(void) { emit_u8(0xDE); emit_u8(0xD9); } // compare ST(0),ST(1), pop both
+static void gen_fnstsw_ax(void) { emit_u8(0xDF); emit_u8(0xE0); }
+static void gen_sahf(void) { emit_u8(0x9E); }
+
+static void gen_int_to_float(void) {
+    // EAX (int) -> pushed onto the FPU stack as ST(0), for (float)/
+    // (double) casts of an int expression.
+    emit_u8(0x50);                               // push eax
+    emit_u8(0xDB); emit_u8(0x04); emit_u8(0x24); // fild dword [esp]
+    emit_u8(0x83); emit_u8(0xC4); emit_u8(0x04); // add esp, 4
+}
+static void gen_float_to_int_trunc(void) {
+    // ST(0) -> EAX, truncating toward zero (matching C's (int)floatExpr
+    // semantics) rather than the FPU's default round-to-nearest, by
+    // temporarily swapping in a truncating rounding mode around the
+    // conversion and restoring the original control word afterward.
+    emit_u8(0x83); emit_u8(0xEC); emit_u8(0x08);                             // sub esp, 8
+    emit_u8(0xD9); emit_u8(0x3C); emit_u8(0x24);                             // fnstcw [esp]
+    emit_u8(0x66); emit_u8(0x8B); emit_u8(0x04); emit_u8(0x24);              // mov ax, [esp]
+    emit_u8(0x66); emit_u8(0x0D); emit_u8(0x00); emit_u8(0x0C);              // or ax, 0x0C00
+    emit_u8(0x66); emit_u8(0x89); emit_u8(0x44); emit_u8(0x24); emit_u8(0x02); // mov [esp+2], ax
+    emit_u8(0xD9); emit_u8(0x6C); emit_u8(0x24); emit_u8(0x02);              // fldcw [esp+2]
+    emit_u8(0xDB); emit_u8(0x5C); emit_u8(0x24); emit_u8(0x04);              // fistp dword [esp+4]
+    emit_u8(0xD9); emit_u8(0x2C); emit_u8(0x24);                             // fldcw [esp]
+    emit_u8(0x8B); emit_u8(0x44); emit_u8(0x24); emit_u8(0x04);              // mov eax, [esp+4]
+    emit_u8(0x83); emit_u8(0xC4); emit_u8(0x08);                             // add esp, 8
+}
+static void gen_float_relop_to_eax(token_type_t op) {
+    // Called immediately after gen_fcompp+gen_fnstsw_ax+gen_sahf, which
+    // maps the FPU's C0/C2/C3 compare flags onto CF/PF/ZF the same way
+    // an UNSIGNED integer compare would - so the unsigned-flavored
+    // SETcc opcodes must be used here (SF/OF aren't reliably set by
+    // SAHF, so the signed ones would be wrong).
+    if (op == T_GT) gen_setcc_movzx(0x97);      // seta
+    else if (op == T_LT) gen_setcc_movzx(0x92); // setb
+    else if (op == T_GE) gen_setcc_movzx(0x93); // setae
+    else if (op == T_LE) gen_setcc_movzx(0x96); // setbe
+    else if (op == T_EQ) gen_setcc_movzx(0x94); // sete
+    else gen_setcc_movzx(0x95);                 // setne (T_NE)
+}
 
 static uint32_t gen_jz_placeholder(void) {
     emit_u8(0x0F); emit_u8(0x84); uint32_t at = code_len; emit_u32(0); return at;
@@ -894,6 +1016,208 @@ static void gen_mov_indirect_ecx_al(void) { emit_u8(0x88); emit_u8(0x01); } // m
 // ------------------------------------------------------------
 static void parse_expr(void);
 static void parse_stmt(void);
+static void parse_float_expr(void);
+
+// ------------------------------------------------------------
+// float/double support. Values live on the x87 FPU stack (ST(0))
+// rather than in EAX while a float expression is being evaluated, so
+// these get their own self-contained grammar instead of being woven
+// into the int expression machinery above. Scope, deliberately:
+// arithmetic, assignment, comparison in if/while, and int<->float
+// casts all work; float function parameters/return values, mixing
+// int and float in the same expression without an explicit cast, and
+// arrays of float/double are not supported.
+// ------------------------------------------------------------
+
+// Constant pool for float/double LITERALS (3.14, 2.0, etc) - x87 has
+// no "load immediate" instruction for arbitrary values, so each
+// literal's bit pattern is stashed here once at compile time and
+// loaded from memory (fld) wherever it's used.
+#define FLOAT_CONST_POOL_BYTES 1024
+static uint8_t float_const_pool[FLOAT_CONST_POOL_BYTES];
+static int float_const_pool_used;
+
+// Fixed scratch memory (not from the pool above, always available,
+// never grows) used to shuttle values through memory when the FPU's
+// single-stack-of-registers model needs an assist: narrowing a
+// double-precision cast result down to float precision, and holding
+// one side of a comparison steady while the other side is evaluated.
+static uint8_t fp_scratch4[4];
+static uint8_t fp_scratch8[8];
+static uint8_t printf_fmt_scratch[4]; // stashes printf's format-string pointer across the mixed-args scratch-array build
+
+// Backing storage for float/double GLOBAL VARIABLES (as opposed to
+// float_const_pool above, which is for float/double LITERALS).
+#define FLOAT_GLOBAL_POOL_BYTES 512
+static uint8_t float_global_pool[FLOAT_GLOBAL_POOL_BYTES];
+static int float_global_pool_used;
+
+static uint32_t emit_float_const(double v, int is_double) {
+    int sz = is_double ? 8 : 4;
+    if (float_const_pool_used + sz > FLOAT_CONST_POOL_BYTES) {
+        cc_seterr(cur_tok.line, "too many floating-point literals");
+        return 0;
+    }
+    uint32_t addr = (uint32_t)&float_const_pool[float_const_pool_used];
+    if (is_double) {
+        double dv = v;
+        uint8_t* b = (uint8_t*)&dv;
+        int i; for (i = 0; i < 8; i++) float_const_pool[float_const_pool_used + i] = b[i];
+    } else {
+        float fv = (float)v;
+        uint8_t* b = (uint8_t*)&fv;
+        int i; for (i = 0; i < 4; i++) float_const_pool[float_const_pool_used + i] = b[i];
+    }
+    float_const_pool_used += sz;
+    return addr;
+}
+
+// Heuristic, checked only at the very start of an expression: does
+// this look like a float-valued expression? Not full type inference -
+// just enough to route a declaration initializer, an assignment RHS,
+// an if/while condition, or a printf argument to the float grammar
+// instead of the int one.
+static int looks_like_float_expr(void) {
+    if (cur_tok.type == T_NUM && cur_tok.is_float_lit) return 1;
+    if (cur_tok.type == T_IDENT) {
+        local_t* l = find_local(cur_tok.sval);
+        if (l) return l->is_fp;
+        global_t* g = find_global(cur_tok.sval);
+        if (g) return g->is_fp;
+        return 0;
+    }
+    if (cur_tok.type == T_LPAREN) {
+        lexer_state_t save = lexer_save();
+        next_token();
+        int r = (cur_tok.type == T_FLOAT || cur_tok.type == T_DOUBLE);
+        lexer_restore(save);
+        return r;
+    }
+    if (cur_tok.type == T_MINUS) {
+        lexer_state_t save = lexer_save();
+        next_token();
+        int r = looks_like_float_expr();
+        lexer_restore(save);
+        return r;
+    }
+    return 0;
+}
+
+static void parse_float_primary(void) {
+    if (cur_tok.type == T_NUM && cur_tok.is_float_lit) {
+        int is_double = !cur_tok.is_float_single;
+        uint32_t addr = emit_float_const(cur_tok.fval, is_double);
+        if (cc_error_flag) return;
+        gen_fld_abs(addr, is_double);
+        next_token();
+        return;
+    }
+    if (cur_tok.type == T_NUM) {
+        // A plain integer literal used where a float is expected, e.g.
+        // `f = 2;` - treated as a double constant.
+        uint32_t addr = emit_float_const((double)cur_tok.ival, 1);
+        if (cc_error_flag) return;
+        gen_fld_abs(addr, 1);
+        next_token();
+        return;
+    }
+    if (cur_tok.type == T_MINUS) {
+        next_token();
+        parse_float_primary();
+        if (cc_error_flag) return;
+        gen_fchs();
+        return;
+    }
+    if (cur_tok.type == T_LPAREN) {
+        next_token();
+        if (cur_tok.type == T_FLOAT || cur_tok.type == T_DOUBLE) {
+            // (float)/(double) cast of an int expression.
+            int want_double = (cur_tok.type == T_DOUBLE);
+            next_token();
+            expect(T_RPAREN, "expected ')' after cast"); if (cc_error_flag) return;
+            parse_expr(); // inner int expr -> eax
+            if (cc_error_flag) return;
+            gen_int_to_float();
+            if (!want_double) {
+                // Round-trip through a 4-byte memory location to
+                // actually narrow to float precision.
+                gen_fstp_abs((uint32_t)fp_scratch4, 0);
+                gen_fld_abs((uint32_t)fp_scratch4, 0);
+            }
+            return;
+        }
+        parse_float_expr(); // parenthesized float sub-expression
+        if (cc_error_flag) return;
+        expect(T_RPAREN, "expected ')'");
+        return;
+    }
+    if (cur_tok.type == T_IDENT) {
+        local_t* l = find_local(cur_tok.sval);
+        global_t* g = l ? 0 : find_global(cur_tok.sval);
+        if (l && l->is_fp) { gen_fld_ebp_disp32(l->offset, l->fp_double); next_token(); return; }
+        if (g && g->is_fp) { gen_fld_abs(g->addr, g->fp_double); next_token(); return; }
+        cc_seterr(cur_tok.line, "expected a float/double variable");
+        return;
+    }
+    cc_seterr(cur_tok.line, "expected a floating-point expression");
+}
+
+static void parse_float_term(void) {
+    parse_float_primary();
+    if (cc_error_flag) return;
+    while (cur_tok.type == T_STAR || cur_tok.type == T_SLASH) {
+        token_type_t op = cur_tok.type;
+        next_token();
+        parse_float_primary();
+        if (cc_error_flag) return;
+        if (op == T_STAR) gen_fmulp(); else gen_fdivp();
+    }
+}
+
+static void parse_float_expr(void) {
+    parse_float_term();
+    if (cc_error_flag) return;
+    while (cur_tok.type == T_PLUS || cur_tok.type == T_MINUS) {
+        token_type_t op = cur_tok.type;
+        next_token();
+        parse_float_term();
+        if (cc_error_flag) return;
+        if (op == T_PLUS) gen_faddp(); else gen_fsubp();
+    }
+}
+
+// Parses `float_expr RELOP float_expr` and leaves a 0/1 result in EAX,
+// so the existing if/while codegen (which tests EAX) needs no changes
+// at all to accept a float condition.
+static void parse_float_condition_to_eax(void) {
+    parse_float_expr(); // LHS -> ST(0)
+    if (cc_error_flag) return;
+    gen_fstp_abs((uint32_t)fp_scratch8, 1); // stash LHS as a double
+
+    token_type_t op = cur_tok.type;
+    if (op != T_LT && op != T_GT && op != T_LE && op != T_GE && op != T_EQ && op != T_NE) {
+        cc_seterr(cur_tok.line, "expected a comparison operator in a floating-point condition");
+        return;
+    }
+    next_token();
+
+    parse_float_expr(); // RHS -> ST(0)
+    if (cc_error_flag) return;
+    gen_fld_abs((uint32_t)fp_scratch8, 1); // ST(0)=LHS, ST(1)=RHS
+    gen_fcompp();
+    gen_fnstsw_ax();
+    gen_sahf();
+    gen_float_relop_to_eax(op);
+}
+
+// Dispatches a condition (used by if/while/do-while/for) to the float
+// or int grammar as appropriate. Either path leaves a plain 0/1 (or
+// any nonzero-truthy value, for the int path) in EAX, so callers can
+// keep using the same test-eax-and-jz pattern either way.
+static void parse_condition_to_eax(void) {
+    if (looks_like_float_expr()) parse_float_condition_to_eax();
+    else parse_expr();
+}
 
 // ------------------------------------------------------------
 // Expressions (result always ends up in eax)
@@ -905,12 +1229,14 @@ static void parse_stmt(void);
 static void gen_var_load_to_eax(const char* name, int line) {
     local_t* l = find_local(name);
     if (l) {
+        if (l->is_fp) { cc_seterr(line, "float/double value used in an integer expression (not supported - use it in a float expression, comparison, or printf argument)"); return; }
         if (l->is_array) { gen_lea_eax_ebp_disp32(l->offset); return; }
         gen_mov_eax_ebp_disp32(l->offset);
         return;
     }
     global_t* g = find_global(name);
     if (g) {
+        if (g->is_fp) { cc_seterr(line, "float/double value used in an integer expression (not supported - use it in a float expression, comparison, or printf argument)"); return; }
         if (g->is_array) { gen_mov_eax_imm32(g->addr); return; }
         gen_mov_eax_abs(g->addr);
         return;
@@ -990,7 +1316,128 @@ static int peek_is_array_assign(void) {
     return result;
 }
 
+static void skip_one_arg_tokens(void) {
+    // Pure token-level skip (no codegen) past one comma-separated call
+    // argument, stopping at the top-level comma or closing ')'.
+    int depth = 0;
+    while (cur_tok.type != T_EOF) {
+        if (cur_tok.type == T_LPAREN || cur_tok.type == T_LBRACKET) depth++;
+        else if (cur_tok.type == T_RPAREN || cur_tok.type == T_RBRACKET) {
+            if (depth == 0) return;
+            depth--;
+        } else if (cur_tok.type == T_COMMA && depth == 0) {
+            return;
+        }
+        next_token();
+    }
+}
+
+// Scans a printf call's value arguments (after the format string)
+// purely at the token level - no codegen, fully restored afterward -
+// classifying each as float-looking (bit set in *out_typemask) or
+// not, and counting them into *out_argc.
+#define MAX_PRINTF_ARGS 16
+static void scan_printf_arg_types(int* out_argc, uint32_t* out_typemask) {
+    *out_argc = 0;
+    *out_typemask = 0;
+    lexer_state_t save = lexer_save();
+    skip_one_arg_tokens(); // skip the format string itself
+    int idx = 0;
+    while (cur_tok.type == T_COMMA && idx < MAX_PRINTF_ARGS) {
+        next_token();
+        if (looks_like_float_expr()) *out_typemask |= (1u << idx);
+        skip_one_arg_tokens();
+        idx++;
+    }
+    *out_argc = idx;
+    lexer_restore(save);
+}
+
 static void parse_call_args_and_call(func_t* fn, const char* builtin_name) {
+    // printf gets dedicated argument-passing paths beyond the default
+    // all-int one below:
+    //  - all value arguments float-looking: passed as real 8-byte
+    //    doubles via the cc_printf_fN bridge family (up to 3 args).
+    //  - a MIX of float and int arguments (e.g. printf("%f %d", f, i)):
+    //    every argument, whatever its type, is written into an 8-byte
+    //    "slot" in a small on-stack scratch array (ints zero-extended,
+    //    doubles stored natively), and a bitmask says which slots are
+    //    which - cc_printf_mixed reads the array generically using
+    //    that mask. This is what actually makes %d and %f coexist in
+    //    one call; the homogeneous cases above are simpler/cheaper
+    //    special cases of it.
+    // Any call with zero float-looking arguments falls through
+    // unchanged to the plain int path used by every other function.
+    if (builtin_name && str_eq(builtin_name, "printf") && cur_tok.type != T_RPAREN) {
+        int pf_argc; uint32_t pf_typemask;
+        scan_printf_arg_types(&pf_argc, &pf_typemask);
+        uint32_t all_bits = (pf_argc >= 32) ? 0xFFFFFFFFu : ((1u << pf_argc) - 1u);
+        int all_float = (pf_argc > 0) && (pf_typemask == all_bits);
+        int any_float = (pf_typemask != 0);
+
+        if (all_float) {
+            parse_expr(); if (cc_error_flag) return; // format string -> eax
+            gen_push_eax();
+            int nvalues = 0;
+            while (cur_tok.type == T_COMMA) {
+                next_token();
+                parse_float_expr(); if (cc_error_flag) return;
+                emit_u8(0x83); emit_u8(0xEC); emit_u8(0x08); // sub esp, 8
+                emit_u8(0xDD); emit_u8(0x1C); emit_u8(0x24); // fstp qword [esp]
+                nvalues++;
+            }
+            expect(T_RPAREN, "expected ')' after arguments"); if (cc_error_flag) return;
+
+            uint32_t target;
+            if (nvalues == 0) target = (uint32_t)(void*)cc_printf_1;
+            else if (nvalues == 1) target = (uint32_t)(void*)cc_printf_f2;
+            else if (nvalues == 2) target = (uint32_t)(void*)cc_printf_f3;
+            else if (nvalues == 3) target = (uint32_t)(void*)cc_printf_f4;
+            else { cc_seterr(cur_tok.line, "printf supports at most 3 floating-point-only arguments"); return; }
+            gen_call_abs(target);
+
+            uint32_t cleanup = 4 + (uint32_t)nvalues * 8; // fmt (4B) + each double (8B)
+            emit_u8(0x81); emit_u8(0xC4); emit_u32(cleanup); // add esp, cleanup
+            return;
+        }
+
+        if (any_float) {
+            // Mixed %d/%f call.
+            parse_expr(); if (cc_error_flag) return; // format string -> eax
+            gen_mov_abs_eax((uint32_t)printf_fmt_scratch);
+
+            if (pf_argc > 0) {
+                emit_u8(0x81); emit_u8(0xEC); emit_u32((uint32_t)pf_argc * 8); // sub esp, argc*8
+            }
+            int k;
+            for (k = 0; k < pf_argc; k++) {
+                expect(T_COMMA, "expected ',' between printf arguments"); if (cc_error_flag) return;
+                if ((pf_typemask >> k) & 1u) {
+                    parse_float_expr(); if (cc_error_flag) return;
+                    emit_u8(0xDD); emit_u8(0x9C); emit_u8(0x24); emit_u32((uint32_t)k * 8); // fstp qword [esp+k*8]
+                } else {
+                    parse_expr(); if (cc_error_flag) return;
+                    emit_u8(0x89); emit_u8(0x84); emit_u8(0x24); emit_u32((uint32_t)k * 8);       // mov [esp+k*8], eax
+                    emit_u8(0xC7); emit_u8(0x84); emit_u8(0x24); emit_u32((uint32_t)k * 8 + 4); emit_u32(0); // mov dword [esp+k*8+4], 0
+                }
+            }
+            expect(T_RPAREN, "expected ')' after arguments"); if (cc_error_flag) return;
+
+            emit_u8(0x8D); emit_u8(0x04); emit_u8(0x24); // lea eax, [esp]   (slots pointer)
+            gen_push_eax();
+            emit_u8(0x68); emit_u32(pf_typemask);        // push imm32 typemask
+            emit_u8(0x68); emit_u32((uint32_t)pf_argc);  // push imm32 argc
+            gen_mov_eax_abs((uint32_t)printf_fmt_scratch);
+            gen_push_eax();                              // push fmt
+
+            gen_call_abs((uint32_t)(void*)cc_printf_mixed);
+
+            uint32_t cleanup = 4 * 4 + (uint32_t)pf_argc * 8; // 4 call-arg pushes + the scratch array
+            emit_u8(0x81); emit_u8(0xC4); emit_u32(cleanup); // add esp, cleanup
+            return;
+        }
+    }
+
     // consumes '(' already done by caller; parses args up to ')'
     int argc = 0;
     int32_t saved_ival[8];
@@ -1264,8 +1711,16 @@ static void parse_primary(void) {
             else { is_char = consume_scalar_type(); if (cc_error_flag) return; }
             while (cur_tok.type == T_STAR) next_token(); // pointer cast levels - accepted, no runtime effect
             expect(T_RPAREN, "expected ')' after cast"); if (cc_error_flag) return;
-            parse_primary(); // operand -> eax
-            if (cc_error_flag) return;
+            if (looks_like_float_expr()) {
+                // (int)/(char) cast of a float/double expression:
+                // truncate toward zero, matching real C.
+                parse_float_expr();
+                if (cc_error_flag) return;
+                gen_float_to_int_trunc();
+            } else {
+                parse_primary(); // operand -> eax
+                if (cc_error_flag) return;
+            }
             if (is_char) { emit_u8(0x25); emit_u32(0x000000FF); } // and eax, 0xFF
             return;
         }
@@ -1732,6 +2187,16 @@ static void parse_assign(void) {
 
         if (cur_tok.type == T_ASSIGN) {
             next_token();
+            local_t* fl = find_local(name);
+            global_t* fg = fl ? 0 : find_global(name);
+            if ((fl && fl->is_fp) || (fg && fg->is_fp)) {
+                int is_double = fl ? fl->fp_double : fg->fp_double;
+                parse_float_expr();
+                if (cc_error_flag) return;
+                if (fl) gen_fstp_ebp_disp32(fl->offset, is_double);
+                else gen_fstp_abs(fg->addr, is_double);
+                return;
+            }
             parse_assign();
             if (cc_error_flag) return;
             gen_var_store_from_eax(name, line);
@@ -1820,12 +2285,33 @@ static void add_local(const char* name, int is_array, int array_len, int elem_si
     locals[local_count].array_len = array_len;
     locals[local_count].elem_size = elem_size;
     locals[local_count].ptr_depth = ptr_depth;
+    locals[local_count].is_fp = 0;
+    locals[local_count].fp_double = 0;
+    local_count++;
+}
+
+static void add_local_fp(const char* name, int is_double) {
+    if (local_count >= MAX_LOCALS) { cc_seterr(cur_tok.line, "too many local variables"); return; }
+    if (find_local(name)) { cc_seterr(cur_tok.line, "duplicate variable name"); return; }
+    int i = 0; while (name[i] && i < 31) { locals[local_count].name[i] = name[i]; i++; }
+    locals[local_count].name[i] = 0;
+    int bytes = is_double ? 8 : 4;
+    next_local_offset -= bytes;
+    if (next_local_offset < -2048) { cc_seterr(cur_tok.line, "too many/too large local variables (frame too large)"); return; }
+    locals[local_count].offset = next_local_offset;
+    locals[local_count].is_array = 0;
+    locals[local_count].array_len = 0;
+    locals[local_count].elem_size = bytes;
+    locals[local_count].ptr_depth = 0;
+    locals[local_count].is_fp = 1;
+    locals[local_count].fp_double = is_double;
     local_count++;
 }
 
 static int is_type_start(token_type_t t) {
     return t == T_INT || t == T_CHAR || t == T_CONST ||
-           t == T_UNSIGNED || t == T_SIGNED || t == T_LONG || t == T_SHORT;
+           t == T_UNSIGNED || t == T_SIGNED || t == T_LONG || t == T_SHORT ||
+           t == T_FLOAT || t == T_DOUBLE;
 }
 
 static int consume_scalar_type(void) {
@@ -1845,7 +2331,35 @@ static int consume_scalar_type(void) {
     return is_char;
 }
 
+static void parse_local_decl_fp(int is_double) {
+    next_token(); // consume 'float'/'double'
+    for (;;) {
+        if (cur_tok.type != T_IDENT) { cc_seterr(cur_tok.line, "expected identifier after type"); return; }
+        char name[64];
+        int i = 0; while (cur_tok.sval[i]) { name[i] = cur_tok.sval[i]; i++; } name[i] = 0;
+        next_token();
+
+        add_local_fp(name, is_double);
+        if (cc_error_flag) return;
+
+        if (cur_tok.type == T_ASSIGN) {
+            next_token();
+            parse_float_expr();
+            if (cc_error_flag) return;
+            local_t* l = find_local(name);
+            gen_fstp_ebp_disp32(l->offset, is_double);
+        }
+
+        if (cur_tok.type != T_COMMA) break;
+        next_token();
+    }
+}
+
 static void parse_local_decl(void) {
+    if (cur_tok.type == T_FLOAT || cur_tok.type == T_DOUBLE) {
+        parse_local_decl_fp(cur_tok.type == T_DOUBLE);
+        return;
+    }
     int is_char = consume_scalar_type();
     if (cc_error_flag) return;
 
@@ -1908,7 +2422,7 @@ static void parse_stmt(void) {
     if (cur_tok.type == T_IF) {
         next_token();
         expect(T_LPAREN, "expected '(' after if"); if (cc_error_flag) return;
-        parse_expr(); if (cc_error_flag) return;
+        parse_condition_to_eax(); if (cc_error_flag) return;
         expect(T_RPAREN, "expected ')'"); if (cc_error_flag) return;
         gen_test_eax_eax();
         uint32_t jz_at = gen_jz_placeholder();
@@ -1955,7 +2469,7 @@ static void parse_stmt(void) {
         next_token();
         expect(T_LPAREN, "expected '(' after do/while");
         if (cc_error_flag) return;
-        parse_expr();
+        parse_condition_to_eax();
         if (cc_error_flag) return;
         expect(T_RPAREN, "expected ')' after do/while condition");
         if (cc_error_flag) return;
@@ -1977,7 +2491,7 @@ static void parse_stmt(void) {
         next_token();
         uint32_t loop_start = code_len;
         expect(T_LPAREN, "expected '(' after while"); if (cc_error_flag) return;
-        parse_expr(); if (cc_error_flag) return;
+        parse_condition_to_eax(); if (cc_error_flag) return;
         expect(T_RPAREN, "expected ')'"); if (cc_error_flag) return;
         gen_test_eax_eax();
         uint32_t jz_at = gen_jz_placeholder();
@@ -2011,7 +2525,7 @@ static void parse_stmt(void) {
         int has_cond = (cur_tok.type != T_SEMI);
         uint32_t jz_at = 0;
         if (has_cond) {
-            parse_expr(); if (cc_error_flag) return;
+            parse_condition_to_eax(); if (cc_error_flag) return;
             gen_test_eax_eax();
             jz_at = gen_jz_placeholder();
         }
@@ -2199,6 +2713,17 @@ static void parse_stmt(void) {
         cur_switch = prev_switch;
         cur_switch_seq = prev_switch_seq;
         if (cc_error_flag) return;
+
+        // If the body falls off its natural end without an explicit
+        // break (very common for the last case, e.g. a `default:`
+        // with no trailing break), execution must NOT fall through
+        // into the dispatch table below - those are raw compare/jump
+        // bytes, not a continuation of the switch body, and running
+        // into them as code can jump right back into a case and loop
+        // forever. Treat "falls off the end" exactly like an implicit
+        // break here.
+        if (ctx.break_count >= MAX_BREAK_PATCHES) { cc_seterr(cur_tok.line, "too many break statements in one switch"); return; }
+        ctx.break_patches[ctx.break_count++] = gen_jmp_placeholder();
 
         patch_jump_here(to_dispatch);
         gen_mov_eax_ebp_disp32(value_slot);
@@ -2405,6 +2930,67 @@ static void parse_function(const char* name) {
 
 static void parse_program(void) {
     while (!cc_error_flag && cur_tok.type != T_EOF) {
+        if (cur_tok.type == T_FLOAT || cur_tok.type == T_DOUBLE) {
+            int is_double = (cur_tok.type == T_DOUBLE);
+            next_token();
+            for (;;) {
+                if (cur_tok.type != T_IDENT) { cc_seterr(cur_tok.line, "expected identifier"); return; }
+                char name[64];
+                int i = 0; while (cur_tok.sval[i]) { name[i] = cur_tok.sval[i]; i++; } name[i] = 0;
+                next_token();
+
+                if (cur_tok.type == T_LPAREN) {
+                    cc_seterr(cur_tok.line, "functions with a float/double return type or parameters are not supported yet");
+                    return;
+                }
+
+                if (global_count >= MAX_GLOBALS) { cc_seterr(cur_tok.line, "too many globals"); return; }
+                int sz = is_double ? 8 : 4;
+                if (float_global_pool_used + sz > FLOAT_GLOBAL_POOL_BYTES) {
+                    cc_seterr(cur_tok.line, "too many float/double globals");
+                    return;
+                }
+                int off = float_global_pool_used;
+                uint32_t addr = (uint32_t)&float_global_pool[off];
+                float_global_pool_used += sz;
+
+                double init = 0.0;
+                if (cur_tok.type == T_ASSIGN) {
+                    next_token();
+                    int neg = 0;
+                    if (cur_tok.type == T_MINUS) { neg = 1; next_token(); }
+                    if (cur_tok.type != T_NUM) { cc_seterr(cur_tok.line, "global initializer must be a constant"); return; }
+                    init = cur_tok.is_float_lit ? cur_tok.fval : (double)cur_tok.ival;
+                    if (neg) init = -init;
+                    next_token();
+                }
+
+                if (is_double) {
+                    double dv = init; uint8_t* b = (uint8_t*)&dv;
+                    int k; for (k = 0; k < 8; k++) float_global_pool[off + k] = b[k];
+                } else {
+                    float fv = (float)init; uint8_t* b = (uint8_t*)&fv;
+                    int k; for (k = 0; k < 4; k++) float_global_pool[off + k] = b[k];
+                }
+
+                int j = 0; while (name[j] && j < 31) { globals[global_count].name[j] = name[j]; j++; } globals[global_count].name[j] = 0;
+                globals[global_count].addr = addr;
+                globals[global_count].is_array = 0;
+                globals[global_count].array_len = 0;
+                globals[global_count].elem_size = sz;
+                globals[global_count].ptr_depth = 0;
+                globals[global_count].is_fp = 1;
+                globals[global_count].fp_double = is_double;
+                globals_fp_init[global_count] = init;
+                global_count++;
+
+                if (cur_tok.type != T_COMMA) break;
+                next_token();
+            }
+            expect(T_SEMI, "expected ';' after global declaration");
+            continue;
+        }
+
         int is_void = (cur_tok.type == T_VOID);
         int is_char = 0;
         if (!is_void && !is_type_start(cur_tok.type)) {
@@ -2642,8 +3228,15 @@ int cc_compile_to_binary(const char* source, unsigned int len,
     uint32_t entry = code_len;
 
     for (int i = 0; i < global_count; i++) {
-        if (!globals[i].is_array)
+        if (globals[i].is_array) continue;
+        if (globals[i].is_fp) {
+            uint32_t const_addr = emit_float_const(globals_fp_init[i], globals[i].fp_double);
+            if (cc_error_flag) return -1;
+            gen_fld_abs(const_addr, globals[i].fp_double);
+            gen_fstp_abs(globals[i].addr, globals[i].fp_double);
+        } else {
             gen_mov_abs_imm32(globals[i].addr, (uint32_t)globals_data[i]);
+        }
     }
 
     if (global_array_pool_used > 0) {
@@ -2721,6 +3314,7 @@ static int cc_compile(const char* source, unsigned int len, func_t** out_mainfn)
     code_len = 0;
     cc_error_flag = 0; cc_error_line = 0; cc_error_msg[0] = 0;
     local_count = 0; func_count = 0; global_count = 0; token_count = 0; global_array_pool_used = 0;
+    float_const_pool_used = 0; float_global_pool_used = 0;
     pending_call_count = 0;
 
     cc_check_indentation(source, len);

@@ -16,6 +16,27 @@ uint16_t* VGA = (uint16_t*)0xB8000;
 int cursor = 0;
 
 // ============================================================
+// FPU INIT
+// ============================================================
+// The compiler's JIT'd programs can use float/double via x87 FPU
+// instructions (fld/fadd/fstp/etc). The FPU is present on any CPU
+// this kernel targets, but its control state isn't guaranteed sane
+// coming out of reset/bootloader handoff: EM (CR0 bit 2) must be
+// clear so FPU opcodes execute natively instead of faulting, MP
+// (CR0 bit 1) should be set per the standard convention, and FNINIT
+// resets the FPU to a clean state (empty stack, all exceptions
+// masked, default control word) so a stray uninitialized FPU state
+// can't corrupt the first floating-point program that runs.
+static inline void fpu_init(void) {
+    uint32_t cr0;
+    __asm__ volatile("mov %%cr0, %0" : "=r"(cr0));
+    cr0 &= ~(1u << 2); // clear EM
+    cr0 |= (1u << 1);  // set MP
+    __asm__ volatile("mov %0, %%cr0" :: "r"(cr0));
+    __asm__ volatile("fninit");
+}
+
+// ============================================================
 // GLOBAL VARIABLES
 // ============================================================
 
@@ -738,6 +759,102 @@ int cc_printf_7(unsigned int a6, unsigned int a5, unsigned int a4, unsigned int 
 int cc_printf_8(unsigned int a7, unsigned int a6, unsigned int a5, unsigned int a4, unsigned int a3, unsigned int a2, unsigned int a1, const char* fmt) { unsigned int a[7]={a1,a2,a3,a4,a5,a6,a7}; return cc_printf_impl(fmt,7,a); }
 int cc_printf_9(unsigned int a8, unsigned int a7, unsigned int a6, unsigned int a5, unsigned int a4, unsigned int a3, unsigned int a2, unsigned int a1, const char* fmt) { unsigned int a[8]={a1,a2,a3,a4,a5,a6,a7,a8}; return cc_printf_impl(fmt,8,a); }
 
+// Fixed-precision (6 digits) float formatter for %f - there's no libc
+// dtoa/sprintf available in this freestanding kernel, so this is a
+// simple manual formatter. It truncates rather than rounding the
+// final digit, a minor deviation from a real printf's %f.
+static void cc_print_float(double v, int precision) {
+    if (v < 0) { putc('-'); v = -v; }
+    unsigned int ip = (unsigned int)v;
+    double frac = v - (double)ip;
+    cc_print_uint(ip, 10, 0);
+    putc('.');
+    int i;
+    for (i = 0; i < precision; i++) {
+        frac *= 10.0;
+        unsigned int d = (unsigned int)frac;
+        putc('0' + (char)d);
+        frac -= (double)d;
+    }
+}
+
+// Float-argument printf bridges - a separate family from cc_printf_N
+// above because value arguments here are real 8-byte doubles (from
+// the compiler's float/double expression support) rather than 4-byte
+// ints, which means an incompatible stack layout; see the compiler's
+// "use_float_printf" call-site logic.
+static int cc_printf_impl_f(const char* fmt, int argc, const double* args) {
+    int ai = 0, count = 0;
+    if (!fmt) return 0;
+    while (*fmt) {
+        if (*fmt != '%') { putc(*fmt++); count++; continue; }
+        fmt++;
+        if (*fmt == '%') { putc('%'); fmt++; count++; continue; }
+        if (ai >= argc) { putc('%'); count++; continue; }
+        if (*fmt == 'f' || *fmt == 'F') {
+            cc_print_float(args[ai++], 6);
+            fmt++;
+        } else {
+            putc('%'); count++;
+        }
+    }
+    return count;
+}
+int cc_printf_f2(double a1, const char* fmt) { double a[1]={a1}; return cc_printf_impl_f(fmt,1,a); }
+int cc_printf_f3(double a2, double a1, const char* fmt) { double a[2]={a1,a2}; return cc_printf_impl_f(fmt,2,a); }
+int cc_printf_f4(double a3, double a2, double a1, const char* fmt) { double a[3]={a1,a2,a3}; return cc_printf_impl_f(fmt,3,a); }
+
+// Handles printf calls that mix %d-style and %f-style arguments in
+// one call. Every argument (whatever its real type) arrives as an
+// 8-byte "slot" - ints zero-extended, doubles stored natively - and
+// typemask says which slots are which (bit i set = slot i is a
+// float/double). This mirrors cc_printf_impl's specifier handling.
+int cc_printf_mixed(const char* fmt, int argc, uint32_t typemask, const uint64_t* slots) {
+    int ai = 0, count = 0;
+    if (!fmt) return 0;
+    while (*fmt) {
+        if (*fmt != '%') { putc(*fmt++); count++; continue; }
+        fmt++;
+        if (*fmt == '%') { putc('%'); fmt++; count++; continue; }
+        if (ai >= argc) { putc('%'); count++; continue; }
+
+        int is_f = (int)((typemask >> ai) & 1u);
+        uint64_t raw = slots[ai];
+        unsigned int u = (unsigned int)(raw & 0xFFFFFFFFu);
+        double d;
+        {
+            uint8_t* rb = (uint8_t*)&raw;
+            uint8_t* db = (uint8_t*)&d;
+            int k; for (k = 0; k < 8; k++) db[k] = rb[k];
+        }
+
+        if (*fmt == 'f' || *fmt == 'F') {
+            cc_print_float(is_f ? d : (double)(int)u, 6);
+            ai++; fmt++;
+        } else if (*fmt == 'd' || *fmt == 'i') {
+            int v = is_f ? (int)d : (int)u;
+            if (v < 0) { putc('-'); count++; v = -v; }
+            cc_print_uint((unsigned int)v, 10, 0);
+            ai++; fmt++;
+        } else if (*fmt == 'u') {
+            cc_print_uint(is_f ? (unsigned int)(int)d : u, 10, 0);
+            ai++; fmt++;
+        } else if (*fmt == 'x' || *fmt == 'X') {
+            cc_print_uint(is_f ? (unsigned int)(int)d : u, 16, *fmt == 'X');
+            ai++; fmt++;
+        } else if (*fmt == 'c') {
+            putc((char)(is_f ? (int)d : (int)u)); ai++; fmt++; count++;
+        } else if (*fmt == 's') {
+            const char* str = is_f ? 0 : (const char*)(uintptr_t)u;
+            if (str) while (*str) { putc(*str++); count++; }
+            ai++; fmt++;
+        } else {
+            putc('%'); count++;
+        }
+    }
+    return count;
+}
+
 static int cc_scanf_one(const char* fmt, unsigned int ptr) {
     char buffer[128];
     int value = 0, sign = 1, i = 0;
@@ -1011,14 +1128,14 @@ void execute_command(const char* cmd_line) {
         cmd = cmd->next;
     }
 
-    /*
-     * Files are NOT executed just by typing their filename.
-     * Programs and shell scripts must explicitly use:
-     *
-     *     exec <filename>
-     *
-     * This keeps file execution separate from built-in shell commands.
-     */
+    /* Like a normal shell, fall back to executing a file when the command
+     * name is not a built-in. Compiled TanjaOS binaries and text scripts
+     * both go through exec_file(). */
+    if (fs_file_exists(cmd_name)) {
+        exec_file(cmd_name);
+        return;
+    }
+
     print("error: Command not found: ");
     print(cmd_name);
     print("\n");
@@ -1088,6 +1205,10 @@ extern void init_cmds(void);
 
 void kernel_main(uint32_t mb_magic, uint32_t mb_addr)
 {
+    fpu_init(); // must run before any FPU instruction executes - JIT'd
+                // TanjaOS-C programs can use float/double from their
+                // very first instruction, so this has to come first.
+
     underline_cursor();
     clear_screen();
 
