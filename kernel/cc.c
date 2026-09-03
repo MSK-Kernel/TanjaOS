@@ -87,7 +87,7 @@ static void cc_free(void* p) {
     (void)p;
 }
 
-static void* cc_calloc(unsigned int count, unsigned int size) {
+static void* cc_calloc(unsigned int size, unsigned int count) {
     if (count != 0 && size > 0xFFFFFFFFu / count) return (void*)0;
     unsigned int total = count * size;
     void* p = cc_malloc(total);
@@ -95,7 +95,7 @@ static void* cc_calloc(unsigned int count, unsigned int size) {
     return p;
 }
 
-static void* cc_realloc(void* p, unsigned int n) {
+static void* cc_realloc(unsigned int n, void* p) {
     if (!p) return cc_malloc(n);
     if (n == 0) { cc_free(p); return (void*)0; }
     uint8_t* b = (uint8_t*)p;
@@ -111,7 +111,7 @@ static void* cc_realloc(void* p, unsigned int n) {
 static long cc_atol(const char* s) { return (long)atoi(s); }
 static long cc_labs(long n) { return n < 0 ? -n : n; }
 
-static long cc_strtol(const char* s, char** endp, int base) {
+static long cc_strtol(int base, char** endp, const char* s) {
     const char* p = s;
     int neg = 0;
     unsigned long v = 0;
@@ -139,41 +139,41 @@ static long cc_strtol(const char* s, char** endp, int base) {
     return neg ? -(long)v : (long)v;
 }
 
-static unsigned long cc_strtoul(const char* s, char** endp, int base) {
-    return (unsigned long)cc_strtol(s, endp, base);
+static unsigned long cc_strtoul(int base, char** endp, const char* s) {
+    return (unsigned long)cc_strtol(base, endp, s);
 }
 
-static char* cc_strncat(char* dst, const char* src, unsigned int n) {
+static char* cc_strncat(unsigned int n, const char* src, char* dst) {
     unsigned int i = 0, d = (unsigned int)strlen(dst);
     while (i < n && src[i]) { dst[d++] = src[i++]; }
     dst[d] = 0;
     return dst;
 }
 
-static void* cc_memchr(const void* s, int c, unsigned int n) {
+static void* cc_memchr(unsigned int n, int c, const void* s) {
     const unsigned char* p = (const unsigned char*)s;
     for (unsigned int i = 0; i < n; i++) if (p[i] == (unsigned char)c) return (void*)(p + i);
     return (void*)0;
 }
 
-static unsigned int cc_strspn(const char* s, const char* accept) {
+static unsigned int cc_strspn(const char* accept, const char* s) {
     unsigned int n = 0;
     while (s[n]) { int found = 0; for (unsigned int j = 0; accept[j]; j++) if (s[n] == accept[j]) { found = 1; break; } if (!found) break; n++; }
     return n;
 }
 
-static unsigned int cc_strcspn(const char* s, const char* reject) {
+static unsigned int cc_strcspn(const char* reject, const char* s) {
     unsigned int n = 0;
     while (s[n]) { int found = 0; for (unsigned int j = 0; reject[j]; j++) if (s[n] == reject[j]) { found = 1; break; } if (found) break; n++; }
     return n;
 }
 
-static char* cc_strpbrk(const char* s, const char* accept) {
+static char* cc_strpbrk(const char* accept, const char* s) {
     while (*s) { for (unsigned int j = 0; accept[j]; j++) if (*s == accept[j]) return (char*)s; s++; }
     return (char*)0;
 }
 
-static char* cc_strtok(char* s, const char* delim) {
+static char* cc_strtok(const char* delim, char* s) {
     if (s) cc_tok_next = s;
     if (!cc_tok_next) return (char*)0;
     while (*cc_tok_next) { int d = 0; for (unsigned int j = 0; delim[j]; j++) if (*cc_tok_next == delim[j]) { d = 1; break; } if (!d) break; cc_tok_next++; }
@@ -192,7 +192,7 @@ static char* cc_strdup(const char* s) {
     return p;
 }
 
-static char* cc_strndup(const char* s, unsigned int n) {
+static char* cc_strndup(unsigned int n, const char* s) {
     unsigned int len = strlen(s); if (len > n) len = n;
     char* p = (char*)cc_malloc(len + 1);
     if (!p) return (char*)0;
@@ -204,9 +204,9 @@ static int cc_isprint(int c) { return c >= 32 && c < 127; }
 static int cc_ispunct(int c) { return cc_isgraph(c) && !isalnum(c); }
 static int cc_iscntrl(int c) { return (c >= 0 && c < 32) || c == 127; }
 
-static int cc_strcoll(const char* a, const char* b) { return strcmp(a, b); }
+static int cc_strcoll(const char* b, const char* a) { return strcmp(a, b); }
 
-static unsigned int cc_strxfrm(char* dst, const char* src, unsigned int n) {
+static unsigned int cc_strxfrm(unsigned int n, const char* src, char* dst) {
     unsigned int len = strlen(src);
     if (n) { unsigned int copy = len < (n - 1) ? len : (n - 1); memcpy(dst, src, copy); dst[copy] = 0; }
     return len;
@@ -219,8 +219,10 @@ static int cc_remove(const char* path) {
 }
 
 static void cc_perror(const char* s) {
-    if (s && *s) { puts(s); }
-    puts("error");
+    // Real perror prints "prefix: description" on ONE line, not two
+    // separate lines.
+    if (s && *s) { print(s); print(": "); }
+    print("error\n");
 }
 
 static char* cc_strerror(int err) {
@@ -229,6 +231,43 @@ static char* cc_strerror(int err) {
     if (err == 1) { strcpy(msg, "operation failed"); return msg; }
     strcpy(msg, "error");
     return msg;
+}
+
+// Parses a string into a double at runtime - real double-returning
+// functions naturally leave their result in ST(0) per the x87 return
+// convention, which is exactly what a float expression needs, so this
+// can be called like any other function (push the string, call) with
+// no special marshalling. Handles leading whitespace, sign, a decimal
+// point, and a basic e/E exponent - covers the common real-world atof
+// input shapes without pulling in a full strtod-grade parser.
+static double cc_atof(const char* s) {
+    if (!s) return 0.0;
+    while (*s == ' ' || *s == '\t' || *s == '\n' || *s == '\r' || *s == '\f' || *s == '\v') s++;
+    int neg = 0;
+    if (*s == '+') s++; else if (*s == '-') { neg = 1; s++; }
+    double v = 0.0;
+    while (*s >= '0' && *s <= '9') { v = v * 10.0 + (double)(*s - '0'); s++; }
+    if (*s == '.') {
+        s++;
+        double scale = 0.1;
+        while (*s >= '0' && *s <= '9') { v += (double)(*s - '0') * scale; scale *= 0.1; s++; }
+    }
+    if (*s == 'e' || *s == 'E') {
+        const char* save = s;
+        s++;
+        int esign = 1;
+        if (*s == '+') s++; else if (*s == '-') { esign = -1; s++; }
+        if (*s >= '0' && *s <= '9') {
+            int exp = 0;
+            while (*s >= '0' && *s <= '9') { exp = exp * 10 + (*s - '0'); s++; }
+            int i;
+            if (esign > 0) for (i = 0; i < exp; i++) v *= 10.0;
+            else for (i = 0; i < exp; i++) v /= 10.0;
+        } else {
+            (void)save; // no valid exponent digits - leave v as parsed so far
+        }
+    }
+    return neg ? -v : v;
 }
 
 static void cc_heap_reset(void) { cc_heap_pos = 0; cc_tok_next = (const char*)0; }
@@ -914,6 +953,8 @@ static void gen_fsubp(void) { emit_u8(0xDE); emit_u8(0xE9); } // ST(1) -= ST(0),
 static void gen_fmulp(void) { emit_u8(0xDE); emit_u8(0xC9); } // ST(1) *= ST(0), pop
 static void gen_fdivp(void) { emit_u8(0xDE); emit_u8(0xF9); } // ST(1) /= ST(0), pop  -> gives (pushed-first / pushed-second)
 static void gen_fchs(void)  { emit_u8(0xD9); emit_u8(0xE0); } // negate ST(0)
+static void gen_fsqrt(void) { emit_u8(0xD9); emit_u8(0xFA); } // ST(0) = sqrt(ST(0))
+static void gen_fabs_op(void) { emit_u8(0xD9); emit_u8(0xE1); } // ST(0) = |ST(0)|
 static void gen_fcompp(void) { emit_u8(0xDE); emit_u8(0xD9); } // compare ST(0),ST(1), pop both
 static void gen_fnstsw_ax(void) { emit_u8(0xDF); emit_u8(0xE0); }
 static void gen_sahf(void) { emit_u8(0x9E); }
@@ -953,6 +994,24 @@ static void gen_float_relop_to_eax(token_type_t op) {
     else if (op == T_LE) gen_setcc_movzx(0x96); // setbe
     else if (op == T_EQ) gen_setcc_movzx(0x94); // sete
     else gen_setcc_movzx(0x95);                 // setne (T_NE)
+}
+
+// floor()/ceil(): round ST(0) to an integer VALUE while keeping it in
+// floating-point format (unlike the int-cast truncation helper above,
+// which converts to an actual int). Uses the same "temporarily swap
+// the FPU's rounding mode" technique, just ending in FRNDINT instead
+// of FISTP. rc_bits selects the rounding direction in the control
+// word: 0x0400 = round down (floor), 0x0800 = round up (ceil).
+static void gen_float_round(uint32_t rc_bits) {
+    emit_u8(0x83); emit_u8(0xEC); emit_u8(0x04);                                // sub esp, 4
+    emit_u8(0xD9); emit_u8(0x3C); emit_u8(0x24);                                // fnstcw [esp]
+    emit_u8(0x66); emit_u8(0x8B); emit_u8(0x04); emit_u8(0x24);                 // mov ax, [esp]
+    emit_u8(0x66); emit_u8(0x0D); emit_u8((uint8_t)(rc_bits & 0xFF)); emit_u8((uint8_t)((rc_bits >> 8) & 0xFF)); // or ax, rc_bits
+    emit_u8(0x66); emit_u8(0x89); emit_u8(0x44); emit_u8(0x24); emit_u8(0x02);  // mov [esp+2], ax
+    emit_u8(0xD9); emit_u8(0x6C); emit_u8(0x24); emit_u8(0x02);                 // fldcw [esp+2]
+    emit_u8(0xD9); emit_u8(0xFC);                                               // frndint
+    emit_u8(0xD9); emit_u8(0x2C); emit_u8(0x24);                                // fldcw [esp]  (restore)
+    emit_u8(0x83); emit_u8(0xC4); emit_u8(0x04);                                // add esp, 4
 }
 
 static uint32_t gen_jz_placeholder(void) {
@@ -1080,6 +1139,9 @@ static uint32_t emit_float_const(double v, int is_double) {
 static int looks_like_float_expr(void) {
     if (cur_tok.type == T_NUM && cur_tok.is_float_lit) return 1;
     if (cur_tok.type == T_IDENT) {
+        if (str_eq(cur_tok.sval, "sqrt") || str_eq(cur_tok.sval, "fabs") ||
+            str_eq(cur_tok.sval, "floor") || str_eq(cur_tok.sval, "ceil") ||
+            str_eq(cur_tok.sval, "atof")) return 1;
         local_t* l = find_local(cur_tok.sval);
         if (l) return l->is_fp;
         global_t* g = find_global(cur_tok.sval);
@@ -1104,6 +1166,40 @@ static int looks_like_float_expr(void) {
 }
 
 static void parse_float_primary(void) {
+    // sqrt/fabs/floor/ceil/atof are recognized here as special forms
+    // rather than going through the normal function-call machinery,
+    // since that machinery is int-oriented (4-byte args/return in
+    // EAX) and float function parameters/returns aren't supported in
+    // general. atof is the one exception that's a real function call
+    // under the hood - a double-returning function naturally leaves
+    // its result in ST(0) per the x87 calling convention, so it needs
+    // no special handling beyond an ordinary call.
+    if (cur_tok.type == T_IDENT &&
+        (str_eq(cur_tok.sval, "sqrt") || str_eq(cur_tok.sval, "fabs") ||
+         str_eq(cur_tok.sval, "floor") || str_eq(cur_tok.sval, "ceil") ||
+         str_eq(cur_tok.sval, "atof"))) {
+        char fname[8];
+        int fi = 0; while (cur_tok.sval[fi] && fi < 7) { fname[fi] = cur_tok.sval[fi]; fi++; } fname[fi] = 0;
+        next_token();
+        expect(T_LPAREN, "expected '(' after function name"); if (cc_error_flag) return;
+
+        if (str_eq(fname, "atof")) {
+            parse_expr(); // string argument -> eax
+            if (cc_error_flag) return;
+            gen_push_eax();
+            gen_call_abs((uint32_t)(void*)cc_atof); // result left in ST(0) by x87 return convention
+            emit_u8(0x83); emit_u8(0xC4); emit_u8(0x04); // add esp, 4
+        } else {
+            parse_float_expr(); // float argument -> ST(0)
+            if (cc_error_flag) return;
+            if (str_eq(fname, "sqrt")) gen_fsqrt();
+            else if (str_eq(fname, "fabs")) gen_fabs_op();
+            else if (str_eq(fname, "floor")) gen_float_round(0x0400);
+            else gen_float_round(0x0800); // ceil
+        }
+        expect(T_RPAREN, "expected ')'");
+        return;
+    }
     if (cur_tok.type == T_NUM && cur_tok.is_float_lit) {
         int is_double = !cur_tok.is_float_single;
         uint32_t addr = emit_float_const(cur_tok.fval, is_double);
@@ -1499,11 +1595,12 @@ static void parse_call_args_and_call(func_t* fn, const char* builtin_name) {
         else if (str_eq(builtin_name, "strcoll")) expected = 2;
         else if (str_eq(builtin_name, "strxfrm")) expected = 3;
         else if (str_eq(builtin_name, "remove") || str_eq(builtin_name, "perror")) expected = 1;
-        else if (str_eq(builtin_name, "strncat") || str_eq(builtin_name, "strpbrk") ||
-                 str_eq(builtin_name, "strtok") || str_eq(builtin_name, "strdup") ||
-                 str_eq(builtin_name, "strndup")) expected = 2;
-        else if (str_eq(builtin_name, "memchr") || str_eq(builtin_name, "strspn") ||
-                 str_eq(builtin_name, "strcspn") || str_eq(builtin_name, "strtol") ||
+        else if (str_eq(builtin_name, "strncat")) expected = 3;
+        else if (str_eq(builtin_name, "strpbrk") || str_eq(builtin_name, "strtok") ||
+                 str_eq(builtin_name, "strndup") ||
+                 str_eq(builtin_name, "strspn") || str_eq(builtin_name, "strcspn")) expected = 2;
+        else if (str_eq(builtin_name, "strdup")) expected = 1;
+        else if (str_eq(builtin_name, "memchr") || str_eq(builtin_name, "strtol") ||
                  str_eq(builtin_name, "strtoul")) expected = 3;
         else if (str_eq(builtin_name, "malloc") || str_eq(builtin_name, "free") ||
                  str_eq(builtin_name, "atol") || str_eq(builtin_name, "labs") ||
@@ -1939,7 +2036,8 @@ static void parse_primary(void) {
                     str_eq(name, "strndup") || str_eq(name, "isgraph") ||
                     str_eq(name, "isprint") || str_eq(name, "ispunct") ||
                     str_eq(name, "iscntrl") || str_eq(name, "strerror") ||
-                    str_eq(name, "clear_screen") ||
+                    str_eq(name, "strcoll") || str_eq(name, "strxfrm") ||
+                    str_eq(name, "remove") || str_eq(name, "perror") ||
                     str_eq(name, "clear_screen")) builtin = name;
                 else { cc_seterr(line, "call to undefined function"); return; }
             }

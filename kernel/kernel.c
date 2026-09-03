@@ -863,7 +863,17 @@ static int cc_scanf_one(const char* fmt, unsigned int ptr) {
     while (buffer[i] == ' ' || buffer[i] == '\t') i++;
     if (*fmt == '%') fmt++;
     if (*fmt == 'c') { *(char*)ptr = buffer[0]; return 1; }
-    if (*fmt == 's') { strcpy((char*)ptr, buffer); return 1; }
+    if (*fmt == 's') {
+        // Real scanf's %s skips leading whitespace (already done via
+        // `i` above) and stops at the next whitespace/end of input -
+        // it does NOT swallow the whole line, unlike the previous
+        // version of this function.
+        char* out = (char*)ptr;
+        int j = 0;
+        while (buffer[i] && buffer[i] != ' ' && buffer[i] != '\t') out[j++] = buffer[i++];
+        out[j] = 0;
+        return 1;
+    }
     if (buffer[i] == '-') { sign = -1; i++; }
     if (fmt[0] == 'x' || fmt[0] == 'X') {
         unsigned int v=0, d;
@@ -875,7 +885,8 @@ static int cc_scanf_one(const char* fmt, unsigned int ptr) {
             else break;
             v=(v<<4)|d;
         }
-        *(unsigned int*)ptr=v; return 1;
+        *(int*)ptr = (sign < 0) ? -(int)v : (int)v;
+        return 1;
     }
     while (buffer[i] >= '0' && buffer[i] <= '9') { value=value*10+(buffer[i]-'0'); i++; }
     if (i == 0) return 0;
