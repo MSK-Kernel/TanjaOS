@@ -32,7 +32,9 @@ srand(), and ctype functions such as isdigit(), isalpha(), isalnum(),
 isspace(), tolower(), and toupper().
 
 The only TanjaOS-specific C APIs intentionally exposed are clear_screen()
-and the cmd_*() shell-command functions.
+and the cmd_*() shell-command functions. Legacy non-standard helpers such as
+print(), print_int(), print_hex(), read_int(), read_line(), min(), max(), and
+sleep_ms() are no longer C built-ins.
 
 Every shell command is also callable from C using its cmd_* function:
 cmd_mkdir("games"), cmd_ls(""), cmd_echo("hello"), cmd_cp("a b"), etc.
