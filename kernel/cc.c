@@ -3518,6 +3518,7 @@ unsigned int cc_debug_codelen(void) { return code_len; }
 // execute there; on a 64-bit host it would not be).
 static int cc_compile(const char* source, unsigned int len, func_t** out_mainfn) {
     src = source; src_len = len; src_pos = 0; cur_line = 1;
+    cc_heap_pos = 0; /* each compilation gets a fresh compiler heap */
     code_len = 0;
     code_overflow = 0;
     cc_error_flag = 0; cc_error_line = 0; cc_error_msg[0] = 0;
@@ -3554,6 +3555,7 @@ static int cc_compile(const char* source, unsigned int len, func_t** out_mainfn)
         print("): ");
         print(cc_error_msg);
         print("\n");
+        cc_heap_pos = 0;
         return -1;
     }
 
@@ -3578,7 +3580,7 @@ static int cc_compile(const char* source, unsigned int len, func_t** out_mainfn)
         if (funcs[i].addr != 0 && (!entry || funcs[i].addr < entry->addr))
             entry = &funcs[i];
     }
-    if (entry) { *out_mainfn = entry; return 0; }
+    if (entry) { *out_mainfn = entry; cc_heap_pos = 0; return 0; }
     print("Compile error: no function definition\n");
     return -1;
 }

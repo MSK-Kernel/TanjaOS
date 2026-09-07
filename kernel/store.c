@@ -42,6 +42,7 @@ static int store_enabled = 0;
 static uint32_t store_sectors = 0;
 static uint32_t store_fs_need = 0;
 static uint32_t store_cfg_need = 0;
+static uint64_t store_disk_sectors = 0;
 static int store_channel = 0;
 static int store_drive = 0;
 
@@ -59,6 +60,8 @@ static uint32_t bytes_to_sectors(uint32_t bytes) {
 }
 
 static int store_backend_read(uint32_t lba, uint32_t count, void* buf) {
+    if (!buf || count == 0) return -1;
+    if ((uint64_t)lba + count > store_disk_sectors) return -1;
     uint8_t* p = (uint8_t*)buf;
     while (count) {
         uint32_t chunk = count > 255 ? 255 : count;
@@ -78,6 +81,8 @@ static int store_backend_read(uint32_t lba, uint32_t count, void* buf) {
 }
 
 static int store_backend_write(uint32_t lba, uint32_t count, const void* buf) {
+    if (!buf || count == 0) return -1;
+    if ((uint64_t)lba + count > store_disk_sectors) return -1;
     const uint8_t* p = (const uint8_t*)buf;
     while (count) {
         uint32_t chunk = count > 255 ? 255 : count;
@@ -100,7 +105,11 @@ void store_autosave(void) {
     if (!store_enabled) return;
     if (fs_serialize(store_buf, store_fs_need) != 0) return;
     config_serialize(store_buf + store_fs_need, store_cfg_need);
-    store_backend_write(store_lba, store_sectors, store_buf);
+    if (store_backend_write(store_lba, store_sectors, store_buf) != 0) {
+        /* A failed persistence write must never make the kernel continue as
+           if the on-disk image were valid. */
+        store_enabled = 0;
+    }
 }
 
 void store_save(void) {
@@ -175,6 +184,8 @@ void store_init(uint32_t mb_magic, uint32_t mb_addr) {
         return;
     }
 
+    store_disk_sectors = disk_sectors;
+
     if (backend == BACKEND_ATA) log_slot(store_channel, store_drive);
 
     // Place the store region near the end of the disk instead of a
@@ -186,11 +197,13 @@ void store_init(uint32_t mb_magic, uint32_t mb_addr) {
     if (disk_sectors > (uint64_t)(store_sectors + STORE_RESERVED_TAIL_SECTORS + 32)) {
         store_lba = (uint32_t)(disk_sectors - store_sectors - STORE_RESERVED_TAIL_SECTORS);
     } else {
-        // Disk is too small to safely reserve tail space (e.g. a tiny
-        // test image). Fall back to the old fixed offset and hope for
-        // the best rather than refusing to run at all.
-        store_lba = STORE_FALLBACK_LBA;
-        boot_log("Storefile: disk too small to reserve tail space safely");
+        /* Never write outside the detected disk. The old fallback LBA could
+           overlap the boot image when the disk had no room for the store,
+           causing delayed corruption/reboots after a file write. */
+        store_enabled = 0;
+        fs_init();
+        boot_log("Storefile: disk too small, persistence disabled for this boot");
+        return;
     }
 
     // First, see if there's already a valid saved image on disk from a

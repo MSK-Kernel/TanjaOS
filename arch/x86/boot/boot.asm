@@ -10,10 +10,6 @@ extern kernel_main
 
 _start:
     mov esp, stack_top
-    ; GRUB leaves the multiboot magic in eax and a pointer to the
-    ; multiboot info struct (mods_count/mods_addr etc.) in ebx.
-    ; cdecl pushes args right-to-left, so push ebx first, eax second,
-    ; giving kernel_main(magic, mbi_addr).
     push ebx
     push eax
     call kernel_main
@@ -22,5 +18,10 @@ _start:
 
 section .bss
 align 16
-stack_bottom: resb 16384
+; 64 KB kernel stack. The recursive-descent C compiler (cc.c) can
+; recurse deep enough to overflow the old 16 KB stack and scribble
+; past stack_bottom into the BSS-resident filesystem tables, which
+; then makes the next `ls` fault and (with no exception handlers)
+; triple-fault-reboot the machine.
+stack_bottom: resb 65536
 stack_top:
