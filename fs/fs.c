@@ -350,8 +350,9 @@ int fs_list_directory(const char* path, char* buf, uint32_t* size) {
     int llen = strlen_safe(lp);
     int pos = 0, i, j;
     
-    // List subdirectories
-    for (i = 1; i < MAX_D && pos < 4000; i++) {
+    // List subdirectories. The caller supplies a large buffer; never
+    // write past it. MAX_D/MAX_F bound the number of entries.
+    for (i = 1; i < MAX_D && pos < 16380; i++) {
         if (!dused[i]) continue;
         int dlen = strlen_safe(dname[i]);
         if (dlen <= llen) continue;
@@ -372,13 +373,14 @@ int fs_list_directory(const char* path, char* buf, uint32_t* size) {
         for (j = 0; child[j]; j++) if (child[j] == '/') { slash = 1; break; }
         if (slash) continue;
         int clen = strlen_safe(child);
+        if (pos + clen + 3 >= 16384) continue;
         for (j = 0; j < clen; j++) buf[pos++] = child[j];
         buf[pos++] = '/';
         buf[pos++] = '\n';
     }
     
     // List files
-    for (i = 0; i < MAX_F && pos < 4000; i++) {
+    for (i = 0; i < MAX_F && pos < 16380; i++) {
         if (!fused[i]) continue;
         int flen = strlen_safe(fname[i]);
         if (flen <= llen) continue;
@@ -399,6 +401,7 @@ int fs_list_directory(const char* path, char* buf, uint32_t* size) {
         for (j = 0; child[j]; j++) if (child[j] == '/') { slash = 1; break; }
         if (slash) continue;
         int clen = strlen_safe(child);
+        if (pos + clen + 2 >= 16384) continue;
         for (j = 0; j < clen; j++) buf[pos++] = child[j];
         buf[pos++] = '\n';
     }

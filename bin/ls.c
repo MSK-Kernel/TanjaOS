@@ -78,13 +78,19 @@ void cmd_ls(char* args) {
     extern void print_color(const char* s, uint16_t color);
     extern int fs_list_directory(const char* path, char* buffer, uint32_t* size);
 
-    char buffer[4096];
+    /* Keep large working buffers out of the kernel stack.
+       ls is a user program, but it runs in the kernel address space,
+       so a few-kilobyte automatic arrays can overwrite the return
+       address and reboot the machine. */
+    static char buffer[16384];
+    static char names[LS_MAX_ENTRIES][LS_NAME_LEN];
+    static int is_dir[LS_MAX_ENTRIES];
+    static int disp_len[LS_MAX_ENTRIES];
+    static uint16_t color[LS_MAX_ENTRIES];
     uint32_t size = 0;
 
     if (fs_list_directory(args, buffer, &size) != 0 || size == 0) return;
 
-    char names[LS_MAX_ENTRIES][LS_NAME_LEN];
-    int is_dir[LS_MAX_ENTRIES];
     int count = 0;
 
     // Parse fs_list_directory's output (folders first, then files,
@@ -136,8 +142,6 @@ void cmd_ls(char* args) {
 
     // Precompute each entry's display length (name + trailing '/' for
     // dirs) and color (dir / script / normal file), once, up front.
-    int disp_len[LS_MAX_ENTRIES];
-    uint16_t color[LS_MAX_ENTRIES];
     int max_len = 0;
 
     for (i = 0; i < count; i++) {
@@ -148,7 +152,7 @@ void cmd_ls(char* args) {
             disp_len[i] = len;
             color[i] = COLOR_DIR;
         } else {
-            char path[300];
+            static char path[300];
             ls_build_path(args, names[i], path, sizeof(path));
             disp_len[i] = len;
             color[i] = (ls_is_binary(path) || ls_looks_like_script(path)) ? COLOR_LIGHT_GREEN : COLOR_WHITE;

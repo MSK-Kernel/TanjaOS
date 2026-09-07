@@ -544,7 +544,7 @@ static void skip_ws_comments(void) {
              src[src_pos + 8] == '\t' || src[src_pos + 8] == '<')) {
             int include_line = cur_line;
             while (peekc() != -1 && peekc() != '\n') getc_src();
-            print("#include found and not needed, safely ignored\n");
+            print("c: #include found and not needed, safely ignored\n");
             (void)include_line;
             continue;
         }
