@@ -544,7 +544,7 @@ static void skip_ws_comments(void) {
              src[src_pos + 8] == '\t' || src[src_pos + 8] == '<')) {
             int include_line = cur_line;
             while (peekc() != -1 && peekc() != '\n') getc_src();
-            print("#include found and not needed, safely ignored\n");
+            print("c: #include found and not needed, safely ignored\n");
             (void)include_line;
             continue;
         }
@@ -945,6 +945,11 @@ static void gen_mov_abs_imm32(uint32_t addr, uint32_t value) {
     emit_u8(0xC7); emit_u8(0x05); emit_u32(addr); emit_u32(value);
 }
 static void gen_add_eax_ecx(void) { emit_u8(0x01); emit_u8(0xC8); }
+static void gen_add_eax_imm32(uint32_t imm) { emit_u8(0x81); emit_u8(0xC0); emit_u32(imm); }
+static void gen_sub_eax_imm32(uint32_t imm) { emit_u8(0x81); emit_u8(0xE8); emit_u32(imm); }
+// eax *= imm (used to scale an integer operand of pointer arithmetic
+// by the pointee's size - imul eax, eax, imm32).
+static void gen_imul_eax_eax_imm32(uint32_t imm) { emit_u8(0x69); emit_u8(0xC0); emit_u32(imm); }
 static void gen_and_eax_ecx(void) { emit_u8(0x21); emit_u8(0xC8); }
 static void gen_or_eax_ecx(void)  { emit_u8(0x09); emit_u8(0xC8); }
 static void gen_xor_eax_ecx(void) { emit_u8(0x31); emit_u8(0xC8); }
@@ -1416,6 +1421,43 @@ static int lookup_elem_size(const char* name) {
     global_t* g = find_global(name);
     if (g) return g->elem_size ? g->elem_size : 4;
     return 4;
+}
+
+// Real C scales pointer arithmetic by the pointee's size: `p + 1` on
+// an int* moves 4 bytes, not 1. Returns that scale factor for a
+// plain identifier - the pointee's elem_size when `name` is a
+// pointer or array, 1 for every other (non-pointer) type, since a
+// plain int/char/etc. always advances by 1 regardless of its own
+// byte width.
+static int lookup_ptr_advance(const char* name) {
+    local_t* l = find_local(name);
+    global_t* g = l ? 0 : find_global(name);
+    if (!l && !g) return 1;
+    int ptr_depth = l ? l->ptr_depth : g->ptr_depth;
+    int is_array = l ? l->is_array : g->is_array;
+    int elem_size = l ? l->elem_size : g->elem_size;
+    if (ptr_depth > 0 || is_array) return elem_size ? elem_size : 4;
+    return 1;
+}
+
+// True when the upcoming tokens are exactly `IDENT` followed by a
+// token that is NOT '(' , '[' , '++' or '--' (i.e. plain_additive is
+// about to consume a bare variable reference, not a call, index, or
+// incr/decr, so the identifier's own value - not some derived
+// expression - is what a following +/- would be scaling). Used to
+// recognize the common `ptr + i` / `i + ptr` / `ptr - i` forms so
+// they get real pointer-arithmetic scaling without needing a full
+// expression type system.
+static int peek_bare_ident(char* out_name, int out_size) {
+    if (cur_tok.type != T_IDENT) return 0;
+    lexer_state_t save = lexer_save();
+    int i = 0;
+    while (cur_tok.sval[i] && i < out_size - 1) { out_name[i] = cur_tok.sval[i]; i++; }
+    out_name[i] = 0;
+    next_token();
+    token_type_t nt = cur_tok.type;
+    lexer_restore(save);
+    return nt != T_LPAREN && nt != T_LBRACKET && nt != T_INC && nt != T_DEC;
 }
 
 static void parse_array_index_addr(const char* name, int line) {
@@ -2006,8 +2048,9 @@ static void parse_primary(void) {
         next_token();
         gen_var_load_to_eax(name, line);
         if (cc_error_flag) return;
-        if (is_inc) { emit_u8(0x83); emit_u8(0xC0); emit_u8(0x01); } // add eax,1
-        else { emit_u8(0x83); emit_u8(0xE8); emit_u8(0x01); }        // sub eax,1
+        int adv = lookup_ptr_advance(name);
+        if (is_inc) gen_add_eax_imm32((uint32_t)adv);
+        else gen_sub_eax_imm32((uint32_t)adv);
         gen_var_store_from_eax(name, line);
         return;
     }
@@ -2160,8 +2203,9 @@ static void parse_primary(void) {
             gen_var_load_to_eax(name, line); // old value -> eax (this IS the expression result)
             if (cc_error_flag) return;
             gen_push_eax(); // save old value
-            if (is_inc) { emit_u8(0x83); emit_u8(0xC0); emit_u8(0x01); } // add eax,1
-            else { emit_u8(0x83); emit_u8(0xE8); emit_u8(0x01); }        // sub eax,1
+            int adv = lookup_ptr_advance(name);
+            if (is_inc) gen_add_eax_imm32((uint32_t)adv);
+            else gen_sub_eax_imm32((uint32_t)adv);
             gen_var_store_from_eax(name, line);
             if (cc_error_flag) return;
             gen_pop_eax(); // restore old value as the final result
@@ -2192,15 +2236,48 @@ static void parse_term(void) {
 }
 
 static void parse_additive(void) {
+    char lname[64];
+    int l_bare = peek_bare_ident(lname, sizeof(lname));
+    int l_adv = l_bare ? lookup_ptr_advance(lname) : 1;
     parse_term();
     for (;;) {
         if (cc_error_flag) return;
         if (cur_tok.type == T_PLUS) {
-            next_token(); gen_push_eax(); parse_term(); if (cc_error_flag) return;
+            next_token();
+            char rname[64];
+            int r_bare = peek_bare_ident(rname, sizeof(rname));
+            int r_adv = r_bare ? lookup_ptr_advance(rname) : 1;
+            // `int + ptr`: the left side (already in eax) is the
+            // integer that needs scaling by the pointer's pointee size.
+            if (l_adv == 1 && r_adv > 1) gen_imul_eax_eax_imm32((uint32_t)r_adv);
+            gen_push_eax(); parse_term(); if (cc_error_flag) return;
+            // `ptr + int`: the right side (just evaluated, in eax) is
+            // the integer that needs scaling by the pointer's size.
+            if (l_adv > 1 && r_adv == 1) gen_imul_eax_eax_imm32((uint32_t)l_adv);
             gen_pop_ecx(); gen_add_eax_ecx();
+            l_adv = 1; // the sum is an ordinary value for any further chained +/-
         } else if (cur_tok.type == T_MINUS) {
-            next_token(); gen_push_eax(); parse_term(); if (cc_error_flag) return;
-            gen_pop_ecx(); gen_sub_ecx_eax_then_mov();
+            next_token();
+            char rname[64];
+            int r_bare = peek_bare_ident(rname, sizeof(rname));
+            int r_adv = r_bare ? lookup_ptr_advance(rname) : 1;
+            gen_push_eax(); parse_term(); if (cc_error_flag) return;
+            if (l_adv > 1 && r_adv == 1) {
+                // `ptr - int`: scale the integer right side.
+                gen_imul_eax_eax_imm32((uint32_t)l_adv);
+                gen_pop_ecx(); gen_sub_ecx_eax_then_mov();
+            } else if (l_adv > 1 && r_adv > 1) {
+                // `ptr - ptr`: real C gives an element count, i.e. the
+                // byte difference divided by the (shared) pointee size.
+                gen_pop_ecx(); gen_sub_ecx_eax_then_mov();
+                gen_push_eax();
+                gen_mov_eax_imm32((uint32_t)l_adv);
+                gen_pop_ecx();
+                gen_div_setup_and_idiv();
+            } else {
+                gen_pop_ecx(); gen_sub_ecx_eax_then_mov();
+            }
+            l_adv = 1;
         } else break;
     }
 }
@@ -2410,12 +2487,26 @@ static void parse_assign(void) {
             gen_push_eax();
             parse_assign(); // RHS -> eax
             if (cc_error_flag) return;
+            if (op == T_PLUSEQ || op == T_MINUSEQ) {
+                // Pointer arithmetic scaling: `p += n` on a pointer/array
+                // identifier must move by n * sizeof(*p) bytes, same as
+                // real C, not n bytes.
+                int adv = lookup_ptr_advance(name);
+                if (adv != 1) gen_imul_eax_eax_imm32((uint32_t)adv);
+            }
             gen_pop_ecx(); // ecx = old value (left operand)
             if (op == T_PLUSEQ) gen_add_eax_ecx();
             else if (op == T_MINUSEQ) gen_sub_ecx_eax_then_mov();
             else if (op == T_STAREQ) gen_imul_eax_ecx();
             else if (op == T_SLASHEQ) gen_div_setup_and_idiv();
-            else { gen_div_setup_and_idiv(); emit_u8(0x89); emit_u8(0xD0); } // %=
+            else if (op == T_ANDEQ) gen_and_eax_ecx();
+            else if (op == T_OREQ) gen_or_eax_ecx();
+            else if (op == T_XOREQ) gen_xor_eax_ecx();
+            else if (op == T_SHLEQ || op == T_SHREQ) {
+                gen_xchg_eax_ecx();
+                if (op == T_SHLEQ) gen_shl_eax_cl();
+                else gen_sar_eax_cl();
+            } else { gen_div_setup_and_idiv(); emit_u8(0x89); emit_u8(0xD0); } // %=
             gen_var_store_from_eax(name, line);
             return;
         }

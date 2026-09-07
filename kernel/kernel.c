@@ -725,6 +725,55 @@ static void cc_print_uint(unsigned int n, unsigned int base, int upper) {
     while (buf[i]) putc(buf[i++]);
 }
 
+// Renders n's digits (no sign) into buf, most-significant digit
+// first, and returns the digit count. buf must be at least 32 bytes.
+static int cc_uint_to_buf(char* buf, unsigned int n, unsigned int base, int upper) {
+    const char* digits = upper ? "0123456789ABCDEF" : "0123456789abcdef";
+    char tmp[32];
+    int i = 0, len, j;
+    if (n == 0) { buf[0] = '0'; return 1; }
+    while (n && i < 32) { tmp[i++] = digits[n % base]; n /= base; }
+    len = i;
+    for (j = 0; j < len; j++) buf[j] = tmp[len - 1 - j];
+    return len;
+}
+
+// Emits an already-rendered numeric field (optional '-' sign + digits
+// in body[0..len)) padded to `width` characters, honoring the '-'
+// (left-align) and '0' (zero-pad) printf flags exactly like a real
+// printf: zero-padding always goes *after* a leading sign, never
+// before it, and is ignored entirely when left-aligning.
+static void cc_print_padded_number(const char* body, int len, int width, int left_align, int zero_pad) {
+    int pad = width - len;
+    if (pad < 0) pad = 0;
+    int has_sign = (len > 0 && body[0] == '-');
+    int k;
+    if (!left_align && zero_pad) {
+        if (has_sign) putc(body[0]);
+        for (k = 0; k < pad; k++) putc('0');
+        for (k = has_sign ? 1 : 0; k < len; k++) putc(body[k]);
+        return;
+    }
+    if (!left_align) for (k = 0; k < pad; k++) putc(' ');
+    for (k = 0; k < len; k++) putc(body[k]);
+    if (left_align) for (k = 0; k < pad; k++) putc(' ');
+}
+
+// Emits a string field padded to `width` characters. Real printf
+// ignores the zero-pad flag for %s (only spaces are used), and
+// %.N s truncates the string to at most N characters.
+static void cc_print_padded_str(const char* s, int width, int left_align, int has_precision, int precision) {
+    int len = 0;
+    if (s) while (s[len]) len++;
+    if (has_precision && precision < len) len = precision;
+    int pad = width - len;
+    if (pad < 0) pad = 0;
+    int k;
+    if (!left_align) for (k = 0; k < pad; k++) putc(' ');
+    for (k = 0; k < len; k++) putc(s[k]);
+    if (left_align) for (k = 0; k < pad; k++) putc(' ');
+}
+
 static int cc_printf_impl(const char* fmt, int argc, const unsigned int* args) {
     int ai = 0, count = 0;
     if (!fmt) return 0;
@@ -765,16 +814,25 @@ int cc_printf_7(unsigned int a6, unsigned int a5, unsigned int a4, unsigned int 
 int cc_printf_8(unsigned int a7, unsigned int a6, unsigned int a5, unsigned int a4, unsigned int a3, unsigned int a2, unsigned int a1, const char* fmt) { unsigned int a[7]={a1,a2,a3,a4,a5,a6,a7}; return cc_printf_impl(fmt,7,a); }
 int cc_printf_9(unsigned int a8, unsigned int a7, unsigned int a6, unsigned int a5, unsigned int a4, unsigned int a3, unsigned int a2, unsigned int a1, const char* fmt) { unsigned int a[8]={a1,a2,a3,a4,a5,a6,a7,a8}; return cc_printf_impl(fmt,8,a); }
 
-// Fixed-precision (6 digits) float formatter for %f - there's no libc
-// dtoa/sprintf available in this freestanding kernel, so this is a
-// simple manual formatter. It truncates rather than rounding the
-// final digit, a minor deviation from a real printf's %f.
+// Fixed-precision float formatter for %f - there's no libc dtoa/sprintf
+// available in this freestanding kernel, so this is a simple manual
+// formatter.
 static void cc_print_float(double v, int precision) {
+    if (precision < 0) precision = 0;
     if (v < 0) { putc('-'); v = -v; }
+    // Real printf ROUNDS to the requested precision, it doesn't
+    // truncate (so 9.996 with %.2f must print "10.00", not "9.99").
+    // Nudging the value up by half a unit-in-the-last-place before
+    // splitting into integer/fractional parts gives correct rounding
+    // AND correctly carries into the integer part in the same step.
+    double epsilon = 0.5;
+    int e;
+    for (e = 0; e < precision; e++) epsilon *= 0.1;
+    v += epsilon;
     unsigned int ip = (unsigned int)v;
     double frac = v - (double)ip;
     cc_print_uint(ip, 10, 0);
-    putc('.');
+    if (precision > 0) putc('.');
     int i;
     for (i = 0; i < precision; i++) {
         frac *= 10.0;
@@ -828,11 +886,19 @@ int cc_printf_mixed(const char* fmt, int argc, uint32_t typemask, const uint64_t
          * forms such as %.2lf, %8d and %-10s without making the compiler's
          * freestanding formatter depend on libc. */
         int precision = 6;
-        while (*fmt == '-' || *fmt == '+' || *fmt == ' ' || *fmt == '#' || *fmt == '0') fmt++;
-        while (*fmt >= '0' && *fmt <= '9') fmt++;
+        int has_precision = 0;
+        int left_align = 0, zero_pad = 0;
+        while (*fmt == '-' || *fmt == '+' || *fmt == ' ' || *fmt == '#' || *fmt == '0') {
+            if (*fmt == '-') left_align = 1;
+            else if (*fmt == '0') zero_pad = 1;
+            fmt++;
+        }
+        int width = 0;
+        while (*fmt >= '0' && *fmt <= '9') { width = width * 10 + (*fmt - '0'); fmt++; }
         if (*fmt == '.') {
             fmt++;
             precision = 0;
+            has_precision = 1;
             while (*fmt >= '0' && *fmt <= '9') {
                 precision = precision * 10 + (*fmt - '0');
                 if (precision > 18) precision = 18;
@@ -857,17 +923,46 @@ int cc_printf_mixed(const char* fmt, int argc, uint32_t typemask, const uint64_t
             ai++; fmt++;
         } else if (*fmt == 'd' || *fmt == 'i') {
             int v = is_f ? (int)d : (int)u;
-            if (v < 0) { putc('-'); count++; v = -v; }
-            cc_print_uint((unsigned int)v, 10, 0); ai++; fmt++;
+            int neg = (v < 0);
+            unsigned int uv = neg ? (unsigned int)(-v) : (unsigned int)v;
+            char nbuf[34]; int nlen = 0;
+            if (neg) nbuf[nlen++] = '-';
+            nlen += cc_uint_to_buf(nbuf + nlen, uv, 10, 0);
+            cc_print_padded_number(nbuf, nlen, width, left_align, zero_pad);
+            count += nlen > width ? nlen : width;
+            ai++; fmt++;
         } else if (*fmt == 'u') {
-            cc_print_uint(is_f ? (unsigned int)(int)d : u, 10, 0); ai++; fmt++;
+            unsigned int uv = is_f ? (unsigned int)(int)d : u;
+            char nbuf[34]; int nlen = cc_uint_to_buf(nbuf, uv, 10, 0);
+            cc_print_padded_number(nbuf, nlen, width, left_align, zero_pad);
+            count += nlen > width ? nlen : width;
+            ai++; fmt++;
         } else if (*fmt == 'x' || *fmt == 'X') {
-            cc_print_uint(is_f ? (unsigned int)(int)d : u, 16, *fmt == 'X'); ai++; fmt++;
+            unsigned int uv = is_f ? (unsigned int)(int)d : u;
+            char nbuf[34]; int nlen = cc_uint_to_buf(nbuf, uv, 16, *fmt == 'X');
+            cc_print_padded_number(nbuf, nlen, width, left_align, zero_pad);
+            count += nlen > width ? nlen : width;
+            ai++; fmt++;
+        } else if (*fmt == 'o') {
+            unsigned int uv = is_f ? (unsigned int)(int)d : u;
+            char nbuf[34]; int nlen = cc_uint_to_buf(nbuf, uv, 8, 0);
+            cc_print_padded_number(nbuf, nlen, width, left_align, zero_pad);
+            count += nlen > width ? nlen : width;
+            ai++; fmt++;
         } else if (*fmt == 'c') {
-            putc((char)(is_f ? (int)d : (int)u)); ai++; fmt++; count++;
+            char cbuf[1]; cbuf[0] = (char)(is_f ? (int)d : (int)u);
+            int pad = width - 1; if (pad < 0) pad = 0;
+            int k;
+            if (!left_align) for (k = 0; k < pad; k++) putc(' ');
+            putc(cbuf[0]);
+            if (left_align) for (k = 0; k < pad; k++) putc(' ');
+            count += pad + 1;
+            ai++; fmt++;
         } else if (*fmt == 's') {
             const char* str = is_f ? 0 : (const char*)(uintptr_t)u;
-            if (str) while (*str) { putc(*str++); count++; }
+            cc_print_padded_str(str, width, left_align, has_precision, precision);
+            { int slen = 0; if (str) while (str[slen]) slen++; if (has_precision && precision < slen) slen = precision;
+              count += slen > width ? slen : width; }
             ai++; fmt++;
         } else {
             putc('%'); count++;
@@ -1005,7 +1100,7 @@ int cc_scanf_multi(const char* fmt, int argc, const uint32_t* ptrs) {
             continue;
         }
 
-        unsigned int base = (spec == 'x' || spec == 'X') ? 16u : 10u;
+        unsigned int base = (spec == 'x' || spec == 'X') ? 16u : (spec == 'o' ? 8u : 10u);
         unsigned int v = 0, any = 0;
         if (spec == 'i') {
             if (buffer[bi] == '0' && (buffer[bi+1] == 'x' || buffer[bi+1] == 'X')) {
