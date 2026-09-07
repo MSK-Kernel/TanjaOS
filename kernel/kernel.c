@@ -842,6 +842,123 @@ static void cc_print_float(double v, int precision) {
     }
 }
 
+// Same rendering as cc_print_float, but into a caller buffer instead
+// of straight to the console, so %f can get field-width padding (via
+// cc_print_padded_number) exactly like %d/%x already do. Returns the
+// number of characters written. buf must be at least ~48 bytes.
+static int cc_format_fixed(char* buf, double v, int precision) {
+    int len = 0;
+    if (precision < 0) precision = 0;
+    if (v < 0) { buf[len++] = '-'; v = -v; }
+    double epsilon = 0.5; int e;
+    for (e = 0; e < precision; e++) epsilon *= 0.1;
+    v += epsilon;
+    unsigned int ip = (unsigned int)v;
+    double frac = v - (double)ip;
+    len += cc_uint_to_buf(buf + len, ip, 10, 0);
+    if (precision > 0) {
+        buf[len++] = '.';
+        int i;
+        for (i = 0; i < precision; i++) {
+            frac *= 10.0;
+            unsigned int d = (unsigned int)frac;
+            buf[len++] = '0' + (char)d;
+            frac -= (double)d;
+        }
+    }
+    return len;
+}
+
+// Renders %e/%E scientific notation ("-1.230000e+04") into buf, with
+// the same rounding approach as cc_format_fixed but applied after
+// normalizing the value into the [1,10) mantissa range, and with a
+// carry check in case rounding pushes the mantissa back up to 10.
+// Exponent is always shown with a sign and at least 2 digits, like
+// glibc's printf.
+static int cc_format_exp(char* buf, double v, int precision, int upper) {
+    int len = 0;
+    if (precision < 0) precision = 6;
+    int neg = (v < 0);
+    if (neg) v = -v;
+    int exp = 0;
+    if (v != 0.0) {
+        while (v >= 10.0) { v /= 10.0; exp++; }
+        while (v < 1.0)  { v *= 10.0; exp--; }
+    }
+    double epsilon = 0.5; int e;
+    for (e = 0; e < precision; e++) epsilon *= 0.1;
+    v += epsilon;
+    if (v >= 10.0) { v /= 10.0; exp++; }
+    if (neg) buf[len++] = '-';
+    unsigned int lead = (unsigned int)v;
+    buf[len++] = '0' + (char)lead;
+    double frac = v - (double)lead;
+    if (precision > 0) {
+        buf[len++] = '.';
+        int i;
+        for (i = 0; i < precision; i++) {
+            frac *= 10.0;
+            unsigned int d = (unsigned int)frac;
+            buf[len++] = '0' + (char)d;
+            frac -= (double)d;
+        }
+    }
+    buf[len++] = upper ? 'E' : 'e';
+    buf[len++] = (exp < 0) ? '-' : '+';
+    if (exp < 0) exp = -exp;
+    char ebuf[8];
+    int elen = cc_uint_to_buf(ebuf, (unsigned int)exp, 10, 0);
+    if (elen < 2) buf[len++] = '0'; // always at least 2 exponent digits
+    int k;
+    for (k = 0; k < elen; k++) buf[len++] = ebuf[k];
+    return len;
+}
+
+// Drops trailing fractional zeros (and a bare trailing '.') from a
+// rendered number, matching real %g's default (non-'#') behavior.
+// When the number is in exponential form, only the mantissa before
+// 'e'/'E' is affected; the exponent itself is left alone and the gap
+// closed up.
+static int cc_strip_trailing_zeros(char* buf, int len, int has_exp) {
+    int mant_end = len, exp_start = len, i;
+    if (has_exp) {
+        for (i = 0; i < len; i++) {
+            if (buf[i] == 'e' || buf[i] == 'E') { exp_start = i; mant_end = i; break; }
+        }
+    }
+    int dot = -1;
+    for (i = 0; i < mant_end; i++) { if (buf[i] == '.') { dot = i; break; } }
+    if (dot < 0) return len; // integral value, nothing to strip
+    int end = mant_end;
+    while (end > dot + 1 && buf[end - 1] == '0') end--;
+    if (end == dot + 1) end--; // drop a bare trailing '.'
+    if (!has_exp) return end;
+    int shrink = mant_end - end, j;
+    for (j = exp_start; j < len; j++) buf[j - shrink] = buf[j];
+    return len - shrink;
+}
+
+// Real %g: whichever of fixed or scientific notation is shorter for
+// the given precision (fixed when -4 <= decimal-exponent < precision,
+// scientific otherwise), then trailing zeros stripped. `precision` is
+// the total significant digits requested (defaults to 6, and 0 is
+// treated as 1), unlike %f/%e where it's fractional digits.
+static int cc_format_general(char* buf, double v, int precision, int upper) {
+    if (precision <= 0) precision = 1;
+    double av = (v < 0) ? -v : v;
+    int exp = 0;
+    if (av != 0.0) {
+        double t = av;
+        while (t >= 10.0) { t /= 10.0; exp++; }
+        while (t < 1.0)  { t *= 10.0; exp--; }
+    }
+    int use_exp = (exp < -4 || exp >= precision);
+    int len;
+    if (use_exp) len = cc_format_exp(buf, v, precision - 1, upper);
+    else         len = cc_format_fixed(buf, v, precision - 1 - exp);
+    return cc_strip_trailing_zeros(buf, len, use_exp);
+}
+
 // Float-argument printf bridges - a separate family from cc_printf_N
 // above because value arguments here are real 8-byte doubles (from
 // the compiler's float/double expression support) rather than 4-byte
@@ -918,8 +1035,23 @@ int cc_printf_mixed(const char* fmt, int argc, uint32_t typemask, const uint64_t
             int k; for (k = 0; k < 8; k++) db[k] = rb[k];
         }
 
-        if (*fmt == 'f' || *fmt == 'F' || *fmt == 'e' || *fmt == 'E' || *fmt == 'g' || *fmt == 'G') {
-            cc_print_float(is_f ? d : (double)(int)u, precision);
+        if (*fmt == 'f' || *fmt == 'F') {
+            double val = is_f ? d : (double)(int)u;
+            char nbuf[64]; int nlen = cc_format_fixed(nbuf, val, precision);
+            cc_print_padded_number(nbuf, nlen, width, left_align, zero_pad);
+            count += nlen > width ? nlen : width;
+            ai++; fmt++;
+        } else if (*fmt == 'e' || *fmt == 'E') {
+            double val = is_f ? d : (double)(int)u;
+            char nbuf[64]; int nlen = cc_format_exp(nbuf, val, precision, *fmt == 'E');
+            cc_print_padded_number(nbuf, nlen, width, left_align, zero_pad);
+            count += nlen > width ? nlen : width;
+            ai++; fmt++;
+        } else if (*fmt == 'g' || *fmt == 'G') {
+            double val = is_f ? d : (double)(int)u;
+            char nbuf[64]; int nlen = cc_format_general(nbuf, val, has_precision ? precision : 6, *fmt == 'G');
+            cc_print_padded_number(nbuf, nlen, width, left_align, zero_pad);
+            count += nlen > width ? nlen : width;
             ai++; fmt++;
         } else if (*fmt == 'd' || *fmt == 'i') {
             int v = is_f ? (int)d : (int)u;
