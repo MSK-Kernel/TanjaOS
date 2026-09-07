@@ -54,7 +54,7 @@ extern int cc_printf_6(unsigned int,unsigned int,unsigned int,unsigned int,unsig
 extern int cc_printf_7(unsigned int,unsigned int,unsigned int,unsigned int,unsigned int,unsigned int,const char*);
 extern int cc_printf_8(unsigned int,unsigned int,unsigned int,unsigned int,unsigned int,unsigned int,unsigned int,const char*);
 extern int cc_printf_9(unsigned int,unsigned int,unsigned int,unsigned int,unsigned int,unsigned int,unsigned int,unsigned int,const char*);
-extern int cc_scanf_2(unsigned int,const char*);
+extern int cc_scanf_multi(const char*, int, const uint32_t*);
 // Float-argument printf bridges (see printf's "use_float_printf" path
 // below): value arguments are passed as real 8-byte doubles rather
 // than 4-byte ints, so these need their own bridge family. Only 0-2
@@ -64,7 +64,7 @@ extern int cc_printf_f3(double,double,const char*);
 extern int cc_printf_f4(double,double,double,const char*);
 extern int cc_printf_mixed(const char*, int, uint32_t, const uint64_t*);
 
-#define CC_HEAP_SIZE 65536
+#define CC_HEAP_SIZE 262144
 static uint8_t cc_heap[CC_HEAP_SIZE];
 static uint32_t cc_heap_pos;
 static char cc_tok_state[256];
@@ -283,13 +283,14 @@ static void cc_heap_reset(void) { cc_heap_pos = 0; cc_tok_next = (const char*)0;
  * are marked by the compiler; numeric expressions are rendered in decimal.
  * The shell command itself performs the normal command-specific parsing.
  */
-#define CC_CMD_MAX_ARGS 8
-#define CC_CMD_LINE_SIZE 512
+#define CC_CMD_MAX_ARGS 32
+#define CC_CMD_LINE_SIZE 65536
 static uint32_t cc_cmd_values[CC_CMD_MAX_ARGS];
 static uint8_t cc_cmd_string[CC_CMD_MAX_ARGS];
 static int cc_cmd_arg_count;
-static char cc_cmd_name[64];
+static char cc_cmd_name[128];
 static char cc_cmd_line[CC_CMD_LINE_SIZE];
+static int cc_cmd_overflow;
 
 extern void execute_command(const char* cmd_line);
 static int str_eq(const char* a, const char* b);
@@ -302,11 +303,12 @@ static void cc_cmd_begin(const char* name) {
     }
     cc_cmd_name[i] = 0;
     cc_cmd_arg_count = 0;
+    cc_cmd_overflow = 0;
 }
 
 static void cc_cmd_set_arg(unsigned int index, unsigned int value,
                            unsigned int is_string) {
-    if (index >= CC_CMD_MAX_ARGS) return;
+    if (index >= CC_CMD_MAX_ARGS) { cc_cmd_overflow = 1; return; }
     cc_cmd_values[index] = value;
     cc_cmd_string[index] = is_string ? 1 : 0;
     if ((int)index + 1 > cc_cmd_arg_count)
@@ -316,11 +318,15 @@ static void cc_cmd_set_arg(unsigned int index, unsigned int value,
 static void cc_cmd_append_char(int* pos, char c) {
     if (*pos < CC_CMD_LINE_SIZE - 1)
         cc_cmd_line[(*pos)++] = c;
+    else
+        cc_cmd_overflow = 1;
 }
 
 static void cc_cmd_append_text(int* pos, const char* s) {
-    while (*s && *pos < CC_CMD_LINE_SIZE - 1)
+    while (*s) {
+        if (*pos >= CC_CMD_LINE_SIZE - 1) { cc_cmd_overflow = 1; return; }
         cc_cmd_line[(*pos)++] = *s++;
+    }
 }
 
 static void cc_cmd_append_uint(int* pos, uint32_t v) {
@@ -396,6 +402,10 @@ static void cc_cmd_end(void) {
     }
 
     cc_cmd_line[pos] = 0;
+    if (cc_cmd_overflow) {
+        print("C command is too long or has too many arguments\n");
+        return;
+    }
     execute_command(cc_cmd_line);
 }
 
@@ -403,13 +413,15 @@ static void cc_cmd_end(void) {
 // Code buffer
 // ------------------------------------------------------------
 
-#define CODE_BUF_SIZE 32768
+#define CODE_BUF_SIZE 262144
 #define TJBIN_HEADER_SIZE 12
 static uint8_t code_buf[CODE_BUF_SIZE];
 static uint32_t code_len;
+static int code_overflow;
 
 static void emit_u8(uint8_t b) {
     if (code_len < CODE_BUF_SIZE) code_buf[code_len++] = b;
+    else code_overflow = 1;
 }
 static void emit_u32(uint32_t v) {
     emit_u8((uint8_t)(v & 0xFF));
@@ -431,14 +443,14 @@ static void patch_u32(uint32_t at, uint32_t v) {
 
 static int cc_error_flag = 0;
 static int cc_error_line = 0;
-static char cc_error_msg[128];
+static char cc_error_msg[256];
 
 static void cc_seterr(int line, const char* msg) {
     if (cc_error_flag) return;
     cc_error_flag = 1;
     cc_error_line = line;
     int i = 0;
-    while (msg[i] && i < 127) { cc_error_msg[i] = msg[i]; i++; }
+    while (msg[i] && i < 255) { cc_error_msg[i] = msg[i]; i++; }
     cc_error_msg[i] = 0;
 }
 
@@ -467,7 +479,7 @@ typedef struct {
     double fval;
     int is_float_lit;   // this T_NUM is actually a floating-point literal
     int is_float_single; // literal had an 'f'/'F' suffix (float, not double)
-    char sval[256];
+    char sval[1024];
     int line;
     uint32_t start_pos;
 } token_t;
@@ -515,13 +527,34 @@ static void skip_ws_comments(void) {
             if (peekc() != -1) { getc_src(); getc_src(); }
             continue;
         }
+
+        /* TanjaOS does not need C header files: its supported runtime
+         * functions are provided by the kernel/compiler itself.  Treat a
+         * source-level #include directive as a harmless no-op, but tell the
+         * user during compilation so it is clear that no header was loaded.
+         * Only recognize it here at a token boundary, so #include appearing
+         * inside a string literal is unaffected.
+         */
+        if (c == '#' && src_pos + 8 <= src_len &&
+            src[src_pos + 1] == 'i' && src[src_pos + 2] == 'n' &&
+            src[src_pos + 3] == 'c' && src[src_pos + 4] == 'l' &&
+            src[src_pos + 5] == 'u' && src[src_pos + 6] == 'd' &&
+            src[src_pos + 7] == 'e' &&
+            (src_pos + 8 == src_len || src[src_pos + 8] == ' ' || src[src_pos + 8] == '"' ||
+             src[src_pos + 8] == '\t' || src[src_pos + 8] == '<')) {
+            int include_line = cur_line;
+            while (peekc() != -1 && peekc() != '\n') getc_src();
+            print("#include found and not needed, safely ignored\n");
+            (void)include_line;
+            continue;
+        }
         break;
     }
 }
 
 static void next_token(void) {
     token_count++;
-    if (token_count > 200000) { cc_seterr(cur_line, "input too complex / possibly unterminated construct"); cur_tok.type = T_EOF; return; }
+    if (token_count > 1000000) { cc_seterr(cur_line, "input too complex / possibly unterminated construct"); cur_tok.type = T_EOF; return; }
 
     skip_ws_comments();
     cur_tok.start_pos = src_pos;
@@ -763,15 +796,15 @@ static void expect(token_type_t t, const char* what) {
 // Symbol tables
 // ------------------------------------------------------------
 
-#define MAX_LOCALS 48
-typedef struct { char name[32]; int32_t offset; int is_array; int array_len; int elem_size; int ptr_depth; int is_fp; int fp_double; } local_t;
+#define MAX_LOCALS 1024
+typedef struct { char name[128]; int32_t offset; int is_array; int array_len; int elem_size; int ptr_depth; int is_fp; int fp_double; } local_t;
 static local_t locals[MAX_LOCALS];
 static int local_count;
 static int next_local_offset;
 static int next_param_offset;
 
-#define MAX_FUNCS 24
-typedef struct { char name[32]; uint32_t addr; int nparams; } func_t;
+#define MAX_FUNCS 128
+typedef struct { char name[128]; uint32_t addr; int nparams; } func_t;
 static func_t funcs[MAX_FUNCS];
 static int func_count;
 static uint32_t cur_func_start; // for self-recursion
@@ -783,13 +816,13 @@ static uint32_t cur_func_start; // for self-recursion
 // cc_resolve_pending_calls). Real C requires a prior prototype or
 // definition to call a function at all - an entirely unknown name is
 // still a hard "call to undefined function" error, matching this.
-#define MAX_PENDING_CALLS 32
+#define MAX_PENDING_CALLS 256
 typedef struct { uint32_t patch_at; int func_index; int line; } pending_call_t;
 static pending_call_t pending_calls[MAX_PENDING_CALLS];
 static int pending_call_count;
 
-#define MAX_GLOBALS 24
-typedef struct { char name[32]; uint32_t addr; int is_array; int array_len; int elem_size; int ptr_depth; int is_fp; int fp_double; } global_t;
+#define MAX_GLOBALS 128
+typedef struct { char name[128]; uint32_t addr; int is_array; int array_len; int elem_size; int ptr_depth; int is_fp; int fp_double; } global_t;
 static int32_t globals_data[MAX_GLOBALS];
 static double globals_fp_init[MAX_GLOBALS]; // initializer value for float/double globals, reapplied by the entry wrapper
 static global_t globals[MAX_GLOBALS];
@@ -800,7 +833,7 @@ static int global_count;
 // BYTES (not elements) so char arrays can be genuinely byte-packed,
 // matching real C memory layout, while int arrays still use 4 bytes
 // per element.
-#define GLOBAL_ARRAY_POOL_BYTES 4096
+#define GLOBAL_ARRAY_POOL_BYTES 65536
 static uint8_t global_array_pool[GLOBAL_ARRAY_POOL_BYTES];
 static int global_array_pool_used;
 
@@ -808,7 +841,7 @@ static int global_array_pool_used;
 // break/continue statements know where to jump. Nested loops save and
 // restore the previous context around their body (matches the natural
 // LIFO nesting of the recursive-descent parser itself).
-#define MAX_BREAK_PATCHES 16
+#define MAX_BREAK_PATCHES 128
 typedef struct {
     uint32_t break_patches[MAX_BREAK_PATCHES];
     int break_count;
@@ -830,7 +863,7 @@ static int nest_seq_counter;
 static int cur_loop_seq = -1;
 static int cur_switch_seq = -1;
 
-#define MAX_SWITCH_CASES 32
+#define MAX_SWITCH_CASES 256
 typedef struct {
     int32_t case_values[MAX_SWITCH_CASES];
     uint32_t case_addrs[MAX_SWITCH_CASES];
@@ -844,12 +877,12 @@ typedef struct {
 static switch_ctx_t* cur_switch = 0;
 
 // goto/label support: labels are function-scoped, reset per function.
-#define MAX_LABELS 16
-typedef struct { char name[32]; uint32_t addr; int defined; } label_t;
+#define MAX_LABELS 128
+typedef struct { char name[128]; uint32_t addr; int defined; } label_t;
 static label_t func_labels[MAX_LABELS];
 static int func_label_count;
 
-#define MAX_LABEL_PATCHES 32
+#define MAX_LABEL_PATCHES 256
 typedef struct { char name[32]; uint32_t patch_at; int line; } label_patch_t;
 static label_patch_t label_patches[MAX_LABEL_PATCHES];
 static int label_patch_count;
@@ -1092,7 +1125,7 @@ static void parse_float_expr(void);
 // no "load immediate" instruction for arbitrary values, so each
 // literal's bit pattern is stashed here once at compile time and
 // loaded from memory (fld) wherever it's used.
-#define FLOAT_CONST_POOL_BYTES 1024
+#define FLOAT_CONST_POOL_BYTES 16384
 static uint8_t float_const_pool[FLOAT_CONST_POOL_BYTES];
 static int float_const_pool_used;
 
@@ -1107,7 +1140,7 @@ static uint8_t printf_fmt_scratch[4]; // stashes printf's format-string pointer 
 
 // Backing storage for float/double GLOBAL VARIABLES (as opposed to
 // float_const_pool above, which is for float/double LITERALS).
-#define FLOAT_GLOBAL_POOL_BYTES 512
+#define FLOAT_GLOBAL_POOL_BYTES 8192
 static uint8_t float_global_pool[FLOAT_GLOBAL_POOL_BYTES];
 static int float_global_pool_used;
 
@@ -1432,7 +1465,7 @@ static void skip_one_arg_tokens(void) {
 // purely at the token level - no codegen, fully restored afterward -
 // classifying each as float-looking (bit set in *out_typemask) or
 // not, and counting them into *out_argc.
-#define MAX_PRINTF_ARGS 16
+#define MAX_PRINTF_ARGS 32
 static void scan_printf_arg_types(int* out_argc, uint32_t* out_typemask) {
     *out_argc = 0;
     *out_typemask = 0;
@@ -1464,90 +1497,139 @@ static void parse_call_args_and_call(func_t* fn, const char* builtin_name) {
     //    special cases of it.
     // Any call with zero float-looking arguments falls through
     // unchanged to the plain int path used by every other function.
-    if (builtin_name && str_eq(builtin_name, "printf") && cur_tok.type != T_RPAREN) {
-        int pf_argc; uint32_t pf_typemask;
+    if (builtin_name && str_eq(builtin_name, "printf")) {
+        /*
+         * printf is variadic.  Use one generic 8-byte-slot bridge instead
+         * of fixed cc_printf_N wrappers.  The old implementation had hard
+         * limits (9 integer args / 3 float args) and could also reverse
+         * scratch-slot order.  A lexer-only prescan tells us how many
+         * arguments there are before we reserve the contiguous slot array.
+         */
+        int pf_argc;
+        uint32_t pf_typemask;
         scan_printf_arg_types(&pf_argc, &pf_typemask);
-        uint32_t all_bits = (pf_argc >= 32) ? 0xFFFFFFFFu : ((1u << pf_argc) - 1u);
-        int all_float = (pf_argc > 0) && (pf_typemask == all_bits);
-        int any_float = (pf_typemask != 0);
 
-        if (all_float) {
-            parse_expr(); if (cc_error_flag) return; // format string -> eax
-            gen_push_eax();
-            int nvalues = 0;
-            while (cur_tok.type == T_COMMA) {
-                next_token();
-                parse_float_expr(); if (cc_error_flag) return;
-                emit_u8(0x83); emit_u8(0xEC); emit_u8(0x08); // sub esp, 8
-                emit_u8(0xDD); emit_u8(0x1C); emit_u8(0x24); // fstp qword [esp]
-                nvalues++;
-            }
-            expect(T_RPAREN, "expected ')' after arguments"); if (cc_error_flag) return;
-
-            uint32_t target;
-            if (nvalues == 0) target = (uint32_t)(void*)cc_printf_1;
-            else if (nvalues == 1) target = (uint32_t)(void*)cc_printf_f2;
-            else if (nvalues == 2) target = (uint32_t)(void*)cc_printf_f3;
-            else if (nvalues == 3) target = (uint32_t)(void*)cc_printf_f4;
-            else { cc_seterr(cur_tok.line, "printf supports at most 3 floating-point-only arguments"); return; }
-            gen_call_abs(target);
-
-            uint32_t cleanup = 4 + (uint32_t)nvalues * 8; // fmt (4B) + each double (8B)
-            emit_u8(0x81); emit_u8(0xC4); emit_u32(cleanup); // add esp, cleanup
+        if (pf_argc > MAX_PRINTF_ARGS) {
+            cc_seterr(cur_tok.line, "too many printf arguments");
             return;
         }
 
-        if (any_float) {
-            // Mixed %d/%f call.
-            parse_expr(); if (cc_error_flag) return; // format string -> eax
-            gen_mov_abs_eax((uint32_t)printf_fmt_scratch);
+        parse_expr(); if (cc_error_flag) return; // format string -> eax
+        gen_mov_abs_eax((uint32_t)printf_fmt_scratch);
 
-            if (pf_argc > 0) {
-                emit_u8(0x81); emit_u8(0xEC); emit_u32((uint32_t)pf_argc * 8); // sub esp, argc*8
-            }
-            int k;
-            for (k = 0; k < pf_argc; k++) {
-                expect(T_COMMA, "expected ',' between printf arguments"); if (cc_error_flag) return;
-                if ((pf_typemask >> k) & 1u) {
-                    parse_float_expr(); if (cc_error_flag) return;
-                    emit_u8(0xDD); emit_u8(0x9C); emit_u8(0x24); emit_u32((uint32_t)k * 8); // fstp qword [esp+k*8]
-                } else {
-                    parse_expr(); if (cc_error_flag) return;
-                    emit_u8(0x89); emit_u8(0x84); emit_u8(0x24); emit_u32((uint32_t)k * 8);       // mov [esp+k*8], eax
-                    emit_u8(0xC7); emit_u8(0x84); emit_u8(0x24); emit_u32((uint32_t)k * 8 + 4); emit_u32(0); // mov dword [esp+k*8+4], 0
-                }
-            }
-            expect(T_RPAREN, "expected ')' after arguments"); if (cc_error_flag) return;
-
-            emit_u8(0x8D); emit_u8(0x04); emit_u8(0x24); // lea eax, [esp]   (slots pointer)
-            gen_push_eax();
-            emit_u8(0x68); emit_u32(pf_typemask);        // push imm32 typemask
-            emit_u8(0x68); emit_u32((uint32_t)pf_argc);  // push imm32 argc
-            gen_mov_eax_abs((uint32_t)printf_fmt_scratch);
-            gen_push_eax();                              // push fmt
-
-            gen_call_abs((uint32_t)(void*)cc_printf_mixed);
-
-            uint32_t cleanup = 4 * 4 + (uint32_t)pf_argc * 8; // 4 call-arg pushes + the scratch array
-            emit_u8(0x81); emit_u8(0xC4); emit_u32(cleanup); // add esp, cleanup
-            return;
+        if (pf_argc > 0) {
+            emit_u8(0x81); emit_u8(0xEC);
+            emit_u32((uint32_t)pf_argc * 8);
         }
+
+        int k;
+        for (k = 0; k < pf_argc; k++) {
+            expect(T_COMMA, "expected ',' between printf arguments");
+            if (cc_error_flag) return;
+
+            if ((pf_typemask >> k) & 1u) {
+                parse_float_expr();
+                if (cc_error_flag) return;
+                emit_u8(0xDD); emit_u8(0x9C); emit_u8(0x24);
+                emit_u32((uint32_t)k * 8); // fstp qword [esp+k*8]
+            } else {
+                parse_expr();
+                if (cc_error_flag) return;
+                emit_u8(0x89); emit_u8(0x84); emit_u8(0x24);
+                emit_u32((uint32_t)k * 8); // mov [esp+k*8],eax
+                emit_u8(0xC7); emit_u8(0x84); emit_u8(0x24);
+                emit_u32((uint32_t)k * 8 + 4);
+                emit_u32(0);
+            }
+        }
+
+        expect(T_RPAREN, "expected ')' after arguments");
+        if (cc_error_flag) return;
+
+        if (pf_argc > 0) {
+            emit_u8(0x8D); emit_u8(0x04); emit_u8(0x24); // eax = slot 0
+            gen_push_eax();
+        } else {
+            gen_mov_eax_imm32(0);
+            gen_push_eax();
+        }
+
+        emit_u8(0x68); emit_u32(pf_typemask);
+        emit_u8(0x68); emit_u32((uint32_t)pf_argc);
+        gen_mov_eax_abs((uint32_t)printf_fmt_scratch);
+        gen_push_eax();
+        gen_call_abs((uint32_t)(void*)cc_printf_mixed);
+
+        uint32_t cleanup = 16 + (uint32_t)pf_argc * 8;
+        emit_u8(0x81); emit_u8(0xC4); emit_u32(cleanup);
+        return;
+    }
+
+    if (builtin_name && str_eq(builtin_name, "scanf")) {
+        /*
+         * scanf is variadic.  The old compiler only emitted a two-argument
+         * bridge, which made perfectly ordinary calls such as
+         *   scanf("%lf %lf", &a, &b)
+         * impossible.  Build a contiguous array of destination addresses
+         * and pass that array to one generic runtime bridge.
+         */
+        char fmt_scratch_name_dummy = 0;
+        (void)fmt_scratch_name_dummy;
+        int sc_argc = 0;
+        lexer_state_t save = lexer_save();
+        skip_one_arg_tokens();
+        while (cur_tok.type == T_COMMA && sc_argc < 64) {
+            next_token();
+            skip_one_arg_tokens();
+            sc_argc++;
+        }
+        lexer_restore(save);
+        if (sc_argc > 64) { cc_seterr(cur_tok.line, "too many scanf arguments"); return; }
+
+        parse_expr();
+        if (cc_error_flag) return;
+        gen_mov_abs_eax((uint32_t)printf_fmt_scratch);
+
+        if (sc_argc > 0) {
+            emit_u8(0x81); emit_u8(0xEC);
+            emit_u32((uint32_t)sc_argc * 4);
+        }
+        int k;
+        for (k = 0; k < sc_argc; k++) {
+            expect(T_COMMA, "expected ',' between scanf arguments");
+            if (cc_error_flag) return;
+            parse_expr();
+            if (cc_error_flag) return;
+            emit_u8(0x89); emit_u8(0x84); emit_u8(0x24);
+            emit_u32((uint32_t)k * 4); /* ptrs[k] = eax */
+        }
+        expect(T_RPAREN, "expected ')' after arguments");
+        if (cc_error_flag) return;
+
+        if (sc_argc > 0) {
+            emit_u8(0x8D); emit_u8(0x04); emit_u8(0x24); /* eax = ptr array */
+            gen_push_eax();
+        } else {
+            gen_mov_eax_imm32(0);
+            gen_push_eax();
+        }
+        emit_u8(0x68); emit_u32((uint32_t)sc_argc);
+        gen_mov_eax_abs((uint32_t)printf_fmt_scratch);
+        gen_push_eax();
+        gen_call_abs((uint32_t)(void*)cc_scanf_multi);
+        emit_u8(0x81); emit_u8(0xC4); emit_u32(12 + (uint32_t)sc_argc * 4);
+        return;
     }
 
     // consumes '(' already done by caller; parses args up to ')'
     int argc = 0;
-    int32_t saved_ival[8];
-    (void)saved_ival;
     if (cur_tok.type != T_RPAREN) {
-        // We must push args in reverse order for our calling convention,
-        // but we only get to parse them left-to-right (single pass), and
-        // String arguments are handled by the normal expression machinery.
-        // and correct without buffering, we evaluate left-to-right but
-        // push immediately, then before the call we've pushed in
-        // left-to-right order onto a LIFO stack, which is backwards from
-        // what we want. Simplest fix: cap args at 8 and evaluate them
-        // into temporary stack slots, then push in reverse.
-        // Practically: evaluate each arg (eax), push eax (left to right).
+        // Evaluate arguments left-to-right and push each result immediately.
+        // The compiler uses a consistent internal calling convention: the
+        // first source argument is the deepest argument on the stack, and
+        // parameter offsets are assigned to match that layout. There is no
+        // old 8-argument cap here; the practical limit is available code and
+        // runtime stack space.
         // Then to call with param1 at [ebp+8], we need the LAST pushed
         // value to be param1 - i.e. push order must be reverse. Since we
         // can't re-order after the fact easily without extra stack
@@ -1575,7 +1657,6 @@ static void parse_call_args_and_call(func_t* fn, const char* builtin_name) {
         int returns_value = 1;
 
         if (str_eq(builtin_name, "printf")) expected = argc;
-        else if (str_eq(builtin_name, "scanf")) expected = 2;
         else if (str_eq(builtin_name, "putchar") || str_eq(builtin_name, "strlen") ||
             str_eq(builtin_name, "atoi") || str_eq(builtin_name, "abs") ||
             str_eq(builtin_name, "rand") || str_eq(builtin_name, "getchar") ||
@@ -1609,9 +1690,7 @@ static void parse_call_args_and_call(func_t* fn, const char* builtin_name) {
                  str_eq(builtin_name, "iscntrl")) expected = 1;
         else if (str_eq(builtin_name, "calloc") || str_eq(builtin_name, "realloc")) expected = 2;
         else if (str_eq(builtin_name, "strerror")) expected = 1;
-        if (str_eq(builtin_name, "printf")) {
-            if (argc < 1 || argc > 9) { cc_seterr(cur_tok.line, "printf supports 1 to 9 arguments"); return; }
-        } else if (argc != expected) {
+        if (argc != expected) {
             cc_seterr(cur_tok.line, "wrong number of arguments to builtin");
             return;
         }
@@ -1626,8 +1705,7 @@ static void parse_call_args_and_call(func_t* fn, const char* builtin_name) {
             else if (argc == 7) target=(uint32_t)(void*)cc_printf_7;
             else if (argc == 8) target=(uint32_t)(void*)cc_printf_8;
             else target=(uint32_t)(void*)cc_printf_9;
-        } else if (str_eq(builtin_name, "scanf")) target=(uint32_t)(void*)cc_scanf_2;
-        else if (str_eq(builtin_name, "putchar")) target = (uint32_t)(void*)putchar;
+        } else if (str_eq(builtin_name, "putchar")) target = (uint32_t)(void*)putchar;
         else if (str_eq(builtin_name, "getchar")) target = (uint32_t)(void*)getchar;
         else if (str_eq(builtin_name, "puts")) target = (uint32_t)(void*)puts;
         else if (str_eq(builtin_name, "clear_screen")) { target = (uint32_t)(void*)clear_screen; returns_value = 0; }
@@ -1707,7 +1785,14 @@ static void parse_call_args_and_call(func_t* fn, const char* builtin_name) {
             pending_call_count++;
         }
     }
-    if (argc > 0) { emit_u8(0x81); emit_u8(0xC4); emit_u32((uint32_t)(argc * 4)); } // add esp, argc*4
+    if (argc > 0) {
+        /* argc is bounded by the source size and MAX_LOCALS is 1024 for
+         * ordinary user-defined functions. Keep the multiplication in
+         * unsigned arithmetic so large, valid argument lists do not
+         * accidentally become a signed overflow. */
+        uint32_t arg_bytes = (uint32_t)argc * 4u;
+        emit_u8(0x81); emit_u8(0xC4); emit_u32(arg_bytes);
+    } // add esp, argc*4
 }
 
 static int is_type_start(token_type_t t);
@@ -1926,7 +2011,7 @@ static void parse_primary(void) {
              * automatically available without changing kernel/cc.c.
              */
             if (!fn && str_starts_with(name, "cmd_") && name[4]) {
-                char command_name[64];
+                char command_name[128];
                 int name_len = 0;
                 int argc = 0;
 
@@ -1960,6 +2045,10 @@ static void parse_primary(void) {
 
                     if (cur_tok.type != T_RPAREN) {
                         for (;;) {
+                            if (argc >= CC_CMD_MAX_ARGS) {
+                                cc_seterr(cur_tok.line, "too many command arguments");
+                                return;
+                            }
                             int is_string = (cur_tok.type == T_STR);
                             if (cur_tok.type == T_IDENT) {
                                 local_t* al = find_local(cur_tok.sval);
@@ -1986,10 +2075,6 @@ static void parse_primary(void) {
                             emit_u8(0x81); emit_u8(0xC4); emit_u32(12);
 
                             argc++;
-                            if (argc > CC_CMD_MAX_ARGS) {
-                                cc_seterr(cur_tok.line, "too many command arguments (maximum 8)");
-                                return;
-                            }
 
                             if (cur_tok.type == T_COMMA) {
                                 next_token();
@@ -3240,11 +3325,13 @@ static uint32_t cc_bin_get_u32(const uint8_t* p) {
 static int cc_compile(const char* source, unsigned int len, func_t** out_mainfn);
 
 // ------------------------------------------------------------
-// Style check: statements inside a block must be indented with a
-// literal tab character. A line consisting only of a closing brace
-// (optionally followed by more code, e.g. "} else {") is allowed to
-// sit back out at the enclosing indent level. Braces/newlines inside
-// string literals, char literals, and comments are not counted.
+// Style check: statements inside a block must be indented with either
+// tabs or groups of four spaces. Tabs remain tabs and spaces remain
+// spaces in the source/editor; this check only decides whether the
+// source has a valid indentation prefix. A line consisting only of a
+// closing brace (optionally followed by more code, e.g. "} else {") is
+// allowed to sit back out at the enclosing indent level. Braces/newlines
+// inside string literals, char literals, and comments are not counted.
 // ------------------------------------------------------------
 static void cc_check_indentation(const char* s, unsigned int len) {
     unsigned int i = 0;
@@ -3262,9 +3349,31 @@ static void cc_check_indentation(const char* s, unsigned int len) {
             int line_is_blank = (j >= len || s[j] == '\n' || s[j] == '\r');
             int first_is_close_brace = (j < len && s[j] == '}');
 
-            if (line_start_depth > 0 && !line_is_blank && !first_is_close_brace && c != '\t') {
-                cc_seterr(line, "statements must be indented with a tab character");
-                return;
+            /*
+             * Accept either a tab or a four-space indentation unit.
+             * The editor does not normalize either form: a tab remains
+             * a tab and four literal spaces remain four spaces.
+             *
+             * For space indentation, require a complete group of four
+             * spaces before the first non-whitespace character. This
+             * means 4 spaces, 8 spaces, 12 spaces, etc. are valid.
+             */
+            if (line_start_depth > 0 && !line_is_blank && !first_is_close_brace) {
+                int valid_indent = (c == '\t');
+                if (!valid_indent && c == ' ') {
+                    unsigned int k = i;
+                    unsigned int spaces = 0;
+                    while (k < len && s[k] == ' ') {
+                        spaces++;
+                        k++;
+                    }
+                    valid_indent = (spaces >= 4 && (spaces % 4) == 0);
+                }
+
+                if (!valid_indent) {
+                    cc_seterr(line, "statements must be indented with a tab or four spaces");
+                    return;
+                }
             }
             at_line_start = 0;
         }
@@ -3410,6 +3519,7 @@ unsigned int cc_debug_codelen(void) { return code_len; }
 static int cc_compile(const char* source, unsigned int len, func_t** out_mainfn) {
     src = source; src_len = len; src_pos = 0; cur_line = 1;
     code_len = 0;
+    code_overflow = 0;
     cc_error_flag = 0; cc_error_line = 0; cc_error_msg[0] = 0;
     local_count = 0; func_count = 0; global_count = 0; token_count = 0; global_array_pool_used = 0;
     float_const_pool_used = 0; float_global_pool_used = 0;
@@ -3432,6 +3542,10 @@ static int cc_compile(const char* source, unsigned int len, func_t** out_mainfn)
             }
             patch_call_target(pending_calls[i].patch_at, target->addr);
         }
+    }
+
+    if (code_overflow) {
+        cc_seterr(cur_line, "generated program is too large");
     }
 
     if (cc_error_flag) {

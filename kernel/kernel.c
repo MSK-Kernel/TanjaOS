@@ -406,10 +406,12 @@ void clean(char* s) {
 // INPUT
 // ============================================================
 
-#define INPUT_BUFFER_SIZE 4096
+#define INPUT_BUFFER_SIZE 65536
+
+static char input_line[INPUT_BUFFER_SIZE];
 
 void read_line(char* buffer, int max_len) {
-    char line[INPUT_BUFFER_SIZE];
+    char* line = input_line;
     int pos = 0;
     int len = 0;
     int prompt_start = cursor;
@@ -820,8 +822,26 @@ int cc_printf_mixed(const char* fmt, int argc, uint32_t typemask, const uint64_t
         if (*fmt != '%') { putc(*fmt++); count++; continue; }
         fmt++;
         if (*fmt == '%') { putc('%'); fmt++; count++; continue; }
-        if (ai >= argc) { putc('%'); count++; continue; }
 
+        /* Parse the ordinary printf decoration before the conversion:
+         * flags, width, precision and length modifiers.  This is enough for
+         * forms such as %.2lf, %8d and %-10s without making the compiler's
+         * freestanding formatter depend on libc. */
+        int precision = 6;
+        while (*fmt == '-' || *fmt == '+' || *fmt == ' ' || *fmt == '#' || *fmt == '0') fmt++;
+        while (*fmt >= '0' && *fmt <= '9') fmt++;
+        if (*fmt == '.') {
+            fmt++;
+            precision = 0;
+            while (*fmt >= '0' && *fmt <= '9') {
+                precision = precision * 10 + (*fmt - '0');
+                if (precision > 18) precision = 18;
+                fmt++;
+            }
+        }
+        if (*fmt == 'l' || *fmt == 'h' || *fmt == 'L') { fmt++; if (*fmt == 'l' || *fmt == 'h') fmt++; }
+
+        if (ai >= argc) { putc('%'); count++; continue; }
         int is_f = (int)((typemask >> ai) & 1u);
         uint64_t raw = slots[ai];
         unsigned int u = (unsigned int)(raw & 0xFFFFFFFFu);
@@ -832,20 +852,17 @@ int cc_printf_mixed(const char* fmt, int argc, uint32_t typemask, const uint64_t
             int k; for (k = 0; k < 8; k++) db[k] = rb[k];
         }
 
-        if (*fmt == 'f' || *fmt == 'F') {
-            cc_print_float(is_f ? d : (double)(int)u, 6);
+        if (*fmt == 'f' || *fmt == 'F' || *fmt == 'e' || *fmt == 'E' || *fmt == 'g' || *fmt == 'G') {
+            cc_print_float(is_f ? d : (double)(int)u, precision);
             ai++; fmt++;
         } else if (*fmt == 'd' || *fmt == 'i') {
             int v = is_f ? (int)d : (int)u;
             if (v < 0) { putc('-'); count++; v = -v; }
-            cc_print_uint((unsigned int)v, 10, 0);
-            ai++; fmt++;
+            cc_print_uint((unsigned int)v, 10, 0); ai++; fmt++;
         } else if (*fmt == 'u') {
-            cc_print_uint(is_f ? (unsigned int)(int)d : u, 10, 0);
-            ai++; fmt++;
+            cc_print_uint(is_f ? (unsigned int)(int)d : u, 10, 0); ai++; fmt++;
         } else if (*fmt == 'x' || *fmt == 'X') {
-            cc_print_uint(is_f ? (unsigned int)(int)d : u, 16, *fmt == 'X');
-            ai++; fmt++;
+            cc_print_uint(is_f ? (unsigned int)(int)d : u, 16, *fmt == 'X'); ai++; fmt++;
         } else if (*fmt == 'c') {
             putc((char)(is_f ? (int)d : (int)u)); ai++; fmt++; count++;
         } else if (*fmt == 's') {
@@ -859,45 +876,163 @@ int cc_printf_mixed(const char* fmt, int argc, uint32_t typemask, const uint64_t
     return count;
 }
 
-static int cc_scanf_one(const char* fmt, unsigned int ptr) {
-    char buffer[128];
-    int value = 0, sign = 1, i = 0;
+int cc_scanf_multi(const char* fmt, int argc, const uint32_t* ptrs) {
+    /*
+     * Read one input line, then interpret it against the format string.
+     * This is intentionally a small freestanding scanf implementation, but
+     * unlike the old cc_scanf_2 bridge it supports an arbitrary number of
+     * conversions in one call and understands the common C numeric/string
+     * conversions used by programs compiled by TanjaOS.
+     */
+    char buffer[4096];
+    int bi = 0, assigned = 0, ai = 0;
+    if (!fmt || argc < 0 || (argc > 0 && !ptrs)) return 0;
     read_line(buffer, sizeof(buffer));
-    if (!fmt || !ptr) return 0;
-    while (buffer[i] == ' ' || buffer[i] == '\t') i++;
-    if (*fmt == '%') fmt++;
-    if (*fmt == 'c') { *(char*)ptr = buffer[0]; return 1; }
-    if (*fmt == 's') {
-        // Real scanf's %s skips leading whitespace (already done via
-        // `i` above) and stops at the next whitespace/end of input -
-        // it does NOT swallow the whole line, unlike the previous
-        // version of this function.
-        char* out = (char*)ptr;
-        int j = 0;
-        while (buffer[i] && buffer[i] != ' ' && buffer[i] != '\t') out[j++] = buffer[i++];
-        out[j] = 0;
-        return 1;
-    }
-    if (buffer[i] == '-') { sign = -1; i++; }
-    if (fmt[0] == 'x' || fmt[0] == 'X') {
-        unsigned int v=0, d;
-        while (buffer[i]) {
-            char c=buffer[i++];
-            if (c>='0'&&c<='9') d=(unsigned int)(c-'0');
-            else if (c>='a'&&c<='f') d=(unsigned int)(c-'a'+10);
-            else if (c>='A'&&c<='F') d=(unsigned int)(c-'A'+10);
-            else break;
-            v=(v<<4)|d;
+
+    while (*fmt && ai < argc) {
+        /* Whitespace in a scanf format consumes any amount of input
+         * whitespace. */
+        if (*fmt == ' ' || *fmt == '\t' || *fmt == '\n' || *fmt == '\r') {
+            while (*fmt == ' ' || *fmt == '\t' || *fmt == '\n' || *fmt == '\r') fmt++;
+            while (buffer[bi] == ' ' || buffer[bi] == '\t' || buffer[bi] == '\n' || buffer[bi] == '\r') bi++;
+            continue;
         }
-        *(int*)ptr = (sign < 0) ? -(int)v : (int)v;
-        return 1;
+
+        /* Literal characters in the format must match the input. */
+        if (*fmt != '%') {
+            if (buffer[bi] != *fmt) return assigned;
+            if (buffer[bi]) bi++;
+            fmt++;
+            continue;
+        }
+        fmt++;
+        if (*fmt == '%') {
+            if (buffer[bi] != '%') return assigned;
+            if (buffer[bi]) bi++;
+            fmt++;
+            continue;
+        }
+
+        /* Optional assignment suppression: %*d.  It consumes input but does
+         * not consume a destination pointer. */
+        int suppress = 0;
+        if (*fmt == '*') { suppress = 1; fmt++; }
+
+        /* Optional field width. */
+        int width = 0;
+        while (*fmt >= '0' && *fmt <= '9') {
+            width = width * 10 + (*fmt - '0');
+            if (width > 4095) width = 4095;
+            fmt++;
+        }
+
+        /* Length modifier.  For our supported floating conversions, 'l'
+         * distinguishes double (%lf) from float (%f). */
+        int longmod = 0;
+        if (*fmt == 'l') { longmod = 1; fmt++; if (*fmt == 'l') fmt++; }
+        else if (*fmt == 'h') { fmt++; if (*fmt == 'h') fmt++; }
+
+        char spec = *fmt++;
+        if (!suppress && ai >= argc) return assigned;
+        uint32_t ptr = suppress ? 0 : ptrs[ai];
+
+        if (spec == 'c') {
+            int n = width ? width : 1;
+            int got = 0;
+            while (got < n && buffer[bi]) {
+                if (!suppress) ((char*)ptr)[got] = buffer[bi];
+                bi++; got++;
+            }
+            if (got == 0) return assigned;
+            if (!suppress) { assigned++; ai++; }
+            continue;
+        }
+
+        /* %s: skip leading whitespace, then consume one non-whitespace word. */
+        if (spec == 's') {
+            while (buffer[bi] == ' ' || buffer[bi] == '\t' || buffer[bi] == '\n' || buffer[bi] == '\r') bi++;
+            int n = 0;
+            while (buffer[bi] && buffer[bi] != ' ' && buffer[bi] != '\t' &&
+                   buffer[bi] != '\n' && buffer[bi] != '\r' && (!width || n < width)) {
+                if (!suppress) ((char*)ptr)[n] = buffer[bi];
+                bi++; n++;
+            }
+            if (n == 0) return assigned;
+            if (!suppress) { ((char*)ptr)[n] = 0; assigned++; ai++; }
+            continue;
+        }
+
+        /* Numeric conversions skip leading whitespace. */
+        while (buffer[bi] == ' ' || buffer[bi] == '\t' || buffer[bi] == '\n' || buffer[bi] == '\r') bi++;
+        int start_i = bi;
+        int sign = 1;
+        if (buffer[bi] == '+' || buffer[bi] == '-') {
+            if (buffer[bi] == '-') sign = -1;
+            bi++;
+        }
+
+        if (spec == 'f' || spec == 'e' || spec == 'g') {
+            double v = 0.0, scale = 0.1;
+            int any = 0;
+            while (buffer[bi] >= '0' && buffer[bi] <= '9' && (!width || bi - start_i < width)) {
+                v = v * 10.0 + (double)(buffer[bi] - '0'); bi++; any = 1;
+            }
+            if (buffer[bi] == '.' && (!width || bi - start_i < width)) {
+                bi++;
+                while (buffer[bi] >= '0' && buffer[bi] <= '9' && (!width || bi - start_i < width)) {
+                    v += (double)(buffer[bi] - '0') * scale; scale *= 0.1; bi++; any = 1;
+                }
+            }
+            if (!any) return assigned;
+            if (buffer[bi] == 'e' || buffer[bi] == 'E') {
+                int save_bi = bi++;
+                int esign = 1, exp = 0, eany = 0;
+                if (buffer[bi] == '+' || buffer[bi] == '-') { if (buffer[bi] == '-') esign = -1; bi++; }
+                while (buffer[bi] >= '0' && buffer[bi] <= '9') { exp = exp * 10 + (buffer[bi] - '0'); bi++; eany = 1; }
+                if (eany) {
+                    double factor = 1.0, base = 10.0;
+                    int k;
+                    for (k = 0; k < exp; k++) factor *= base;
+                    if (esign < 0) v /= factor; else v *= factor;
+                } else bi = save_bi;
+            }
+            v *= (double)sign;
+            if (!suppress) {
+                if (longmod) *(double*)ptr = v;
+                else *(float*)ptr = (float)v;
+                assigned++; ai++;
+            }
+            continue;
+        }
+
+        unsigned int base = (spec == 'x' || spec == 'X') ? 16u : 10u;
+        unsigned int v = 0, any = 0;
+        if (spec == 'i') {
+            if (buffer[bi] == '0' && (buffer[bi+1] == 'x' || buffer[bi+1] == 'X')) {
+                base = 16; bi += 2;
+            }
+        }
+        while (buffer[bi]) {
+            if (width && bi - start_i >= width) break;
+            char c = buffer[bi];
+            unsigned int d;
+            if (c >= '0' && c <= '9') d = (unsigned int)(c - '0');
+            else if (c >= 'a' && c <= 'f') d = (unsigned int)(c - 'a' + 10);
+            else if (c >= 'A' && c <= 'F') d = (unsigned int)(c - 'A' + 10);
+            else break;
+            if (d >= base) break;
+            v = v * base + d; bi++; any = 1;
+        }
+        if (!any) return assigned;
+        if (!suppress) {
+            if (spec == 'u' || spec == 'x' || spec == 'X') *(unsigned int*)ptr = (sign < 0) ? (unsigned int)(-(int)v) : v;
+            else *(int*)ptr = (sign < 0) ? -(int)v : (int)v;
+            assigned++; ai++;
+        }
     }
-    while (buffer[i] >= '0' && buffer[i] <= '9') { value=value*10+(buffer[i]-'0'); i++; }
-    if (i == 0) return 0;
-    *(int*)ptr=value*sign;
-    return 1;
+    return assigned;
 }
-int cc_scanf_2(unsigned int ptr, const char* fmt) { return cc_scanf_one(fmt, ptr); }
+
 /*
  * The tiny C compiler uses a historical left-to-right argument push
  * convention.  These private bridges reverse arguments before calling the
@@ -929,7 +1064,7 @@ void register_cmd(const char* name, void (*func)(char* args)) {
     Command* cmd = &cmd_pool[cmd_pool_index++];
 
     int i = 0;
-    while (name[i] && i < 31) {
+    while (name[i] && i < 127) {
         cmd->name[i] = name[i];
         i++;
     }
@@ -1001,7 +1136,7 @@ extern int exec_file(const char* path);
 
 #define MAX_ENV_VARS 32
 #define ENV_NAME_LEN 32
-#define ENV_VALUE_LEN 256
+#define ENV_VALUE_LEN 4096
 
 typedef struct {
     char name[ENV_NAME_LEN];
@@ -1092,7 +1227,7 @@ void execute_command(const char* cmd_line) {
     if (!*cmd_line)
         return;
 
-    char cmd_name[32];
+    char cmd_name[128];
     int i = 0;
 
     while (cmd_line[i] && cmd_line[i] != ' ' && i < 31) {
@@ -1109,7 +1244,7 @@ void execute_command(const char* cmd_line) {
 
     // `read NAME` (or `read $NAME`) needs the literal variable name to
     // fill in, so it's the one command that opts out of $VAR expansion.
-    static char expanded_args[512];
+    static char expanded_args[INPUT_BUFFER_SIZE];
     const char* final_args = args;
     if (!streq(cmd_name, "read")) {
         expand_vars(args, expanded_args, sizeof(expanded_args));
@@ -1202,7 +1337,7 @@ void print_prompt_path() {
 }
 
 void shell() {
-    shell_exit_flag = 0; char buf[4096];
+    shell_exit_flag = 0; static char buf[INPUT_BUFFER_SIZE];
     while (1) {
         print(config.username); print("@"); print(config.hostname); print(":");
         print_prompt_path();

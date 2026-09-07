@@ -34,7 +34,7 @@ static uint32_t store_lba = STORE_FALLBACK_LBA;
 
 // Sized generously above fs_store_size() (checked at runtime below) so
 // bumping MAX_F/MAX_D in fs.c doesn't silently overflow this buffer.
-#define STORE_BUF_SECTORS 255
+#define STORE_BUF_SECTORS 4096
 #define STORE_BUF_BYTES   (STORE_BUF_SECTORS * 512)
 
 static uint8_t store_buf[STORE_BUF_BYTES];
@@ -59,15 +59,41 @@ static uint32_t bytes_to_sectors(uint32_t bytes) {
 }
 
 static int store_backend_read(uint32_t lba, uint32_t count, void* buf) {
-    if (backend == BACKEND_ATA) return ata_read_sectors(store_channel, store_drive, lba, (uint8_t)count, buf);
-    if (backend == BACKEND_AHCI) return ahci_read_sectors((uint64_t)lba, (uint16_t)count, buf);
-    return -1;
+    uint8_t* p = (uint8_t*)buf;
+    while (count) {
+        uint32_t chunk = count > 255 ? 255 : count;
+        int rc;
+        if (backend == BACKEND_ATA)
+            rc = ata_read_sectors(store_channel, store_drive, lba, (uint8_t)chunk, p);
+        else if (backend == BACKEND_AHCI)
+            rc = ahci_read_sectors((uint64_t)lba, (uint16_t)chunk, p);
+        else
+            return -1;
+        if (rc != 0) return rc;
+        lba += chunk;
+        p += chunk * 512u;
+        count -= chunk;
+    }
+    return 0;
 }
 
 static int store_backend_write(uint32_t lba, uint32_t count, const void* buf) {
-    if (backend == BACKEND_ATA) return ata_write_sectors(store_channel, store_drive, lba, (uint8_t)count, buf);
-    if (backend == BACKEND_AHCI) return ahci_write_sectors((uint64_t)lba, (uint16_t)count, buf);
-    return -1;
+    const uint8_t* p = (const uint8_t*)buf;
+    while (count) {
+        uint32_t chunk = count > 255 ? 255 : count;
+        int rc;
+        if (backend == BACKEND_ATA)
+            rc = ata_write_sectors(store_channel, store_drive, lba, (uint8_t)chunk, p);
+        else if (backend == BACKEND_AHCI)
+            rc = ahci_write_sectors((uint64_t)lba, (uint16_t)chunk, p);
+        else
+            return -1;
+        if (rc != 0) return rc;
+        lba += chunk;
+        p += chunk * 512u;
+        count -= chunk;
+    }
+    return 0;
 }
 
 void store_autosave(void) {
@@ -103,7 +129,7 @@ void store_init(uint32_t mb_magic, uint32_t mb_addr) {
     uint32_t need = store_fs_need + store_cfg_need;
     store_sectors = bytes_to_sectors(need);
 
-    if (need > sizeof(store_buf) || store_sectors > 255) {
+    if (need > sizeof(store_buf) || store_sectors > STORE_BUF_SECTORS) {
         boot_log("Storefile: image too large, running from RAM");
         fs_init();
         return;

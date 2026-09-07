@@ -2,7 +2,8 @@
 #include "../include/fs.h"
 #include "../include/cc.h"
 
-#define C_BUFFER 3072
+#define C_SOURCE_BUFFER (MAX_FILE_SIZE + 1)
+#define C_BINARY_BUFFER 262144
 
 /* Parse the intentionally small command-line grammar:
  *   c -o <output> <input.c>
@@ -26,9 +27,9 @@ void cmd_c(char *args)
     args += 2;
     while (*args == ' ' || *args == '\t') args++;
 
-    char output[256];
+    char output[MAX_PATH];
     int n = 0;
-    while (*args && *args != ' ' && *args != '\t' && n < 255)
+    while (*args && *args != ' ' && *args != '\t' && n < MAX_PATH - 1)
         output[n++] = *args++;
     output[n] = 0;
 
@@ -39,9 +40,9 @@ void cmd_c(char *args)
 
     while (*args == ' ' || *args == '\t') args++;
 
-    char input[256];
+    char input[MAX_PATH];
     n = 0;
-    while (*args && *args != ' ' && *args != '\t' && n < 255)
+    while (*args && *args != ' ' && *args != '\t' && n < MAX_PATH - 1)
         input[n++] = *args++;
     input[n] = 0;
 
@@ -63,10 +64,10 @@ void cmd_c(char *args)
         return;
     }
 
-    static char source[C_BUFFER];
-    static uint8_t binary[C_BUFFER];
+    static char source[C_SOURCE_BUFFER];
+    static uint8_t binary[C_BINARY_BUFFER];
 
-    uint32_t source_size = C_BUFFER;
+    uint32_t source_size = C_SOURCE_BUFFER;
     if (fs_read_file(input, source, &source_size) != 0) {
         print("c: cannot read '");
         print(input);
@@ -74,8 +75,8 @@ void cmd_c(char *args)
         return;
     }
 
-    if (source_size >= C_BUFFER) {
-        print("c: source file is too large\n");
+    if (source_size >= C_SOURCE_BUFFER) {
+        print("c: source file is too large for the filesystem\n");
         return;
     }
 
@@ -83,7 +84,7 @@ void cmd_c(char *args)
 
     uint32_t binary_size = 0;
     if (cc_compile_to_binary(source, source_size,
-                             binary, C_BUFFER - 1, &binary_size) != 0)
+                             binary, C_BINARY_BUFFER, &binary_size) != 0)
         return;
 
     if (fs_write_file(output, (const char*)binary, binary_size) != 0) {

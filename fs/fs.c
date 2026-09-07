@@ -21,22 +21,23 @@ static int strcmp_safe(const char* a, const char* b) {
 static int strlen_safe(const char* s) {
     if (!s) return 0;
     int n = 0;
-    while (n < 200 && s[n]) n++;
+    while (n < 1023 && s[n]) n++;
     return n;
 }
 
 #define MAX_F 32
-#define MAX_D 16
-#define MAX_FILE_DATA 3072
+#define MAX_D 32
+#define MAX_FILE_DATA 65536
+#define FS_PATH_CAP 256
 
 int fs_delete_directory_recursive(const char *path);
 
-static char fname[MAX_F][64];
+static char fname[MAX_F][FS_PATH_CAP];
 static char fdata[MAX_F][MAX_FILE_DATA];
 static int fsize[MAX_F];
 static int fused[MAX_F];
 
-static char dname[MAX_D][64];
+static char dname[MAX_D][FS_PATH_CAP];
 static int dused[MAX_D];
 
 static char cwd[256];
@@ -46,7 +47,7 @@ void fs_init(void) {
     for (i = 0; i < MAX_F; i++) { fused[i] = 0; fsize[i] = 0; fname[i][0] = 0; }
     for (i = 0; i < MAX_D; i++) { dused[i] = 0; dname[i][0] = 0; }
     dused[0] = 1;
-    strcpy_safe(dname[0], "/", 64);
+    strcpy_safe(dname[0], "/", FS_PATH_CAP);
     strcpy_safe(cwd, "/", 256);
 }
 
@@ -105,7 +106,7 @@ int fs_create_directory(const char* path) {
         if (fused[i] && strcmp_safe(fname[i], full)) return -1;
     for (i = 1; i < MAX_D; i++) {
         if (!dused[i]) {
-            strcpy_safe(dname[i], full, 64);
+            strcpy_safe(dname[i], full, FS_PATH_CAP);
             dused[i] = 1;
             store_autosave();
             return 0;
@@ -191,7 +192,7 @@ int fs_create_file(const char* path) {
         if (dused[i] && strcmp_safe(dname[i], full)) return -1;
     for (i = 0; i < MAX_F; i++) {
         if (!fused[i]) {
-            strcpy_safe(fname[i], full, 64);
+            strcpy_safe(fname[i], full, FS_PATH_CAP);
             fsize[i] = 0;
             fdata[i][0] = 0;
             fused[i] = 1;
@@ -243,7 +244,7 @@ int fs_write_file(const char* path, const char* data, uint32_t size) {
             if (fused[i] && strcmp_safe(fname[i], full)) { idx = i; break; }
         if (idx == -1) return -1;
     }
-    if (size > MAX_FILE_DATA - 1) size = MAX_FILE_DATA - 1;
+    if (size > MAX_FILE_DATA - 1) return -2;
     for (i = 0; i < (int)size; i++) fdata[idx][i] = data[i];
     fdata[idx][size] = 0;
     fsize[idx] = size;
@@ -293,6 +294,50 @@ int fs_read_file_prefix(const char* path, char* buffer, uint32_t capacity, uint3
     }
     return -1;
 }
+
+int fs_read_file_range(const char* path, uint32_t offset, char* buffer,
+                       uint32_t capacity, uint32_t* size) {
+    if (!path || !buffer || !size || capacity == 0) return -1;
+    *size = 0;
+    char full[FS_PATH_CAP];
+    abs_path(path, full);
+
+    int i;
+    for (i = 0; i < MAX_F; i++) {
+        if (fused[i] && strcmp_safe(fname[i], full)) {
+            uint32_t total = (uint32_t)fsize[i];
+            if (offset >= total) {
+                buffer[0] = 0;
+                return 0;
+            }
+
+            uint32_t n = total - offset;
+            if (n > capacity) n = capacity;
+
+            uint32_t j;
+            for (j = 0; j < n; j++)
+                buffer[j] = fdata[i][offset + j];
+
+            *size = n;
+            return 0;
+        }
+    }
+    return -1;
+}
+
+uint32_t fs_get_file_size(const char* path) {
+    if (!path || !path[0]) return 0;
+    char full[FS_PATH_CAP];
+    abs_path(path, full);
+
+    int i;
+    for (i = 0; i < MAX_F; i++)
+        if (fused[i] && strcmp_safe(fname[i], full))
+            return (uint32_t)fsize[i];
+
+    return 0;
+}
+
 
 int fs_list_directory(const char* path, char* buf, uint32_t* size) {
     if (!buf || !size) return -1;
@@ -416,15 +461,15 @@ int parse_path(const char* a, char* b, char* c) { (void)a; if(b)b[0]=0; if(c)c[0
 //   256      bytes   cwd
 // ============================================================
 
-#define STORE_VERSION 2
+#define STORE_VERSION 3
 
 uint32_t fs_store_size(void) {
     return 8
         + MAX_D
-        + (MAX_D * 64)
+        + (MAX_D * FS_PATH_CAP)
         + MAX_F
         + (MAX_F * 4)
-        + (MAX_F * 64)
+        + (MAX_F * FS_PATH_CAP)
         + (MAX_F * MAX_FILE_DATA)
         + 256;
 }
@@ -442,7 +487,7 @@ int fs_serialize(uint8_t* buf, uint32_t buf_size) {
 
     for (i = 0; i < MAX_D; i++) buf[p++] = (uint8_t)dused[i];
     for (i = 0; i < MAX_D; i++)
-        for (j = 0; j < 64; j++) buf[p++] = (uint8_t)dname[i][j];
+        for (j = 0; j < FS_PATH_CAP; j++) buf[p++] = (uint8_t)dname[i][j];
 
     for (i = 0; i < MAX_F; i++) buf[p++] = (uint8_t)fused[i];
     for (i = 0; i < MAX_F; i++) {
@@ -453,7 +498,7 @@ int fs_serialize(uint8_t* buf, uint32_t buf_size) {
         buf[p++] = (uint8_t)((s >> 24) & 0xFF);
     }
     for (i = 0; i < MAX_F; i++)
-        for (j = 0; j < 64; j++) buf[p++] = (uint8_t)fname[i][j];
+        for (j = 0; j < FS_PATH_CAP; j++) buf[p++] = (uint8_t)fname[i][j];
     for (i = 0; i < MAX_F; i++)
         for (j = 0; j < MAX_FILE_DATA; j++) buf[p++] = (uint8_t)fdata[i][j];
 
@@ -474,7 +519,7 @@ int fs_deserialize(const uint8_t* buf, uint32_t buf_size) {
 
     for (i = 0; i < MAX_D; i++) dused[i] = buf[p++];
     for (i = 0; i < MAX_D; i++)
-        for (j = 0; j < 64; j++) dname[i][j] = (char)buf[p++];
+        for (j = 0; j < FS_PATH_CAP; j++) dname[i][j] = (char)buf[p++];
 
     for (i = 0; i < MAX_F; i++) fused[i] = buf[p++];
     for (i = 0; i < MAX_F; i++) {
@@ -486,7 +531,7 @@ int fs_deserialize(const uint8_t* buf, uint32_t buf_size) {
         p += 4;
     }
     for (i = 0; i < MAX_F; i++)
-        for (j = 0; j < 64; j++) fname[i][j] = (char)buf[p++];
+        for (j = 0; j < FS_PATH_CAP; j++) fname[i][j] = (char)buf[p++];
     for (i = 0; i < MAX_F; i++)
         for (j = 0; j < MAX_FILE_DATA; j++) fdata[i][j] = (char)buf[p++];
 

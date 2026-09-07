@@ -10,7 +10,7 @@
 
 #define CTRL_X 24
 #define TAB_KEY 9
-#define MAX_TEXT 4096
+#define MAX_TEXT (MAX_FILE_SIZE + 1)
 
 #define EDITOR_TOP_ROW 3
 #define EDITOR_BOTTOM_ROW 23
@@ -34,7 +34,7 @@ extern uint16_t *VGA;
 static int strlen_editor(const char *s)
 {
     int i = 0;
-    while (i < MAX_TEXT && s[i]) i++;
+    while (s[i]) i++;
     return i;
 }
 
@@ -284,7 +284,7 @@ void cmd_editor(char *args)
         return;
     }
 
-    char text[MAX_TEXT];
+    static char text[MAX_TEXT];
     uint32_t size = 0;
     text[0] = 0;
 
@@ -324,7 +324,12 @@ void cmd_editor(char *args)
         int key = get_key();
 
         if (key == CTRL_X) {
-            fs_write_file(args, text, strlen_editor(text));
+            if (fs_write_file(args, text, (uint32_t)strlen_editor(text)) != 0) {
+                print("editor: cannot save '");
+                print(args);
+                print("': file is too large or filesystem is full\\n");
+                continue;
+            }
             for (int i = 0; i < VGA_TOTAL_CELLS; i++)
                 VGA[i] = saved_screen[i];
             cursor = saved_cursor;
