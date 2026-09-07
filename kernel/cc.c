@@ -544,7 +544,7 @@ static void skip_ws_comments(void) {
              src[src_pos + 8] == '\t' || src[src_pos + 8] == '<')) {
             int include_line = cur_line;
             while (peekc() != -1 && peekc() != '\n') getc_src();
-            print("c: #include found and not needed, safely ignored\n");
+            print("#include found and not needed, safely ignored\n");
             (void)include_line;
             continue;
         }
@@ -919,6 +919,16 @@ static void gen_mov_eax_imm32(uint32_t v) { emit_u8(0xB8); emit_u32(v); }
 static void gen_mov_eax_ebp_disp32(int32_t d) { emit_u8(0x8B); emit_u8(0x85); emit_u32((uint32_t)d); }
 static void gen_mov_ebp_disp32_eax(int32_t d) { emit_u8(0x89); emit_u8(0x85); emit_u32((uint32_t)d); }
 static void gen_lea_eax_ebp_disp32(int32_t d) { emit_u8(0x8D); emit_u8(0x85); emit_u32((uint32_t)d); }
+// movzx eax, byte [ebp+d] - used to load plain (non-pointer, non-array)
+// `char` scalars. Their stack slot is still a full 4 bytes (see
+// add_local), but anything that writes through their address one byte
+// at a time (scanf("%c", &c), or any function taking a char*) only
+// ever touches that low byte, leaving the upper 3 bytes as whatever
+// garbage was on the stack before. A plain 32-bit dword load would
+// then read that garbage back as part of the value, so char scalars
+// must always be zero-extended from the single byte that's actually
+// guaranteed to be meaningful.
+static void gen_movzx_eax_ebp_disp32_byte(int32_t d) { emit_u8(0x0F); emit_u8(0xB6); emit_u8(0x85); emit_u32((uint32_t)d); }
 static void gen_mov_eax_indirect_eax(void) { emit_u8(0x8B); emit_u8(0x00); } // mov eax,[eax]
 static void gen_mov_indirect_ecx_eax(void) { emit_u8(0x89); emit_u8(0x01); } // mov [ecx],eax
 static void gen_shl_eax_2(void) { emit_u8(0xC1); emit_u8(0xE0); emit_u8(0x02); } // shl eax,2 (i.e. *4)
@@ -926,6 +936,10 @@ static void gen_sub_eax_ecx(void) { emit_u8(0x29); emit_u8(0xC8); } // eax -= ec
 static void gen_pop_eax(void) { emit_u8(0x58); }
 static void gen_mov_eax_esp0(void) { emit_u8(0x8B); emit_u8(0x04); emit_u8(0x24); } // mov eax,[esp] (peek, no pop)
 static void gen_mov_eax_abs(uint32_t addr) { emit_u8(0xA1); emit_u32(addr); }
+// movzx eax, byte [addr] - global-scalar counterpart of
+// gen_movzx_eax_ebp_disp32_byte above; same reasoning applies to
+// global `char` variables.
+static void gen_movzx_eax_abs_byte(uint32_t addr) { emit_u8(0x0F); emit_u8(0xB6); emit_u8(0x05); emit_u32(addr); }
 static void gen_mov_abs_eax(uint32_t addr) { emit_u8(0x89); emit_u8(0x05); emit_u32(addr); } // mov [addr], eax
 static void gen_mov_abs_imm32(uint32_t addr, uint32_t value) {
     emit_u8(0xC7); emit_u8(0x05); emit_u32(addr); emit_u32(value);
@@ -1360,6 +1374,7 @@ static void gen_var_load_to_eax(const char* name, int line) {
     if (l) {
         if (l->is_fp) { cc_seterr(line, "float/double value used in an integer expression (not supported - use it in a float expression, comparison, or printf argument)"); return; }
         if (l->is_array) { gen_lea_eax_ebp_disp32(l->offset); return; }
+        if (l->elem_size == 1 && l->ptr_depth == 0) { gen_movzx_eax_ebp_disp32_byte(l->offset); return; }
         gen_mov_eax_ebp_disp32(l->offset);
         return;
     }
@@ -1367,6 +1382,7 @@ static void gen_var_load_to_eax(const char* name, int line) {
     if (g) {
         if (g->is_fp) { cc_seterr(line, "float/double value used in an integer expression (not supported - use it in a float expression, comparison, or printf argument)"); return; }
         if (g->is_array) { gen_mov_eax_imm32(g->addr); return; }
+        if (g->elem_size == 1 && g->ptr_depth == 0) { gen_movzx_eax_abs_byte(g->addr); return; }
         gen_mov_eax_abs(g->addr);
         return;
     }
