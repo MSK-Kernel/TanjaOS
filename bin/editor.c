@@ -140,7 +140,7 @@ static void draw_editor(const char *text, int pos, int scroll_line)
 
     print("TanjaOS Editor\n");
     print("Ctrl+X = Save & Exit\n");
-    print("---------------------\n");
+    print("--------------------\n");
 
     int line = scroll_line;
     int start = line_start_number(text, line);
