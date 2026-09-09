@@ -781,7 +781,18 @@ static int cc_printf_impl(const char* fmt, int argc, const unsigned int* args) {
         if (*fmt != '%') { putc(*fmt++); count++; continue; }
         fmt++;
         if (*fmt == '%') { putc('%'); fmt++; count++; continue; }
-        if (ai >= argc) { putc('%'); count++; continue; }
+        if (ai >= argc) {
+            // Missing argument for this conversion (e.g. printf("%c") with
+            // no value supplied) - real C leaves this undefined, but silently
+            // leaking the raw spec character as ordinary text (the old
+            // behavior here) looks confusingly like valid-but-wrong output.
+            // Emit an unambiguous marker instead, and consume the whole
+            // conversion (including its spec letter) so later text in the
+            // format string isn't corrupted by the fall-through.
+            putc('<'); putc('?'); putc('>'); count += 3;
+            if (*fmt) fmt++;
+            continue;
+        }
         if (*fmt == 'd' || *fmt == 'i') {
             int v = (int)args[ai++];
             if (v < 0) { putc('-'); count++; v = -v; }
@@ -971,7 +982,18 @@ static int cc_printf_impl_f(const char* fmt, int argc, const double* args) {
         if (*fmt != '%') { putc(*fmt++); count++; continue; }
         fmt++;
         if (*fmt == '%') { putc('%'); fmt++; count++; continue; }
-        if (ai >= argc) { putc('%'); count++; continue; }
+        if (ai >= argc) {
+            // Missing argument for this conversion (e.g. printf("%c") with
+            // no value supplied) - real C leaves this undefined, but silently
+            // leaking the raw spec character as ordinary text (the old
+            // behavior here) looks confusingly like valid-but-wrong output.
+            // Emit an unambiguous marker instead, and consume the whole
+            // conversion (including its spec letter) so later text in the
+            // format string isn't corrupted by the fall-through.
+            putc('<'); putc('?'); putc('>'); count += 3;
+            if (*fmt) fmt++;
+            continue;
+        }
         if (*fmt == 'f' || *fmt == 'F') {
             cc_print_float(args[ai++], 6);
             fmt++;
@@ -1024,7 +1046,18 @@ int cc_printf_mixed(const char* fmt, int argc, uint32_t typemask, const uint64_t
         }
         if (*fmt == 'l' || *fmt == 'h' || *fmt == 'L') { fmt++; if (*fmt == 'l' || *fmt == 'h') fmt++; }
 
-        if (ai >= argc) { putc('%'); count++; continue; }
+        if (ai >= argc) {
+            // Missing argument for this conversion (e.g. printf("%c") with
+            // no value supplied) - real C leaves this undefined, but silently
+            // leaking the raw spec character as ordinary text (the old
+            // behavior here) looks confusingly like valid-but-wrong output.
+            // Emit an unambiguous marker instead, and consume the whole
+            // conversion (including its spec letter) so later text in the
+            // format string isn't corrupted by the fall-through.
+            putc('<'); putc('?'); putc('>'); count += 3;
+            if (*fmt) fmt++;
+            continue;
+        }
         int is_f = (int)((typemask >> ai) & 1u);
         uint64_t raw = slots[ai];
         unsigned int u = (unsigned int)(raw & 0xFFFFFFFFu);
