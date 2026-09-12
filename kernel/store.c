@@ -221,9 +221,9 @@ void store_init(uint32_t mb_magic, uint32_t mb_addr) {
         // disk (typically zero), which safely means "run the setup
         // wizard once more" rather than anything worse.
         config_deserialize(store_buf + store_fs_need, store_cfg_need);
-        /* Add any new files/folders shipped in source-tree home/. Existing
-           persistent files are left untouched. */
-        fs_seed_home();
+        /* A valid Storefile is authoritative. Do NOT reseed home/ here:
+           anything the user deleted must stay deleted across reboots.
+           home/ is seeded only when creating a brand-new filesystem. */
         boot_log("Storefile: loaded saved state from disk");
         return;
     }
