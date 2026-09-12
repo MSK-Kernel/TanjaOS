@@ -9,6 +9,7 @@ extern void config_reset(void);
 extern void setup_wizard(void);
 extern void store_save(void);
 extern void fs_init(void);
+extern void fs_seed_home(void);
 
 void cmd_datareset(char* args) {
     (void)args;
@@ -34,6 +35,7 @@ void cmd_datareset(char* args) {
     // the setup wizard just like a fresh installation.
     config_reset();
     fs_init();
+    fs_seed_home();
     store_save();
 
     clear_screen();
