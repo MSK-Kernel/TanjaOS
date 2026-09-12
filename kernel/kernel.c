@@ -221,6 +221,17 @@ void putc_color(char c, uint16_t color) {
             cursor--;
             VGA[cursor] = color | ' ';
         }
+    } else if (c == '\t') {
+        // Advance to the next multiple-of-4 column. TanjaOS uses
+        // four-column tabs consistently with the editor/compiler.
+        // Nothing is drawn for the tab itself -
+        // previously this fell through every branch below (tab is
+        // 0x09, less than ' ' at 0x20) and was silently dropped:
+        // not printed, cursor not advanced, as if it never existed.
+        int col = cursor % VGA_WIDTH;
+        int next = (col / 4 + 1) * 4;
+        if (next > VGA_WIDTH) next = VGA_WIDTH;
+        cursor += (next - col);
     } else if (c >= ' ') {
         VGA[cursor] = color | (uint8_t)c;
         cursor++;
@@ -229,7 +240,24 @@ void putc_color(char c, uint16_t color) {
     sync_cursor();
 }
 
+// When non-null, putc() writes into this buffer instead of the VGA
+// console - used to implement sprintf/snprintf by reusing the entire
+// existing cc_printf_mixed formatting engine unchanged: redirect
+// output, call it exactly as printf would, then restore. cc_redirect_cap
+// is the buffer's total size for snprintf's bound (0 means unbounded,
+// i.e. plain sprintf).
+static char* cc_redirect_buf = 0;
+static uint32_t cc_redirect_pos = 0;
+static uint32_t cc_redirect_cap = 0;
+
 void putc(char c) {
+    if (cc_redirect_buf) {
+        if (cc_redirect_cap == 0 || cc_redirect_pos + 1 < cc_redirect_cap) {
+            cc_redirect_buf[cc_redirect_pos] = c;
+        }
+        cc_redirect_pos++;
+        return;
+    }
     putc_color(c, VGA_COLOR);
 }
 
@@ -588,6 +616,33 @@ int strncmp(const char* a, const char* b, unsigned int n) {
     return (unsigned char)a[i] - (unsigned char)b[i];
 }
 
+// Non-standard but ubiquitous in freestanding/embedded C (no sprintf
+// available to build one out of "%d"). Converts `value` to a string in
+// the given base and writes it (with a '-' sign for negative values in
+// base 10 only, matching the common convention) into `buf`, which must
+// be big enough - 34 bytes covers the worst case (base 2, INT_MIN, sign,
+// and the null terminator). Returns buf, matching itoa's usual signature.
+char* itoa(int value, char* buf, int base) {
+    if (!buf) return buf;
+    if (base < 2 || base > 16) { buf[0] = 0; return buf; }
+    char tmp[34];
+    int i = 0;
+    unsigned int uval;
+    int neg = (base == 10 && value < 0);
+    uval = neg ? (unsigned int)(-(long)value) : (unsigned int)value;
+    if (uval == 0) tmp[i++] = '0';
+    while (uval) {
+        int d = (int)(uval % (unsigned int)base);
+        tmp[i++] = (char)(d < 10 ? '0' + d : 'a' + d - 10);
+        uval /= (unsigned int)base;
+    }
+    int j = 0;
+    if (neg) buf[j++] = '-';
+    while (i > 0) buf[j++] = tmp[--i];
+    buf[j] = 0;
+    return buf;
+}
+
 char* strcpy(char* dst, const char* src) {
     char* start = dst;
     if (!dst || !src) return dst;
@@ -712,6 +767,39 @@ int isspace(int c) { return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c
 int isxdigit(int c) { return isdigit(c) || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'); }
 int tolower(int c) { return isupper(c) ? c + ('a' - 'A') : c; }
 int toupper(int c) { return islower(c) ? c - ('a' - 'A') : c; }
+
+// Non-standard but extremely common (POSIX / most C libraries) - case-
+// insensitive string comparison. Same shape as strcmp/strncmp above,
+// just folding both sides through tolower() before comparing.
+int strcasecmp(const char* a, const char* b) {
+    if (!a || !b) return a == b ? 0 : (a ? 1 : -1);
+    while (*a && *b && tolower((unsigned char)*a) == tolower((unsigned char)*b)) { a++; b++; }
+    return tolower((unsigned char)*a) - tolower((unsigned char)*b);
+}
+
+int strncasecmp(const char* a, const char* b, unsigned int n) {
+    unsigned int i = 0;
+    if (n == 0) return 0;
+    if (!a || !b) return a == b ? 0 : (a ? 1 : -1);
+    while (i < n && a[i] && b[i] && tolower((unsigned char)a[i]) == tolower((unsigned char)b[i])) i++;
+    if (i == n) return 0;
+    return tolower((unsigned char)a[i]) - tolower((unsigned char)b[i]);
+}
+
+// Non-standard (MSVC/POSIX-ish convention, not ISO C) but widely used -
+// in-place case conversion, returning the same pointer for chaining.
+char* strlwr(char* s) {
+    char* p = s;
+    while (p && *p) { *p = (char)tolower((unsigned char)*p); p++; }
+    return s;
+}
+
+char* strupr(char* s) {
+    char* p = s;
+    while (p && *p) { *p = (char)toupper((unsigned char)*p); p++; }
+    return s;
+}
+
 
 
 
@@ -1048,14 +1136,27 @@ int cc_printf_mixed(const char* fmt, int argc, uint32_t typemask, const uint64_t
 
         if (ai >= argc) {
             // Missing argument for this conversion (e.g. printf("%c") with
-            // no value supplied) - real C leaves this undefined, but silently
-            // leaking the raw spec character as ordinary text (the old
-            // behavior here) looks confusingly like valid-but-wrong output.
-            // Emit an unambiguous marker instead, and consume the whole
-            // conversion (including its spec letter) so later text in the
-            // format string isn't corrupted by the fall-through.
+            // no value supplied) - but only if `*fmt` is actually one of
+            // the conversion letters this function understands. A single
+            // '%' followed by something else entirely (a typo'd literal
+            // percent sign like "(%) Modulo" where "%%" was meant) is a
+            // different situation: there's no real conversion here to be
+            // missing an argument FOR, so the right move is to print '%'
+            // and leave the rest of the text alone, not swallow whatever
+            // character happens to follow.
+            const char* recognized = "fFeEgGdiuxXocs";
+            int is_conversion = 0;
+            for (const char* p = recognized; *p; p++) if (*fmt == *p) { is_conversion = 1; break; }
+            if (!is_conversion) { putc('%'); count++; continue; }
+            // Real C leaves a genuinely missing argument undefined, but
+            // silently leaking the raw spec character as ordinary text
+            // (the old behavior here) looks confusingly like valid-but-
+            // wrong output. Emit an unambiguous marker instead, and
+            // consume the whole conversion (including its spec letter)
+            // so later text in the format string isn't corrupted by the
+            // fall-through.
             putc('<'); putc('?'); putc('>'); count += 3;
-            if (*fmt) fmt++;
+            fmt++;
             continue;
         }
         int is_f = (int)((typemask >> ai) & 1u);
@@ -1134,6 +1235,25 @@ int cc_printf_mixed(const char* fmt, int argc, uint32_t typemask, const uint64_t
         }
     }
     return count;
+}
+
+// sprintf/snprintf: same formatting engine as printf, just redirected
+// into a buffer instead of the console via the cc_redirect_* globals
+// putc() checks above. `cap` is 0 for plain sprintf (unbounded, caller's
+// responsibility) or the destination buffer's total size for snprintf
+// (output, including the null terminator, is truncated to fit).
+int cc_sprintf_mixed(char* buf, uint32_t cap, const char* fmt, int argc, uint32_t typemask, const uint64_t* slots) {
+    char* prev_buf = cc_redirect_buf;
+    uint32_t prev_pos = cc_redirect_pos, prev_cap = cc_redirect_cap;
+    cc_redirect_buf = buf; cc_redirect_pos = 0; cc_redirect_cap = cap;
+    int n = cc_printf_mixed(fmt, argc, typemask, slots);
+    uint32_t written = cc_redirect_pos;
+    if (buf) {
+        if (cap == 0) buf[written] = 0;
+        else buf[(written + 1 < cap) ? written : (cap > 0 ? cap - 1 : 0)] = 0;
+    }
+    cc_redirect_buf = prev_buf; cc_redirect_pos = prev_pos; cc_redirect_cap = prev_cap;
+    return n;
 }
 
 int cc_scanf_multi(const char* fmt, int argc, const uint32_t* ptrs) {
@@ -1300,6 +1420,14 @@ int cc_scanf_multi(const char* fmt, int argc, const uint32_t* ptrs) {
  */
 int cc_strcmp_bridge(const char* b, const char* a) { return strcmp(a, b); }
 int cc_strncmp_bridge(unsigned int n, const char* b, const char* a) { return strncmp(a, b, n); }
+int cc_strcasecmp_bridge(const char* b, const char* a) { return strcasecmp(a, b); }
+int cc_strncasecmp_bridge(unsigned int n, const char* b, const char* a) { return strncasecmp(a, b, n); }
+// JIT source call is itoa(value, buf, base): value pushed first, base
+// pushed last, so per the compiler's push convention the last-pushed
+// argument (base) lands in this bridge's first parameter, down to the
+// first-pushed argument (value) landing in its last parameter - same
+// reversal as every other multi-arg bridge above.
+char* cc_itoa_bridge(int base, char* buf, int value) { return itoa(value, buf, base); }
 char* cc_strcpy_bridge(const char* src, char* dst) { return strcpy(dst, src); }
 char* cc_strncpy_bridge(unsigned int n, const char* src, char* dst) { return strncpy(dst, src, n); }
 char* cc_strcat_bridge(const char* src, char* dst) { return strcat(dst, src); }

@@ -7,6 +7,8 @@ extern int putchar(int c);
 extern int getchar(void);
 extern int puts(const char* s);
 extern int strlen(const char* s);
+extern char* strlwr(char* s);
+extern char* strupr(char* s);
 extern int strcmp(const char* a, const char* b);
 extern int strncmp(const char* a, const char* b, unsigned int n);
 extern char* strcpy(char* dst, const char* src);
@@ -37,6 +39,9 @@ extern void print(const char* s);
 extern void print_dec(uint32_t n);
 extern int cc_strcmp_bridge(const char*, const char*);
 extern int cc_strncmp_bridge(unsigned int, const char*, const char*);
+extern int cc_strcasecmp_bridge(const char*, const char*);
+extern int cc_strncasecmp_bridge(unsigned int, const char*, const char*);
+extern char* cc_itoa_bridge(int, char*, int);
 extern char* cc_strcpy_bridge(const char*, char*);
 extern char* cc_strncpy_bridge(unsigned int, const char*, char*);
 extern char* cc_strcat_bridge(const char*, char*);
@@ -63,6 +68,7 @@ extern int cc_printf_f2(double,const char*);
 extern int cc_printf_f3(double,double,const char*);
 extern int cc_printf_f4(double,double,double,const char*);
 extern int cc_printf_mixed(const char*, int, uint32_t, const uint64_t*);
+extern int cc_sprintf_mixed(char*, uint32_t, const char*, int, uint32_t, const uint64_t*);
 
 #define CC_HEAP_SIZE 262144
 static uint8_t cc_heap[CC_HEAP_SIZE];
@@ -544,7 +550,7 @@ static void skip_ws_comments(void) {
              src[src_pos + 8] == '\t' || src[src_pos + 8] == '<')) {
             int include_line = cur_line;
             while (peekc() != -1 && peekc() != '\n') getc_src();
-            print("c: #include found and not needed, safely ignored\n");
+            print("#include found and not needed, safely ignored\n");
             (void)include_line;
             continue;
         }
@@ -1156,6 +1162,7 @@ static int float_const_pool_used;
 static uint8_t fp_scratch4[4];
 static uint8_t fp_scratch8[8];
 static uint8_t printf_fmt_scratch[4]; // stashes printf's format-string pointer across the mixed-args scratch-array build
+static uint8_t sprintf_buf_scratch[4]; // same idea, for sprintf's destination-buffer pointer
 
 // Backing storage for float/double GLOBAL VARIABLES (as opposed to
 // float_const_pool above, which is for float/double LITERALS).
@@ -1540,6 +1547,30 @@ static void scan_printf_arg_types(int* out_argc, uint32_t* out_typemask) {
     lexer_restore(save);
 }
 
+// Same as scan_printf_arg_types, but for sprintf/snprintf's extra
+// leading destination-buffer argument (and, for snprintf, the size
+// argument too) that come before the format string.
+static void scan_sprintf_arg_types(int leading_args, int* out_argc, uint32_t* out_typemask) {
+    *out_argc = 0;
+    *out_typemask = 0;
+    lexer_state_t save = lexer_save();
+    int i;
+    for (i = 0; i < leading_args; i++) {
+        skip_one_arg_tokens();
+        if (cur_tok.type == T_COMMA) next_token();
+    }
+    skip_one_arg_tokens(); // skip the format string itself
+    int idx = 0;
+    while (cur_tok.type == T_COMMA && idx < MAX_PRINTF_ARGS) {
+        next_token();
+        if (looks_like_float_expr()) *out_typemask |= (1u << idx);
+        skip_one_arg_tokens();
+        idx++;
+    }
+    *out_argc = idx;
+    lexer_restore(save);
+}
+
 static void parse_call_args_and_call(func_t* fn, const char* builtin_name) {
     // printf gets dedicated argument-passing paths beyond the default
     // all-int one below:
@@ -1620,6 +1651,81 @@ static void parse_call_args_and_call(func_t* fn, const char* builtin_name) {
 
         uint32_t cleanup = 16 + (uint32_t)pf_argc * 8;
         emit_u8(0x81); emit_u8(0xC4); emit_u32(cleanup);
+        return;
+    }
+
+    if (builtin_name && str_eq(builtin_name, "sprintf")) {
+        // Same variadic mixed-slot machinery as printf above, with one
+        // extra leading argument (the destination buffer) evaluated
+        // first and stashed in its own scratch slot, and cap=0 (no
+        // bound - matches real sprintf's actual, notoriously unchecked
+        // behavior) always passed to the runtime.
+        int pf_argc;
+        uint32_t pf_typemask;
+        scan_sprintf_arg_types(1, &pf_argc, &pf_typemask);
+
+        if (pf_argc > MAX_PRINTF_ARGS) {
+            cc_seterr(cur_tok.line, "too many sprintf arguments");
+            return;
+        }
+
+        parse_expr(); if (cc_error_flag) return; // dest buffer -> eax
+        gen_mov_abs_eax((uint32_t)sprintf_buf_scratch);
+        expect(T_COMMA, "expected ',' after sprintf destination buffer");
+        if (cc_error_flag) return;
+
+        parse_expr(); if (cc_error_flag) return; // format string -> eax
+        gen_mov_abs_eax((uint32_t)printf_fmt_scratch);
+
+        if (pf_argc > 0) {
+            emit_u8(0x81); emit_u8(0xEC);
+            emit_u32((uint32_t)pf_argc * 8);
+        }
+
+        int k;
+        for (k = 0; k < pf_argc; k++) {
+            expect(T_COMMA, "expected ',' between sprintf arguments");
+            if (cc_error_flag) return;
+
+            if ((pf_typemask >> k) & 1u) {
+                parse_float_expr();
+                if (cc_error_flag) return;
+                emit_u8(0xDD); emit_u8(0x9C); emit_u8(0x24);
+                emit_u32((uint32_t)k * 8); // fstp qword [esp+k*8]
+            } else {
+                parse_expr();
+                if (cc_error_flag) return;
+                emit_u8(0x89); emit_u8(0x84); emit_u8(0x24);
+                emit_u32((uint32_t)k * 8); // mov [esp+k*8],eax
+                emit_u8(0xC7); emit_u8(0x84); emit_u8(0x24);
+                emit_u32((uint32_t)k * 8 + 4);
+                emit_u32(0);
+            }
+        }
+
+        expect(T_RPAREN, "expected ')' after arguments");
+        if (cc_error_flag) return;
+
+        if (pf_argc > 0) {
+            emit_u8(0x8D); emit_u8(0x04); emit_u8(0x24); // eax = slot 0
+            gen_push_eax();
+        } else {
+            gen_mov_eax_imm32(0);
+            gen_push_eax();
+        }
+
+        emit_u8(0x68); emit_u32(pf_typemask);
+        emit_u8(0x68); emit_u32((uint32_t)pf_argc);
+        gen_mov_eax_abs((uint32_t)printf_fmt_scratch);
+        gen_push_eax();
+        gen_mov_eax_imm32(0); // cap = 0 (unbounded, plain sprintf)
+        gen_push_eax();
+        gen_mov_eax_abs((uint32_t)sprintf_buf_scratch);
+        gen_push_eax();
+        gen_call_abs((uint32_t)(void*)cc_sprintf_mixed);
+
+        uint32_t sprintf_cleanup = 24 + (uint32_t)pf_argc * 8;
+        emit_u8(0x81); emit_u8(0xC4); emit_u32(sprintf_cleanup);
         return;
     }
 
@@ -1727,10 +1833,13 @@ static void parse_call_args_and_call(func_t* fn, const char* builtin_name) {
         else if (str_eq(builtin_name, "clear_screen")) expected = 0;
         else if (str_eq(builtin_name, "strcmp") || str_eq(builtin_name, "strcpy") ||
                  str_eq(builtin_name, "strcat") || str_eq(builtin_name, "strchr") ||
-                 str_eq(builtin_name, "strrchr") || str_eq(builtin_name, "strstr")) expected = 2;
+                 str_eq(builtin_name, "strrchr") || str_eq(builtin_name, "strstr") ||
+                 str_eq(builtin_name, "strcasecmp")) expected = 2;
         else if (str_eq(builtin_name, "strncmp") || str_eq(builtin_name, "strncpy") ||
                  str_eq(builtin_name, "memset") || str_eq(builtin_name, "memcpy") ||
-                 str_eq(builtin_name, "memmove") || str_eq(builtin_name, "memcmp")) expected = 3;
+                 str_eq(builtin_name, "memmove") || str_eq(builtin_name, "memcmp") ||
+                 str_eq(builtin_name, "strncasecmp") || str_eq(builtin_name, "itoa")) expected = 3;
+        else if (str_eq(builtin_name, "strlwr") || str_eq(builtin_name, "strupr")) expected = 1;
         else if (str_eq(builtin_name, "strcoll")) expected = 2;
         else if (str_eq(builtin_name, "strxfrm")) expected = 3;
         else if (str_eq(builtin_name, "remove") || str_eq(builtin_name, "perror")) expected = 1;
@@ -1770,6 +1879,11 @@ static void parse_call_args_and_call(func_t* fn, const char* builtin_name) {
         else if (str_eq(builtin_name, "strlen")) target = (uint32_t)(void*)strlen;
         else if (str_eq(builtin_name, "strcmp")) target = (uint32_t)(void*)cc_strcmp_bridge;
         else if (str_eq(builtin_name, "strncmp")) target = (uint32_t)(void*)cc_strncmp_bridge;
+        else if (str_eq(builtin_name, "strcasecmp")) target = (uint32_t)(void*)cc_strcasecmp_bridge;
+        else if (str_eq(builtin_name, "strncasecmp")) target = (uint32_t)(void*)cc_strncasecmp_bridge;
+        else if (str_eq(builtin_name, "strlwr")) target = (uint32_t)(void*)strlwr;
+        else if (str_eq(builtin_name, "strupr")) target = (uint32_t)(void*)strupr;
+        else if (str_eq(builtin_name, "itoa")) target = (uint32_t)(void*)cc_itoa_bridge;
         else if (str_eq(builtin_name, "strcpy")) target = (uint32_t)(void*)cc_strcpy_bridge;
         else if (str_eq(builtin_name, "strncpy")) target = (uint32_t)(void*)cc_strncpy_bridge;
         else if (str_eq(builtin_name, "strcat")) target = (uint32_t)(void*)cc_strcat_bridge;
@@ -2155,9 +2269,13 @@ static void parse_primary(void) {
             const char* builtin = 0;
             if (!fn) {
                 if (str_eq(name, "printf") || str_eq(name, "scanf") ||
+                    str_eq(name, "sprintf") ||
                     str_eq(name, "putchar") || str_eq(name, "getchar") ||
                     str_eq(name, "puts") || str_eq(name, "strlen") ||
                     str_eq(name, "strcmp") || str_eq(name, "strncmp") ||
+                    str_eq(name, "strcasecmp") || str_eq(name, "strncasecmp") ||
+                    str_eq(name, "strlwr") || str_eq(name, "strupr") ||
+                    str_eq(name, "itoa") ||
                     str_eq(name, "strcpy") || str_eq(name, "strncpy") ||
                     str_eq(name, "strcat") || str_eq(name, "strchr") ||
                     str_eq(name, "strrchr") || str_eq(name, "strstr") ||
