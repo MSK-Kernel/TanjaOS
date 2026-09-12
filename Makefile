@@ -10,8 +10,20 @@ BIN_OBJ = $(BIN_SRC:.c=.o)
 BIN_NAMES = $(notdir $(basename $(BIN_SRC)))
 
 KERNEL_OBJ = kernel/kernel.o kernel/game.o kernel/ata.o kernel/ahci.o kernel/store.o kernel/idt.o kernel/cc.o
+HOME_OBJ = home_tar.o
 
 all: arch/x86/boot/tanja-base
+
+.PHONY: home_image
+home_image: home_tar.o
+
+home.tar: $(shell find home -type f -o -type d 2>/dev/null)
+	@echo "[HOME] Packing home/"
+	tar --format=ustar -cf $@ -C home .
+
+home_tar.o: home.tar
+	@echo "[OBJ] Embedding home/"
+	$(LD) -r -b binary -m elf_i386 -o $@ $<
 
 arch/x86/boot:
 	mkdir -p arch/x86/boot
@@ -89,7 +101,7 @@ arch/x86/boot/boot.o: arch/x86/boot/boot.asm | arch/x86/boot
 	$(ASM) -f elf32 arch/x86/boot/boot.asm -o arch/x86/boot/boot.o
 
 
-arch/x86/boot/tanja-base: arch/x86/boot/boot.o arch/x86/idt_asm.o $(KERNEL_OBJ) fs/fs.o bin/init.o $(BIN_OBJ) | arch/x86/boot
+arch/x86/boot/tanja-base: arch/x86/boot/boot.o arch/x86/idt_asm.o $(KERNEL_OBJ) fs/fs.o bin/init.o $(BIN_OBJ) $(HOME_OBJ) | arch/x86/boot
 	@echo "[LD] Linking..."
 	$(LD) $(LDFLAGS) -o arch/x86/boot/tanja-base \
 		arch/x86/boot/boot.o \
@@ -97,7 +109,8 @@ arch/x86/boot/tanja-base: arch/x86/boot/boot.o arch/x86/idt_asm.o $(KERNEL_OBJ) 
 		$(KERNEL_OBJ) \
 		fs/fs.o \
 		bin/init.o \
-		$(BIN_OBJ)
+		$(BIN_OBJ) \
+		$(HOME_OBJ)
 
 	@echo
 	@echo "[INFO] Kernel image ready at arch/x86/boot/tanja-base"
@@ -108,7 +121,7 @@ clean:
 	rm -f kernel/*.o fs/*.o
 	rm -f bin/*.o bin/init.c
 	rm -f arch/x86/boot/*.o arch/x86/boot/tanja-base
-	rm -f arch/x86/idt_asm.o
+	rm -f arch/x86/idt_asm.o home.tar home_tar.o
 
 distclean: clean
 	rm -f bin/*.c

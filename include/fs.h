@@ -14,6 +14,7 @@ typedef enum {
 } fs_type_t;
 
 void fs_init(void);
+void fs_seed_home(void);
 int fs_create_file(const char* path);
 int fs_create_directory(const char* path);
 int fs_delete_file(const char* path);

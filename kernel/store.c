@@ -141,6 +141,7 @@ void store_init(uint32_t mb_magic, uint32_t mb_addr) {
     if (need > sizeof(store_buf) || store_sectors > STORE_BUF_SECTORS) {
         boot_log("Storefile: image too large, running from RAM");
         fs_init();
+        fs_seed_home();
         return;
     }
 
@@ -181,6 +182,7 @@ void store_init(uint32_t mb_magic, uint32_t mb_addr) {
     if (!found) {
         boot_log("Storefile: no usable disk found (checked legacy IDE and AHCI), running from RAM");
         fs_init();
+        fs_seed_home();
         return;
     }
 
@@ -202,6 +204,7 @@ void store_init(uint32_t mb_magic, uint32_t mb_addr) {
            causing delayed corruption/reboots after a file write. */
         store_enabled = 0;
         fs_init();
+        fs_seed_home();
         boot_log("Storefile: disk too small, persistence disabled for this boot");
         return;
     }
@@ -218,6 +221,9 @@ void store_init(uint32_t mb_magic, uint32_t mb_addr) {
         // disk (typically zero), which safely means "run the setup
         // wizard once more" rather than anything worse.
         config_deserialize(store_buf + store_fs_need, store_cfg_need);
+        /* Add any new files/folders shipped in source-tree home/. Existing
+           persistent files are left untouched. */
+        fs_seed_home();
         boot_log("Storefile: loaded saved state from disk");
         return;
     }
@@ -225,6 +231,7 @@ void store_init(uint32_t mb_magic, uint32_t mb_addr) {
     // Nothing usable on disk yet. Start from a clean filesystem, then
     // see if a "module /boot/Storefile" was handed to us to seed it.
     fs_init();
+    fs_seed_home();
 
     if (mb_magic == MULTIBOOT_BOOTLOADER_MAGIC && mb_addr) {
         multiboot_info_t* mbi = (multiboot_info_t*)(uintptr_t)mb_addr;

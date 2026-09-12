@@ -272,6 +272,36 @@ void print(const char* s) {
     while (*s) putc(*s++);
 }
 
+/* Fast bulk console output.  Unlike print()/putc(), this only updates the
+ * hardware cursor once for the whole chunk.  Commands such as cat can use
+ * this to avoid one sync_cursor() call per byte. */
+void print_n(const char* s, uint32_t len) {
+    if (!s || len == 0) return;
+
+    for (uint32_t i = 0; i < len; i++) {
+        char c = s[i];
+        if (c == '\n') {
+            cursor = ((cursor / VGA_WIDTH) + 1) * VGA_WIDTH;
+        } else if (c == '\b') {
+            if (cursor > 0) {
+                cursor--;
+                VGA[cursor] = VGA_COLOR | ' ';
+            }
+        } else if (c == '\t') {
+            int col = cursor % VGA_WIDTH;
+            int next = (col / 4 + 1) * 4;
+            if (next > VGA_WIDTH) next = VGA_WIDTH;
+            cursor += (next - col);
+        } else if ((unsigned char)c >= ' ') {
+            VGA[cursor] = VGA_COLOR | (uint8_t)c;
+            cursor++;
+        }
+
+        if (cursor >= VGA_WIDTH * VGA_HEIGHT) scroll();
+    }
+    sync_cursor();
+}
+
 void print_color(const char* s, uint16_t color) {
     if (!s) return;
     while (*s) putc_color(*s++, color);

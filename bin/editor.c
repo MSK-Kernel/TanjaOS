@@ -31,11 +31,16 @@ extern uint16_t *VGA;
 
 #define VGA_COLOR (0x0F << 8)
 
+/* The editor already owns the complete text buffer.  Keep its length cached
+ * instead of rescanning up to 64 KiB every time the cursor moves or a frame
+ * is redrawn.  The old strlen-on-every-operation behavior made large files
+ * feel like a hang because several helpers called it recursively. */
+static int editor_text_len = 0;
+
 static int strlen_editor(const char *s)
 {
-    int i = 0;
-    while (s[i]) i++;
-    return i;
+    (void)s;
+    return editor_text_len;
 }
 
 static int line_start(const char *text, int pos)
@@ -245,6 +250,7 @@ static void insert_byte(char *text, int *pos, char ch)
 
     text[*pos] = ch;
     (*pos)++;
+    editor_text_len++;
 }
 
 static void insert_wrapped(char *text, int *pos, char ch)
@@ -263,6 +269,8 @@ static void delete_bytes(char *text, int *pos, int count)
         text[i] = text[i + count];
     }
     *pos -= count;
+    editor_text_len -= count;
+    if (editor_text_len < 0) editor_text_len = 0;
 }
 
 static void editor_backspace(char *text, int *pos)
@@ -309,7 +317,11 @@ void cmd_editor(char *args)
     else
         text[size] = 0;
 
-    int pos = strlen_editor(text);
+    editor_text_len = (int)size;
+    if (editor_text_len >= MAX_TEXT) editor_text_len = MAX_TEXT - 1;
+
+    /* Open every file at its beginning, not at EOF. */
+    int pos = 0;
     int scroll_line = 0;
 
     uint16_t saved_screen[VGA_TOTAL_CELLS];

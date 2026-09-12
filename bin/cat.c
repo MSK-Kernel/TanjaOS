@@ -3,7 +3,7 @@
 
 void cmd_cat(char* args) {
     extern void print(const char* s);
-    extern void putc(char c);
+    extern void print_n(const char* s, uint32_t len);
 
     if (!args || !*args) {
         print("Usage: cat <file>\n");
@@ -42,8 +42,9 @@ void cmd_cat(char* args) {
         if (fs_read_file_range(args, offset, buffer, want, &got) != 0)
             break;
 
-        for (uint32_t i = 0; i < got; i++)
-            putc(buffer[i]);
+        /* Bulk output: print_n() updates the VGA hardware cursor once per
+         * 4 KiB chunk instead of once per character. */
+        print_n(buffer, got);
 
         if (got == 0)
             break;

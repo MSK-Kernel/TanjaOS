@@ -42,6 +42,71 @@ static int dused[MAX_D];
 
 static char cwd[256];
 
+
+/* Built-in source-tree home/ archive.  The build embeds home/ as a tar
+ * archive; this keeps the user-facing interface as simple as an ordinary
+ * directory while allowing arbitrary files and nested directories to ship
+ * in the boot image. */
+extern const unsigned char _binary_home_tar_start[];
+extern const unsigned char _binary_home_tar_end[];
+
+static uint32_t tar_octal(const unsigned char* p, int n) {
+    uint32_t v = 0;
+    int i;
+    for (i = 0; i < n; i++) {
+        if (p[i] >= '0' && p[i] <= '7') v = (v << 3) + (uint32_t)(p[i] - '0');
+    }
+    return v;
+}
+
+static void home_copy_path(char* out, const unsigned char* name, int n) {
+    int i = 0, j = 0;
+    out[0] = '/'; j = 1;
+    while (i < n && name[i] && j < 255) {
+        char c = (char)name[i++];
+        if (i == 1 && c == '.') continue;
+        if (i == 2 && c == '/') continue;
+        out[j++] = c;
+    }
+    if (j > 1 && out[j - 1] == '/') j--;
+    out[j] = 0;
+}
+
+void fs_seed_home(void) {
+    const unsigned char* p = _binary_home_tar_start;
+    const unsigned char* end = _binary_home_tar_end;
+
+    /* The source-tree home/ directory is the contents of TanjaOS's
+       starting home directory, not a runtime /home directory.  Thus: 
+       home/foo -> /foo and home/projects/x -> /projects/x. */
+    while (p + 512 <= end) {
+        const unsigned char* h = p;
+        int empty = 1, i;
+        for (i = 0; i < 512; i++) if (h[i]) { empty = 0; break; }
+        if (empty) break;
+
+        uint32_t size = tar_octal(h + 124, 12);
+        char path[256];
+        home_copy_path(path, h, 100);
+        if (!path[1]) { p += 512; continue; }
+
+        char type = (char)h[156];
+        if (type == '5') {
+            if (!fs_directory_exists(path)) fs_create_directory(path);
+        } else if (type == '0' || type == '\0') {
+            /* home/ supplies defaults only; never overwrite a persistent file. */
+            if (!fs_file_exists(path) && size <= MAX_FILE_DATA - 1) {
+                if (fs_create_file(path) == 0)
+                    fs_write_file(path, (const char*)(p + 512), size);
+            }
+        }
+
+        uint32_t blocks = (size + 511) / 512;
+        if (p + 512 + blocks * 512 > end) break;
+        p += 512 + blocks * 512;
+    }
+}
+
 void fs_init(void) {
     int i;
     for (i = 0; i < MAX_F; i++) { fused[i] = 0; fsize[i] = 0; fname[i][0] = 0; }

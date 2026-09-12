@@ -8,6 +8,7 @@
 extern int key_available(void);
 extern int get_key(void);
 extern void print(const char* s);
+extern void print_n(const char* s, uint32_t len);
 extern void putc(char c);
 extern void putc_color(char c, uint16_t color);
 extern void print_color(const char* s, uint16_t color);
