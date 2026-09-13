@@ -106,9 +106,9 @@ void cmd_grep(char *args)
     }
 
 
-    char buffer[BUFFER_SIZE];
+    static char buffer[MAX_FILE_SIZE + 1];
 
-    uint32_t size = BUFFER_SIZE - 1;
+    uint32_t size = MAX_FILE_SIZE;
 
 
     if(fs_read_file(filename, buffer, &size) < 0)

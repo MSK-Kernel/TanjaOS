@@ -4,6 +4,7 @@
 #include "../include/ahci.h"
 #include "../include/multiboot.h"
 #include "../include/fs.h"
+#include "../include/build_id.h"
 
 extern void print(const char* s);
 extern void boot_log(const char* msg);
@@ -34,7 +35,10 @@ static uint32_t store_lba = STORE_FALLBACK_LBA;
 
 // Sized generously above fs_store_size() (checked at runtime below) so
 // bumping MAX_F/MAX_D in fs.c doesn't silently overflow this buffer.
-#define STORE_BUF_SECTORS 8192
+/* Must cover STORE_HEADER_BYTES + fs_store_size() + config_store_size().
+ * With MAX_FILE_DATA at 256KB the fs image is ~8.4MB, so 10MB of buffer
+ * leaves headroom for future bumps. */
+#define STORE_BUF_SECTORS 20480
 #define STORE_BUF_BYTES   (STORE_BUF_SECTORS * 512)
 
 static uint8_t store_buf[STORE_BUF_BYTES];
@@ -101,10 +105,62 @@ static int store_backend_write(uint32_t lba, uint32_t count, const void* buf) {
     return 0;
 }
 
+/* ------------------------------------------------------------------ *
+ * Storefile header                                                     *
+ *                                                                      *
+ * The first 16 bytes of the store region are a small header so the    *
+ * kernel can tell WHICH BUILD wrote the on-disk state:                *
+ *                                                                      *
+ *   bytes 0..3   magic "TJS1"                                          *
+ *   bytes 4..7   reserved (zero)                                       *
+ *   bytes 8..11  TANJA_BUILD_ID_LO (build timestamp, little endian)    *
+ *   bytes 12..15 TANJA_BUILD_ID_HI                                     *
+ *                                                                      *
+ * If the id on disk does not match the id compiled into THIS kernel,  *
+ * the saved state is treated as belonging to a different TanjaOS      *
+ * build and is discarded: booting a freshly installed version starts  *
+ * from the factory home/ contents and re-runs the setup wizard,       *
+ * exactly like a brand-new installation.  Old disks without any       *
+ * header simply fail the magic check and also start fresh.            *
+ * ------------------------------------------------------------------ */
+#define STORE_HEADER_BYTES 16
+
+static uint32_t le32_at(const uint8_t* p) {
+    return (uint32_t)p[0] | ((uint32_t)p[1] << 8)
+         | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+
+static void le32_put(uint8_t* p, uint32_t v) {
+    p[0] = (uint8_t)(v & 0xFF);
+    p[1] = (uint8_t)((v >> 8) & 0xFF);
+    p[2] = (uint8_t)((v >> 16) & 0xFF);
+    p[3] = (uint8_t)((v >> 24) & 0xFF);
+}
+
+static void store_write_header(void) {
+    store_buf[0] = 'T'; store_buf[1] = 'J';
+    store_buf[2] = 'S'; store_buf[3] = '1';
+    store_buf[4] = 0;   store_buf[5] = 0;
+    store_buf[6] = 0;   store_buf[7] = 0;
+    le32_put(&store_buf[8],  TANJA_BUILD_ID_LO);
+    le32_put(&store_buf[12], TANJA_BUILD_ID_HI);
+}
+
+static int store_header_valid(void) {
+    return store_buf[0] == 'T' && store_buf[1] == 'J'
+        && store_buf[2] == 'S' && store_buf[3] == '1';
+}
+
+static int store_header_matches_build(void) {
+    return le32_at(&store_buf[8])  == (uint32_t)TANJA_BUILD_ID_LO
+        && le32_at(&store_buf[12]) == (uint32_t)TANJA_BUILD_ID_HI;
+}
+
 void store_autosave(void) {
     if (!store_enabled) return;
-    if (fs_serialize(store_buf, store_fs_need) != 0) return;
-    config_serialize(store_buf + store_fs_need, store_cfg_need);
+    if (fs_serialize(store_buf + STORE_HEADER_BYTES, store_fs_need) != 0) return;
+    config_serialize(store_buf + STORE_HEADER_BYTES + store_fs_need, store_cfg_need);
+    store_write_header();
     if (store_backend_write(store_lba, store_sectors, store_buf) != 0) {
         /* A failed persistence write must never make the kernel continue as
            if the on-disk image were valid. */
@@ -135,7 +191,7 @@ static void log_slot(int channel, int drive) {
 void store_init(uint32_t mb_magic, uint32_t mb_addr) {
     store_fs_need = fs_store_size();
     store_cfg_need = config_store_size();
-    uint32_t need = store_fs_need + store_cfg_need;
+    uint32_t need = STORE_HEADER_BYTES + store_fs_need + store_cfg_need;
     store_sectors = bytes_to_sectors(need);
 
     if (need > sizeof(store_buf) || store_sectors > STORE_BUF_SECTORS) {
@@ -209,23 +265,36 @@ void store_init(uint32_t mb_magic, uint32_t mb_addr) {
         return;
     }
 
-    // First, see if there's already a valid saved image on disk from a
-    // previous boot.
-    if (store_backend_read(store_lba, store_sectors, store_buf) == 0 &&
-        fs_deserialize(store_buf, store_fs_need) == 0) {
-        store_enabled = 1;
-        // Config is appended right after the fs data in the same
-        // region. Its own validity was already implied by the fs
-        // magic check above; if this is an older disk written before
-        // config was included, these bytes are just whatever was on
-        // disk (typically zero), which safely means "run the setup
-        // wizard once more" rather than anything worse.
-        config_deserialize(store_buf + store_fs_need, store_cfg_need);
-        /* A valid Storefile is authoritative. Do NOT reseed home/ here:
-           anything the user deleted must stay deleted across reboots.
-           home/ is seeded only when creating a brand-new filesystem. */
-        boot_log("Storefile: loaded saved state from disk");
-        return;
+    // First, see if there's already a saved image on disk from a
+    // previous boot - but ONLY if it was written by this exact build.
+    if (store_backend_read(store_lba, store_sectors, store_buf) == 0) {
+        if (!store_header_valid()) {
+            // Pre-header (or foreign) data: treat as a fresh install.
+            boot_log("Storefile: on-disk state not from this OS generation, starting fresh");
+        } else if (!store_header_matches_build()) {
+            // Saved by a DIFFERENT TanjaOS build (version upgrade). A new
+            // version must install clean: factory home/ contents (so
+            // files/folders the update ADDED to home/ actually appear) and
+            // a re-run of the setup wizard - never a silent in-place
+            // "update" that keeps the old state around.
+            boot_log("Storefile: saved state is from a different TanjaOS build, resetting to fresh install");
+        } else if (fs_deserialize(store_buf + STORE_HEADER_BYTES, store_fs_need) == 0) {
+            store_enabled = 1;
+            // Config is appended right after the fs data in the same
+            // region. Its own validity was already implied by the fs
+            // magic check above; if this is an older disk written before
+            // config was included, these bytes are just whatever was on
+            // disk (typically zero), which safely means "run the setup
+            // wizard once more" rather than anything worse.
+            config_deserialize(store_buf + STORE_HEADER_BYTES + store_fs_need, store_cfg_need);
+            /* A valid Storefile is authoritative. Do NOT reseed home/ here:
+               anything the user deleted must stay deleted across reboots.
+               home/ is seeded only when creating a brand-new filesystem. */
+            boot_log("Storefile: loaded saved state from disk");
+            return;
+        } else {
+            boot_log("Storefile: on-disk image failed validation, starting fresh");
+        }
     }
 
     // Nothing usable on disk yet. Start from a clean filesystem, then

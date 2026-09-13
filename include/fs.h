@@ -6,7 +6,9 @@
 
 #define MAX_PATH 256
 #define MAX_FILENAME 256
-#define MAX_FILE_SIZE 65536
+/* Public max file size, kept in sync with MAX_FILE_DATA in fs/fs.c
+ * so echo/editor/c can fill a file to capacity. */
+#define MAX_FILE_SIZE 262144
 
 typedef enum {
     FS_FILE,

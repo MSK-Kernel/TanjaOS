@@ -293,7 +293,7 @@ void cmd_editor(char *args)
     }
 
     static char text[MAX_TEXT];
-    uint32_t size = 0;
+    uint32_t size = sizeof(text);
     text[0] = 0;
 
     if (fs_file_exists(args)) {

@@ -27,7 +27,12 @@ static int strlen_safe(const char* s) {
 
 #define MAX_F 32
 #define MAX_D 32
-#define MAX_FILE_DATA 65536
+/* Per-file capacity.  The largest shipped home/ file (the Torah books,
+ * up to ~200KB) must fit in one slot, or fs_seed_home silently skips
+ * it and datareset can never restore it.  256KB covers them with
+ * headroom.  NOTE: fs.c BSS and the Storefile buffer in store.c
+ * scale with this (see fs_store_size / STORE_BUF_SECTORS). */
+#define MAX_FILE_DATA 262144
 #define FS_PATH_CAP 256
 
 int fs_delete_directory_recursive(const char *path);
@@ -318,23 +323,14 @@ int fs_write_file(const char* path, const char* data, uint32_t size) {
 }
 
 int fs_read_file(const char* path, char* buffer, uint32_t* size) {
+    /* Callers pass their buffer capacity in *size.  Never write more
+       than that: the old implementation copied the WHOLE file into the
+       caller's buffer and smashed the stack of any command holding a
+       small buffer (grep's 4KB buffer crashed on the ~200KB Torah
+       files).  Reads at most capacity-1 bytes, reports the actual
+       byte count in *size. */
     if (!path || !buffer || !size) return -1;
-    *size = 0; buffer[0] = 0;
-    char full[256];
-    abs_path(path, full);
-    int i;
-    for (i = 0; i < MAX_F; i++) {
-        if (fused[i] && strcmp_safe(fname[i], full)) {
-            int sz = fsize[i];
-            if (sz > MAX_FILE_DATA - 1) sz = MAX_FILE_DATA - 1;
-            int j;
-            for (j = 0; j < sz; j++) buffer[j] = fdata[i][j];
-            buffer[sz] = 0;
-            *size = sz;
-            return 0;
-        }
-    }
-    return -1;
+    return fs_read_file_prefix(path, buffer, *size + 1, size);
 }
 
 int fs_read_file_prefix(const char* path, char* buffer, uint32_t capacity, uint32_t* size) {

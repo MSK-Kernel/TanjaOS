@@ -1,4 +1,5 @@
 #include "bin.h"
+#include "../include/fs.h"
 
 static int mv_strlen(const char* s) {
     int n = 0;
@@ -40,8 +41,9 @@ static int mv_copy_file(const char* src, const char* dst) {
     extern int fs_create_file(const char* path);
     extern int fs_file_exists(const char* path);
 
-    char buffer[4096];
-    uint32_t size = 0;
+    /* Whole-file copy: needs to hold up to MAX_FILE_SIZE bytes. */
+    static char buffer[MAX_FILE_SIZE + 1];
+    uint32_t size = MAX_FILE_SIZE;
 
     if (fs_read_file(src, buffer, &size) != 0) return -1;
     if (!fs_file_exists(dst)) fs_create_file(dst);

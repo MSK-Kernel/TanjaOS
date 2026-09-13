@@ -111,7 +111,7 @@ void cmd_echo(char* args) {
         return;
     }
 
-    uint32_t old_size = 0;
+    uint32_t old_size = sizeof(old);
     if (fs_file_exists(filename)) {
         if (fs_read_file(filename, old, &old_size) != 0) {
             print("echo: cannot read '");
