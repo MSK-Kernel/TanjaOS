@@ -18,7 +18,7 @@ all: arch/x86/boot/tanja-base
 home_image: home_tar.o
 
 home.tar: $(shell find home -type f -o -type d 2>/dev/null)
-	@echo "[HOME] Packing home/"
+	@echo "[TAR] Packing home/"
 	tar --format=ustar -cf $@ -C home .
 
 home_tar.o: home.tar
