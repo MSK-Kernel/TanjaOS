@@ -27,6 +27,7 @@ include/build_id.h: $(wildcard kernel/*.c) $(wildcard fs/*.c) $(wildcard bin/*.c
 home_image: home_tar.o
 
 home.tar: $(shell find home -type f -o -type d 2>/dev/null)
+	mkdir -p home/Documents home/Programs home/Projects home/Scripts home/Trash
 	@echo "[TAR] Packing home/"
 	tar --format=ustar -cf $@ -C home .
 

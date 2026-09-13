@@ -1811,7 +1811,7 @@ void kernel_main(uint32_t mb_magic, uint32_t mb_addr)
 
     timer_delay_ms(50);
 
-    boot_log("Starting setup");
+    print("Starting setup...\n");
 
     if (!config.is_setup) {
         print("\n");
