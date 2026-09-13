@@ -236,7 +236,7 @@ void store_init(uint32_t mb_magic, uint32_t mb_addr) {
     }
 
     if (!found) {
-        boot_log("Storefile: no usable disk found (checked legacy IDE and AHCI), running from RAM");
+        boot_log("Storefile: no usable disk found, running from RAM");
         fs_init();
         fs_seed_home();
         return;
@@ -270,14 +270,14 @@ void store_init(uint32_t mb_magic, uint32_t mb_addr) {
     if (store_backend_read(store_lba, store_sectors, store_buf) == 0) {
         if (!store_header_valid()) {
             // Pre-header (or foreign) data: treat as a fresh install.
-            boot_log("Storefile: on-disk state not from this OS generation, starting fresh");
+            boot_log("Storefile: on-disk image starting from a fresh condition");
         } else if (!store_header_matches_build()) {
             // Saved by a DIFFERENT TanjaOS build (version upgrade). A new
             // version must install clean: factory home/ contents (so
             // files/folders the update ADDED to home/ actually appear) and
             // a re-run of the setup wizard - never a silent in-place
             // "update" that keeps the old state around.
-            boot_log("Storefile: saved state is from a different TanjaOS build, resetting to fresh install");
+            boot_log("Storefile: saved state is from a new/custom version");
         } else if (fs_deserialize(store_buf + STORE_HEADER_BYTES, store_fs_need) == 0) {
             store_enabled = 1;
             // Config is appended right after the fs data in the same
