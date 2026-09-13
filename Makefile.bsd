@@ -3,7 +3,7 @@ LD=ld
 ASM=nasm
 
 CFLAGS=-ffreestanding -m32 -c -fno-stack-protector -fno-builtin -fno-pic -fno-pie -I.
-LDFLAGS=-m elf_i386 -T linker/bsdlinker.ld -nostdlib
+LDFLAGS=-m elf_i386 -T linker/linker.ld -nostdlib
 
 BIN_SRC = $(filter-out bin/init.c, $(wildcard bin/*.c))
 BIN_OBJ = $(BIN_SRC:.c=.o)
@@ -27,7 +27,6 @@ include/build_id.h: $(wildcard kernel/*.c) $(wildcard fs/*.c) $(wildcard bin/*.c
 home_image: home_tar.o
 
 home.tar: $(shell find home -type f -o -type d 2>/dev/null)
-	mkdir -p home/Documents home/Programs home/Projects home/Scripts home/Trash
 	@echo "[TAR] Packing home/"
 	tar --format=ustar -cf $@ -C home .
 

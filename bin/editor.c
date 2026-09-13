@@ -1,4 +1,5 @@
 #include "../include/fs.h"
+#include "../include/utf8.h"
 #include <stdint.h>
 
 #define KEY_UP     0x80
@@ -64,11 +65,18 @@ static int visual_col(const char *text, int pos)
     int i = line_start(text, pos);
 
     while (i < pos && text[i] != '\n') {
-        if (text[i] == '\t')
+        if (text[i] == '\t') {
             col += TAB_WIDTH - (col % TAB_WIDTH);
-        else
+            i++;
+        } else {
+            /* One UTF-8 sequence = one screen cell, so the visual
+             * column matches what draw_editor() actually renders. */
+            uint32_t cp;
+            int step = utf8_decode(&text[i], pos - i, &cp);
+            if (step < 1) step = 1;
             col++;
-        i++;
+            i += step;
+        }
     }
     return col;
 }
@@ -101,13 +109,25 @@ static int pos_at_visual_col(const char *text, int start, int target)
     int col = 0;
 
     while (pos < len && text[pos] != '\n') {
-        int width = (text[pos] == '\t') ? (TAB_WIDTH - (col % TAB_WIDTH)) : 1;
+        int width;
+        int step = 1;
+
+        if (text[pos] == '\t') {
+            width = TAB_WIDTH - (col % TAB_WIDTH);
+        } else {
+            /* Walk whole UTF-8 sequences, not single bytes, so a
+             * multi-byte character is one cell here too. */
+            uint32_t cp;
+            step = utf8_decode(&text[pos], len - pos, &cp);
+            if (step < 1) step = 1;
+            width = 1;
+        }
 
         if (target < col + width)
             return snap_to_tab_stop(text, pos);
 
         col += width;
-        pos++;
+        pos += step;
     }
 
     return snap_to_tab_stop(text, pos);
@@ -133,10 +153,107 @@ static int line_start_number(const char *text, int wanted)
     return i;
 }
 
+/* Move one character (UTF-8 codepoint) forward.  This keeps the
+ * cursor aligned to sequence starts so the renderer never lands
+ * in the middle of a multi-byte character. */
+static int step_forward(const char *text, int pos)
+{
+    int len = strlen_editor(text);
+    uint32_t cp;
+    int step;
+
+    if (pos >= len)
+        return pos;
+    step = utf8_decode(&text[pos], len - pos, &cp);
+    if (step < 1) step = 1;
+    return pos + step;
+}
+
+/* Move one character (UTF-8 codepoint) backward: scan back past
+ * UTF-8 continuation bytes to the start of the sequence. */
+static int step_backward(const char *text, int pos)
+{
+    int i;
+
+    if (pos <= 0)
+        return pos;
+
+    i = pos - 1;
+    while (i > 0 && ((unsigned char)text[i] & 0xC0) == 0x80)
+        i--;
+    return i;
+}
+
+/* Wrap-aware vertical movement.
+ *
+ * The editor word-wraps long lines onto several screen rows, so
+ * "down" must mean "down one VISUAL row", not "down one logical
+ * line": when the line under the cursor continues on the next
+ * screen row, the cursor moves onto that wrapped continuation
+ * instead of skipping ahead to the next real line.  Likewise "up"
+ * from the first row of a wrapped line moves to the last screen
+ * row of the previous line, at the same on-screen column. */
+static int move_vertical(const char *text, int pos, int dir)
+{
+    int len = strlen_editor(text);
+    int c = visual_col(text, pos);
+    int row = c / EDITOR_COLS;
+    int scol = c % EDITOR_COLS;   /* on-screen column to preserve */
+    int ls = line_start(text, pos);
+    int width = visual_col(text, line_end(text, pos));
+
+    if (dir < 0) {
+        /* UP */
+        if (row > 0) {
+            /* Still inside a wrapped line: move to the row above. */
+            return pos_at_visual_col(text, ls, (row - 1) * EDITOR_COLS + scol);
+        }
+        {
+            int line = line_number_at(text, pos);
+            if (line == 0)
+                return pos;
+            {
+                int prev_start = line_start_number(text, line - 1);
+                int prev_width = visual_col(text, line_end(text, prev_start));
+                int prev_rows = prev_width / EDITOR_COLS + 1;
+                /* Land on the last screen row of the previous line,
+                 * clamped to its end if it is shorter than scol. */
+                return pos_at_visual_col(text, prev_start,
+                                         (prev_rows - 1) * EDITOR_COLS + scol);
+            }
+        }
+    } else {
+        /* DOWN */
+        if ((row + 1) * EDITOR_COLS < width) {
+            /* The current line continues on the next screen row:
+             * step onto the wrapped continuation instead of
+             * skipping to the next real line. */
+            return pos_at_visual_col(text, ls, (row + 1) * EDITOR_COLS + scol);
+        }
+        {
+            int cur_end = line_end(text, pos);
+            if (cur_end >= len)
+                return pos;   /* last line, nowhere to go */
+            /* Last row of this line: move to the next real line,
+             * keeping the same on-screen column. */
+            return pos_at_visual_col(text, cur_end + 1, scol);
+        }
+    }
+}
+
 static int visual_rows_of_line(const char *text, int ls)
 {
     int width = visual_col(text, line_end(text, ls));
-    return width / EDITOR_COLS + 1;
+    /* A line that exactly fills its last screen row (e.g. exactly
+     * 80 columns) still renders as just that one row: the next byte
+     * is a newline, so no empty continuation row is drawn.  Only
+     * content BEYOND a full row creates another row, hence the
+     * (width-1) here.  The old `width / EDITOR_COLS + 1` counted a
+     * phantom extra row for every exact multiple of 80, which made
+     * the cursor-row math (and wrap-aware Up) land one row off. */
+    if (width == 0)
+        return 1;
+    return (width - 1) / EDITOR_COLS + 1;
 }
 
 static void draw_editor(const char *text, int pos, int scroll_line)
@@ -163,11 +280,29 @@ static void draw_editor(const char *text, int pos, int scroll_line)
                         VGA[screen_row * EDITOR_COLS + col] = VGA_COLOR | ' ';
                         col++;
                     }
+                    j++;
                 } else {
-                    VGA[screen_row * EDITOR_COLS + col] = VGA_COLOR | (uint8_t)text[j];
+                    /* Decode one UTF-8 sequence and render it as a
+                     * single ASCII cell: “ ” become ", — becomes -,
+                     * ʼ becomes ', other non-ASCII becomes '?', and
+                     * invalid bytes draw raw like before.  A sequence
+                     * is never split across two screen rows. */
+                    uint32_t cp;
+                    int step = utf8_decode(&text[j], editor_text_len - j, &cp);
+                    char cell;
+                    if (step < 1) step = 1;
+                    if (cp == UTF8_INVALID) {
+                        cell = text[j];
+                    } else if (cp < 0x80) {
+                        cell = (char)cp;
+                    } else {
+                        int m = utf8_map_ascii(cp);
+                        cell = m ? (char)m : '?';
+                    }
+                    VGA[screen_row * EDITOR_COLS + col] = VGA_COLOR | (uint8_t)cell;
                     col++;
+                    j += step;
                 }
-                j++;
             }
             while (col < EDITOR_COLS) {
                 VGA[screen_row * EDITOR_COLS + col] = VGA_COLOR | ' ';
@@ -275,14 +410,19 @@ static void delete_bytes(char *text, int *pos, int count)
 
 static void editor_backspace(char *text, int *pos)
 {
+    int start;
+
     if (*pos <= 0)
         return;
 
-    /* A tab is stored as a single '\t' byte, so deleting one byte
-     * naturally removes the whole tab stop in one keystroke.
+    /* Delete the entire previous character, not just one byte: a
+     * multi-byte UTF-8 sequence (e.g. “ stored as three bytes)
+     * disappears in one keystroke.  A tab is stored as a single
+     * '\t' byte, so it still deletes in one keystroke too.
      * Literal spaces (e.g. from pressing space) are always deleted
      * one at a time, no matter how many are in a row. */
-    delete_bytes(text, pos, 1);
+    start = step_backward(text, *pos);
+    delete_bytes(text, pos, *pos - start);
 }
 
 void cmd_editor(char *args)
@@ -350,34 +490,20 @@ void cmd_editor(char *args)
         }
 
         if (key == KEY_LEFT) {
-            if (pos > 0)
-                pos--;
+            pos = step_backward(text, pos);
             continue;
         }
 
         if (key == KEY_RIGHT) {
-            int len = strlen_editor(text);
-            if (pos < len)
-                pos++;
+            pos = step_forward(text, pos);
             continue;
         }
 
         if (key == KEY_UP || key == KEY_DOWN) {
-            int wanted = visual_col(text, pos);
-            int line = line_number_at(text, pos);
-
-            if (key == KEY_UP) {
-                if (line > 0) {
-                    int start = line_start_number(text, line - 1);
-                    pos = pos_at_visual_col(text, start, wanted);
-                }
-            } else {
-                int current_end = line_end(text, pos);
-                if (current_end < strlen_editor(text)) {
-                    int start = current_end + 1;
-                    pos = pos_at_visual_col(text, start, wanted);
-                }
-            }
+            /* Wrap-aware: moves one VISUAL row at a time, so wrapped
+             * continuations of a long line are visited like real
+             * lines instead of being skipped over. */
+            pos = move_vertical(text, pos, (key == KEY_UP) ? -1 : 1);
             continue;
         }
 

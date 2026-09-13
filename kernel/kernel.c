@@ -3,6 +3,7 @@
 #include "../include/fs.h"
 #include "../include/store.h"
 #include "../include/idt.h"
+#include "../include/utf8.h"
 
 // ============================================================
 // VGA CONSTANTS
@@ -213,7 +214,11 @@ void scroll() {
     cursor = VGA_WIDTH * (VGA_HEIGHT - 1);
 }
 
-void putc_color(char c, uint16_t color) {
+/* Draw a single already-decoded cell: control codes (newline,
+ * backspace, tab) plus one printable character, then scroll if
+ * needed.  This is the raw drawing primitive both the byte
+ * interface and the UTF-8 decoder below funnel into. */
+static void putc_draw(char c, uint16_t color) {
     if (c == '\n') {
         cursor = ((cursor / VGA_WIDTH) + 1) * VGA_WIDTH;
     } else if (c == '\b') {
@@ -237,6 +242,41 @@ void putc_color(char c, uint16_t color) {
         cursor++;
     }
     if (cursor >= VGA_WIDTH * VGA_HEIGHT) scroll();
+}
+
+/* One shared UTF-8 decoder for the whole console stream so that
+ * sequences are tracked correctly even when output alternates
+ * between putc(), print() and print_n() (e.g. cat piped output).
+ *
+ * Why: the VGA console only has CP437 glyphs, so printing UTF-8
+ * one raw byte at a time showed punctuation like “ ” — as two or
+ * three jumbled characters.  Now a full sequence is decoded and
+ * drawn as a single ASCII cell: quotes become ", dashes become -,
+ * ʼ becomes ', and anything unmappable becomes '?'.  Bytes that
+ * are not valid UTF-8 (e.g. binary junk) still draw raw, exactly
+ * like the old byte-oriented behavior. */
+static utf8_feed_t console_utf8 = {{0, 0, 0, 0}, 0, 0};
+
+static void console_feed(char c, uint16_t color) {
+    uint32_t cp;
+    int r = utf8_feed(&console_utf8, (unsigned char)c, &cp);
+    char cell;
+
+    if (r == 0)
+        return;                       /* mid-sequence, nothing to draw yet */
+    if (r == 2) {
+        putc_draw(c, color);          /* not UTF-8: old raw behavior */
+        return;
+    }
+    cell = utf8_to_cell(cp);
+    if (cell)
+        putc_draw(cell, color);
+    else
+        putc_draw('?', color);        /* valid UTF-8, no CP437 glyph */
+}
+
+void putc_color(char c, uint16_t color) {
+    console_feed(c, color);
     sync_cursor();
 }
 
@@ -278,27 +318,12 @@ void print(const char* s) {
 void print_n(const char* s, uint32_t len) {
     if (!s || len == 0) return;
 
-    for (uint32_t i = 0; i < len; i++) {
-        char c = s[i];
-        if (c == '\n') {
-            cursor = ((cursor / VGA_WIDTH) + 1) * VGA_WIDTH;
-        } else if (c == '\b') {
-            if (cursor > 0) {
-                cursor--;
-                VGA[cursor] = VGA_COLOR | ' ';
-            }
-        } else if (c == '\t') {
-            int col = cursor % VGA_WIDTH;
-            int next = (col / 4 + 1) * 4;
-            if (next > VGA_WIDTH) next = VGA_WIDTH;
-            cursor += (next - col);
-        } else if ((unsigned char)c >= ' ') {
-            VGA[cursor] = VGA_COLOR | (uint8_t)c;
-            cursor++;
-        }
+    /* Fast bulk console output: decode UTF-8 (via the shared
+     * console decoder, same as putc/print) but only update the
+     * hardware cursor once for the whole chunk. */
+    for (uint32_t i = 0; i < len; i++)
+        console_feed(s[i], VGA_COLOR);
 
-        if (cursor >= VGA_WIDTH * VGA_HEIGHT) scroll();
-    }
     sync_cursor();
 }
 
@@ -1811,7 +1836,7 @@ void kernel_main(uint32_t mb_magic, uint32_t mb_addr)
 
     timer_delay_ms(50);
 
-    print("Starting setup...\n");
+    boot_log("Starting setup");
 
     if (!config.is_setup) {
         print("\n");

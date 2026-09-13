@@ -33,14 +33,14 @@ void cmd_datareset(char* args) {
     // Persist the reset state BEFORE starting setup. If setup is interrupted
     // by reboot/poweroff, the next boot will see is_setup == 0 and launch
     // the setup wizard just like a fresh installation.
-    print("Wiping data...\n");
     config_reset();
     fs_init();
     fs_seed_home();
-    print("Applying settings...\n");
     store_save();
-    print("Starting setup...\n\n");
+
+    clear_screen();
     setup_wizard();
+
     // setup_wizard() only sets is_setup after all three setup prompts finish.
     // Only then do we persist the newly-created account.
     store_save();

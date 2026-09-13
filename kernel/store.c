@@ -236,7 +236,7 @@ void store_init(uint32_t mb_magic, uint32_t mb_addr) {
     }
 
     if (!found) {
-        boot_log("Storefile: no usable disk found, running from RAM");
+        boot_log("Storefile: no usable disk found (checked legacy IDE and AHCI), running from RAM");
         fs_init();
         fs_seed_home();
         return;
