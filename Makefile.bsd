@@ -3,7 +3,7 @@ LD=ld
 ASM=nasm
 
 CFLAGS=-ffreestanding -m32 -c -fno-stack-protector -fno-builtin -fno-pic -fno-pie -I.
-LDFLAGS=-m elf_i386 -T linker/linker.ld -nostdlib
+LDFLAGS=-m elf_i386 -T linker/bsdlinker.ld -nostdlib
 
 BIN_SRC = $(filter-out bin/init.c, $(wildcard bin/*.c))
 BIN_OBJ = $(BIN_SRC:.c=.o)
