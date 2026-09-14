@@ -39,7 +39,6 @@ void cmd_datareset(char* args) {
     fs_init();
     fs_seed_home();
     store_save();
-    print("Starting setup...\n\n");
     setup_wizard();
 
     // setup_wizard() only sets is_setup after all three setup prompts finish.

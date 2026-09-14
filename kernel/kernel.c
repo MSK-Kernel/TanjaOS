@@ -1736,12 +1736,13 @@ void execute_command(const char* cmd_line) {
 // ============================================================
 
 void setup_wizard() {
+    print("Starting setup...\n\n");
     print("===== TanjaOS Setup =====\n");
     print("\n");
     print("Create a login: "); read_line(config.username, MAX_USERNAME);
     print("Create a password: "); read_line(config.password, MAX_PASSWORD);
     print("Set a hostname: "); read_line(config.hostname, MAX_HOSTNAME);
-    config.is_setup = 1; clear_screen();
+    config.is_setup = 1; print("\n");
 }
 
 void login_prompt() {
@@ -1833,10 +1834,6 @@ void kernel_main(uint32_t mb_magic, uint32_t mb_addr)
 
     register_cmd("exit", cmd_exit);
     register_cmd("hostname", cmd_hostname);
-
-    timer_delay_ms(50);
-
-    print("Starting setup...\n");
 
     if (!config.is_setup) {
         print("\n");
