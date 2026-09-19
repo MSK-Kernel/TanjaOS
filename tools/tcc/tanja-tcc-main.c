@@ -126,12 +126,6 @@ void main(char *args)
                 }
             }
         }
-        if (o_idx > 0)
-            printf("tcc: note: TanjaOS has no linker; compiled to %s\n"
-                   "       run it with: ./%s\n", argv[o_idx], argv[o_idx]);
-        else if (outbuf[0])
-            printf("tcc: note: TanjaOS has no linker; compiled to %s\n"
-                   "       run it with: ./%s\n", outbuf, outbuf);
     }
 
     if (__builtin_setjmp(g_exit_buf) == 0)
