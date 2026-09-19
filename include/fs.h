@@ -1,0 +1,47 @@
+#ifndef FS_H
+#define FS_H
+
+#include <stdint.h>
+#include <stddef.h>
+
+#define MAX_PATH 256
+#define MAX_FILENAME 256
+/* Public max file size, kept in sync with MAX_FILE_DATA in fs/fs.c
+ * so echo/editor/c can fill a file to capacity. */
+#define MAX_FILE_SIZE 327680
+
+typedef enum {
+    FS_FILE,
+    FS_DIRECTORY
+} fs_type_t;
+
+void fs_init(void);
+void fs_seed_home(void);
+int fs_create_file(const char* path);
+int fs_create_directory(const char* path);
+int fs_delete_file(const char* path);
+int fs_delete_directory(const char* path);
+int fs_write_file(const char* path, const char* data, uint32_t size);
+int fs_read_file(const char* path, char* buffer, uint32_t* size);
+int fs_read_file_prefix(const char* path, char* buffer, uint32_t capacity, uint32_t* size);
+int fs_read_file_range(const char* path, uint32_t offset, char* buffer,
+                       uint32_t capacity, uint32_t* size);
+uint32_t fs_get_file_size(const char* path);
+int fs_file_exists(const char* path);
+int fs_directory_exists(const char* path);
+int fs_list_directory(const char* path, char* buffer, uint32_t* size);
+int fs_change_directory(const char* path);
+void fs_get_current_path(char* path);
+int parse_path(const char* path, char* parent_path, char* name);
+int find_in_directory(int dir_index, const char* name, fs_type_t type);
+
+// --- Storefile support -----------------------------------------------
+// Packs/unpacks the whole in-memory filesystem into a flat byte blob so
+// it can be written to (or loaded from) a fixed disk region or a
+// multiboot module. fs_store_size() tells the caller how big the buffer
+// needs to be; it never changes at runtime.
+uint32_t fs_store_size(void);
+int fs_serialize(uint8_t* buf, uint32_t buf_size);
+int fs_deserialize(const uint8_t* buf, uint32_t buf_size);
+
+#endif

@@ -1,0 +1,83 @@
+1. The bin layout
+
+Every standard command is its own real ELF32 binary: the sources live in
+bin/ (cat.c, ls.c, cp.c, vi.c, ...) and the Makefile compiles each one
+with plain host gcc -m32 (freestanding, no libc) into a standalone ELF32
+binary in home/bin/ (<name>.o), embedded in the boot image (via home.tar)
+as /bin/<name>.o. The kernel loads them at runtime through its in-kernel
+ELF32 driver (kernel/elf.c), which resolves each program's symbols against
+the kernel export table (include/tanja.h).
+The shell runs a command by trying /bin/<name>.o first (so you can add or
+override a standard command by dropping a file with the same name in /bin
+at runtime), then /Programs/<name>(.o) for user-added programs.
+
+2. Programming in TanjaOS
+
+TinyCC ships as /bin/tcc.o, so 'tcc' is just another command. It compiles
+real C99 (the full tcc frontend) into ELF32 objects the kernel ELF driver
+can run. The OS ships a real, standard C header set at /include - stdio.h,
+stdlib.h, string.h, unistd.h, ctype.h, time.h, math.h, errno.h, assert.h,
+setjmp.h, signal.h, fcntl.h, inttypes.h, limits.h, sys/... - and NOTHING
+custom: no tanja.h. The kernel API (console, printf, keyboard, the fs_*
+filesystem functions, environment, timers) is declared inside those
+standard headers, so a TanjaOS program is just a normal C file:
+
+    #include <stdio.h>
+    void main(char* args) { printf("hi %s\n", args); }
+
+Edit it with 'vi hello.c', compile and run it:
+
+    tcc -c hello.c -o hello.o      # compile
+    ./hello.o some args            # run
+
+There is no linker, so 'tcc hello.c -o hello' (link an executable)
+is not supported; the wrapper downgrades it to compile-only, names
+the result hello.o and prints how to run it.
+
+Logins start in the user's home directory, /home/home (shown as ~ in
+the prompt; bare `cd` goes there too).
+
+To run any program, just type its name: './hello.o', 'hello.o' or
+'dir/prog.o' all work (there is no exec command - if a token isn't a
+builtin or a /bin command but names an existing file, the shell runs
+it: ELF32 objects as programs, text files as line-per-command scripts).
+
+Programs are entered as void main(char* args) (the single command-line
+argument string). Calls that resolve at exec time are the kernel exports
+(print*/printf/putc*/putchar/getchar/puts, get_key/read_line, VGA/cursor,
+the full fs_* filesystem API, set_env/get_env, execute_command/exec_file,
+str*/mem*/is*/to*, itoa, rand/srand, inb/outb, uptime/timers). stdio FILE
+and malloc-family declarations are provided for the tcc toolchain itself
+and type-check normally, but are not kernel exports: a user program that
+calls fopen or malloc will fail to load with an undefined-symbol message.
+
+3. Building
+
+Use 'make' to compile (this compiles the kernel, all bin/ commands, and
+TinyCC - nothing else). Once compiling is finished, a bootable kernel
+image 'tanja-base' will be located at arch/x86/boot, boot it with:
+
+    qemu-system-i386 -m 1536 -kernel arch/x86/boot/tanja-base
+
+(-m 1536 is required: programs run from a region at 1 GiB
+(0x40000000), so QEMU needs more than 1 GiB of RAM)
+
+ ______________________
+[ REQUIRED PACKAGES ]
+|--------------------|
+| 1) make            |
+| 2) nasm            |
+| 3) gcc             |
+|____________________|
+
+For compiling on BSD systems, you should use gmake instead of make,
+this is because BSD's make can't use the traditional linker.ld for TanjaOS.
+You will see a file called "Makefile.bsd", this is the Makefile for BSD systems.
+To use Makefile.bsd, use 'gmake <option> -f Makefile.bsd'.
+ _________________________
+[ REQUIRED PACKAGES (BSD) ]
+|-------------------------|
+| 1) gmake                |
+| 2) nasm                 |
+| 3) gcc                  |
+|_________________________|

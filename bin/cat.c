@@ -1,0 +1,71 @@
+/* ============================================================
+ * TANJA OS BIN COMMAND - cat
+ * ------------------------------------------------------------
+ * A standalone ELF32 user program, compiled by the Makefile with
+ * plain gcc -m32 (freestanding) and embedded in the kernel image
+ * (via home.tar) as a /bin command at boot.  Replace or add commands by editing
+ * or dropping files into bin/.
+ * ============================================================ */
+
+#include <stdint.h>
+#include <stddef.h>
+#include "tanja.h"
+#include "utf8.h"
+
+void main(char* args) {
+
+    if (!args || !*args) {
+        print("Usage: cat <file>\n");
+        return;
+    }
+
+    while (*args == ' ' || *args == '\t') args++;
+
+    int len = strlen(args);
+    while (len > 0 &&
+           (args[len - 1] == ' ' || args[len - 1] == '\t' ||
+            args[len - 1] == '\n' || args[len - 1] == '\r'))
+        args[--len] = 0;
+
+    if (!fs_file_exists(args)) {
+        print("cat: ");
+        print(args);
+        print(": No such file or directory\n");
+        return;
+    }
+
+    /*
+     * Stream the file in chunks instead of copying the whole file into a
+     * fixed 4096-byte buffer.  This means cat works for every file size
+     * the filesystem can store.
+     */
+    static char buffer[4096];
+    uint32_t offset = 0;
+    uint32_t got = 0;
+    uint32_t total = fs_get_file_size(args);
+
+    while (offset < total) {
+        uint32_t want = total - offset;
+        if (want > sizeof(buffer)) want = sizeof(buffer);
+
+        if (fs_read_file_range(args, offset, buffer, want, &got) != 0)
+            break;
+
+        /* Bulk output: print_n() updates the VGA hardware cursor once per
+         * 4 KiB chunk instead of once per character. */
+        print_n(buffer, got);
+
+        if (got == 0)
+            break;
+        offset += got;
+    }
+
+    if (total > 0) {
+        char last;
+        uint32_t last_size = 0;
+        if (fs_read_file_range(args, total - 1, &last, 1, &last_size) == 0 &&
+            last_size == 1 && last != '\n')
+            putc('\n');
+    }
+}
+
