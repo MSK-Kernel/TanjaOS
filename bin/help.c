@@ -1,17 +1,3 @@
-/* ============================================================
- * TANJA OS BIN COMMAND - help
- * ------------------------------------------------------------
- * A standalone ELF32 user program, compiled by the Makefile with
- * plain gcc -m32 (freestanding) and embedded in the kernel image
- * (via home.tar) as a /bin command at boot.  Replace or add commands by editing
- * or dropping files into bin/.
- * ------------------------------------------------------------
- * help lists EVERYTHING runnable from the shell in one normal,
- * unified list: the kernel built-ins (exit, hostname, ...) plus
- * every command in /bin, merged, de-duplicated (a built-in always
- * wins over a same-named /bin file) and sorted alphabetically.
- * ============================================================ */
-
 #include <stdint.h>
 #include <stddef.h>
 #include "tanja.h"
@@ -114,5 +100,5 @@ void main(char* args) {
         col += len + 3;
     }
     if (ncount)
-        print("\n");
+        print("\n\n");
 }
