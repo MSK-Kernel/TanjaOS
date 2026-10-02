@@ -1,0 +1,30 @@
+By default the build uses the prebuilt tools/tcc/tcc.o (see the top-level
+Makefile: the tools/tcc/tcc.o rule falls back to it when no tinycc/ source
+tree is present). To change tanja-tcc-main.c or tanja-libc.c, build tcc.o
+from source instead:
+
+  cd tools/tcc
+  git clone https://github.com/TinyCC/tinycc.git
+  rm -rf tinycc/.git
+
+Then edit tanja-tcc-main.c (the TanjaOS void main(char*) entry point that
+wraps tcc's real main - see the comment at the top of the file) and rebuild
+with the normal top-level build:
+
+  x86:    make           (from the repo root)
+  arm64:  make -f Makefile.arm64
+
+Once tinycc/tcc.c exists, make detects it and runs build-tcc.sh (or
+build-tcc-arm64.sh, via TCC_BUILD_SCRIPT) automatically - no separate step
+needed. Those scripts also generate tinycc/config.h and tinycc/tccdefs_.h
+on first run (normally produced by tinycc's own Makefile via ./configure
+and its c2str tool); this only needs a host cc on your build machine and
+happens once, so it works the same on the Pi as on x86.
+
+Requirements: x86 build needs gcc -m32 (gcc-multilib) and binutils; arm64
+(cross) build needs i686-linux-gnu-gcc and i686-linux-gnu-binutils. Either
+way a host cc is also needed for the one-time header generation above.
+
+If you change tanja-libc.c's function set, check nm -u tcc.o afterwards -
+every undefined symbol has to be one the kernel exports (kernel/elf.c);
+anything else won't link at runtime and TanjaOS has no linker to tell you.
