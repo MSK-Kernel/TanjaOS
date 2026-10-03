@@ -57,12 +57,8 @@ Use 'make' to compile (this compiles the kernel, all bin/ commands, and
 TinyCC - nothing else). Once compiling is finished, a bootable kernel
 image 'tanja-base' will be located at arch/x86/boot, boot it with:
 
-    qemu-system-i386 -m 1536 -kernel arch/x86/boot/tanja-base
-
-(-m 1536 is required: programs run from a region at 1 GiB
-(0x40000000), so QEMU needs more than 1 GiB of RAM)
-
- ______________________
+    qemu-system-i386 -m 64 -kernel arch/x86/boot/tanja-base
+ ____________________
 [ REQUIRED PACKAGES ]
 |--------------------|
 | 1) make            |
