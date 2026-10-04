@@ -87,7 +87,8 @@ void main(char* args) {
     collect_dir("/bin");
     sort_names();
 
-    print("\nAvailable commands:\n\n");
+    print("The TanjaOS Project\n");
+    print("Available commands are listed below.\n\n");
 
     int i;
     int col = 0;
@@ -100,5 +101,5 @@ void main(char* args) {
         col += len + 3;
     }
     if (ncount)
-        print("\n\n");
+        print("\n");
 }

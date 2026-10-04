@@ -1175,7 +1175,7 @@ void login_prompt() {
     while (1) {
         print(config.hostname); print(" login: "); read_line(u, MAX_USERNAME);
         print("Password: "); read_line(p, MAX_PASSWORD);
-        if (streq(u, config.username) && streq(p, config.password)) { print("\n"); return; }
+        if (streq(u, config.username) && streq(p, config.password)) { return; }
         print("Login incorrect\n\n");
     }
 }
