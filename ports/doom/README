@@ -1,0 +1,30 @@
+DOOM for TanjaOS
+
+Engine: doomgeneric (GPLv2, see LICENSE.doomgeneric), CMAP256 build, 320x200.
+Platform layer: tanja_platform.c (VGA mode 13h, PS/2 scancodes, kernel timer)
+libc shim:      tanja_libc.c (malloc, stdio, printf/sscanf, 64-bit division)
+
+Build
+  make                       # Doom is part of tanja-base; nothing extra to do
+  qemu-system-i386 -m 1536 -kernel arch/x86/boot/tanja-base
+  (log in, then type: doom)
+
+  Needs xz (xz-utils) at build time to unpack the bundled IWAD.
+  The bundled IWAD is Freedoom Phase 1 (BSD), audio-stripped, xz-compressed:
+  ports/doom/wad/freedoom1.stripped.wad.xz  (regenerate: tools/fetch-freedoom.sh)
+
+  Own IWAD:  make DOOM_WAD_SRC=/path/doom1.wad DOOM_IWAD_NAME=doom1.wad
+
+Controls: arrows move/turn, Ctrl fire, Space use, Shift run, Alt strafe, Esc menu.
+
+Notes
+  - Program + IWAD are linked into the kernel image (fs files max 320 KiB).
+  - Sound/music lumps are stripped (no audio driver); no config/save persistence
+    beyond what the TanjaOS filesystem gives fopen("w").
+  - Text screen is saved/restored around graphics mode, so quitting returns to the shell.
+  - x86 only; arm64 port needs a framebuffer backend for DG_DrawFrame.
+
+Mouse (PS/2, polled): left = fire, right = hold to strafe, middle = hold to
+move forward; x turns, y walks - vanilla bindings and acceleration curve
+(2.0 / threshold 10).  Sensitivity is on the in-game Options menu (not saved).
+Touchpads work only if the machine exposes them as a legacy PS/2 mouse.
