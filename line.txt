@@ -1,3 +1,0 @@
-1740
-
-else { print("user '"); print(name); print("' created\n"); }

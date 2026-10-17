@@ -2,10 +2,10 @@ CC=gcc
 LD=ld
 ASM=nasm
 
-CFLAGS=-ffreestanding -m32 -c -fno-stack-protector -fno-builtin -fno-pic -fno-pie -I.
+CFLAGS= -ffreestanding -m32 -c -fno-stack-protector -fno-builtin -fno-pic -fno-pie -Wno-builtin-declaration-mismatch -I.
 LDFLAGS=-m elf_i386 -T linker/bsdlinker.ld -nostdlib
 
-KERNEL_OBJ = kernel/kernel.o kernel/game.o kernel/ata.o kernel/ahci.o kernel/store.o kernel/idt.o kernel/elf.o kernel/exec.o kernel/linux.o kernel/doom.o arch/x86/linux_asm.o
+KERNEL_OBJ = kernel/kernel.o kernel/game.o kernel/ata.o kernel/ahci.o kernel/store.o kernel/idt.o kernel/elf.o kernel/atomic.o kernel/libc.o kernel/libc2.o kernel/exec.o kernel/setjmp_asm.o kernel/linux.o kernel/doom.o arch/x86/linux_asm.o
 
 BIN_SRC = $(wildcard bin/*.c)
 BIN_OUT = $(BIN_SRC:bin/%.c=home/bin/%.o)
@@ -44,7 +44,7 @@ home/bin/%.o: bin/%.c include/tanja.h include/fs.h include/utf8.h | home/bin
 	$(CC) $(BIN_CFLAGS) -c $< -o $@
 
 # TinyCC builds with its own script (it needs per-file -D flags);
-# install-headers.sh refreshes home/include/ from the header sets.
+# install-headers.sh refreshes home/usr/include/ from the header sets.
 tools/tcc/tcc.o: $(TCC_SRC)
 	@if [ -f tools/tcc/tinycc/tcc.c ]; then \
 		echo "[TCC] building TinyCC (freestanding i386 object)"; \
@@ -59,7 +59,7 @@ home/bin/tcc.o: tools/tcc/tcc.o | home/bin
 	cp $< $@
 
 home.tar: $(shell find home -type f -o -type d 2>/dev/null | grep -v '^home/bin/') $(BIN_OUT) home/bin/tcc.o
-	@echo "[TAR] Packing home/ (binaries as /bin, headers as /include)"
+	@echo "[TAR] Packing home/ (binaries as /bin, headers as /usr/include)"
 	rm -rf .home-stage
 	tar --format=ustar -cf $@ -C home .
 
@@ -92,6 +92,10 @@ arch/x86/boot/boot.o: arch/x86/boot/boot.asm | arch/x86/boot
 	$(ASM) -f elf32 arch/x86/boot/boot.asm -o arch/x86/boot/boot.o
 
 
+kernel/setjmp_asm.o: kernel/setjmp_asm.asm
+	@echo "[ASM] setjmp_asm.asm"
+	$(ASM) -f elf32 kernel/setjmp_asm.asm -o kernel/setjmp_asm.o
+
 arch/x86/linux_asm.o: arch/x86/linux_asm.asm
 	@echo "[ASM] linux_asm.asm"
 	$(ASM) -f elf32 arch/x86/linux_asm.asm -o arch/x86/linux_asm.o
@@ -118,7 +122,8 @@ arch/x86/boot/tanja-base: arch/x86/boot/boot.o arch/x86/idt_asm.o $(KERNEL_OBJ) 
 		$(KERNEL_OBJ) \
 		fs/fs.o \
 		$(HOME_OBJ) \
-		$(DOOM_OBJ)
+		$(DOOM_OBJ) \
+		$(shell $(CC) -m32 -print-libgcc-file-name)
 
 	@echo
 	@echo "[INFO] TanjaOS image ready at arch/x86/boot/tanja-base"

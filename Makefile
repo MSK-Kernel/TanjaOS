@@ -2,7 +2,7 @@ CC=gcc
 LD=ld
 ASM=nasm
 
-CFLAGS=-ffreestanding -m32 -c -fno-stack-protector -fno-builtin -fno-pic -fno-pie -I.
+CFLAGS= -ffreestanding -m32 -c -fno-stack-protector -fno-builtin -fno-pic -fno-pie -Wno-builtin-declaration-mismatch -I.
 LDFLAGS=-m elf_i386 -T linker/linker.ld -nostdlib
 
 KERNEL_OBJ = kernel/kernel.o kernel/game.o kernel/ata.o kernel/ahci.o kernel/store.o kernel/idt.o kernel/elf.o kernel/atomic.o kernel/libc.o kernel/libc2.o kernel/exec.o kernel/setjmp_asm.o kernel/linux.o kernel/doom.o arch/x86/linux_asm.o

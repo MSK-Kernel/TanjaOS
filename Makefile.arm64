@@ -1,6 +1,6 @@
 CROSS_CC      = i686-linux-gnu-gcc
 CROSS_LD      = i686-linux-gnu-ld
-CROSS_CFLAGS  = -ffreestanding -c -fno-stack-protector -fno-builtin -fno-pic -fno-pie -I.
+CROSS_CFLAGS  = -ffreestanding -m32 -c -fno-stack-protector -fno-builtin -fno-pic -fno-pie -Wno-builtin-declaration-mismatch -I.
 CROSS_LDFLAGS = -T linker/linker.ld -nostdlib
 
 .DEFAULT_GOAL := all
