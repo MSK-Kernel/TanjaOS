@@ -1,0 +1,103 @@
+1. The bin layout
+
+Every standard command is its own real ELF32 binary: the sources live in
+bin/ (cat.c, ls.c, cp.c, vi.c, ...) and the Makefile compiles each one
+with plain host gcc -m32 (freestanding, no libc) into a standalone ELF32
+binary in home/bin/ (<name>.o), embedded in the boot image (via home.tar)
+as /bin/<name>.o. The kernel loads them at runtime through its in-kernel
+ELF32 driver (kernel/elf.c), which resolves each program's symbols against
+the kernel export table (include/tanja.h).
+The shell runs a command by trying /bin/<name>.o first (so you can add or
+override a standard command by dropping a file with the same name in /bin
+at runtime), then /Programs/<name>(.o) for user-added programs.
+
+2. Programming in TanjaOS
+
+TinyCC ships as /bin/tcc.o, so 'tcc' is just another command. It compiles
+real C99/C11 (the full tcc frontend) into ELF32 objects the kernel ELF
+driver can run. The OS ships a real, standard C header set at /usr/include
+- stdio.h, stdlib.h, string.h, unistd.h, ctype.h, time.h, math.h, errno.h,
+assert.h, setjmp.h, signal.h, fcntl.h, inttypes.h, limits.h, locale.h,
+fenv.h, iso646.h, stdatomic.h, stdalign.h, stdnoreturn.h, tgmath.h,
+sys/... - and NOTHING custom: no tanja.h. The kernel API (console, printf,
+keyboard, the fs_* filesystem functions, environment, timers) is declared
+inside those standard headers, so a TanjaOS program is just a normal C
+file.
+
+tcc is strict by default, on purpose:
+
+  * ALL warnings are hard compile-time errors (-Werror is injected
+    first in the argument list).  Pass -Wno-error to get normal
+    warning behavior back.  (#warning directives are exempt, like
+    a real gcc -Werror build.)
+  * After a clean compile the wrapper verifies EVERY external symbol
+    the produced object references against the live kernel export
+    table (tanja_export_count()/tanja_export_name() in kernel/elf.c).
+    A program that calls something the kernel does not export fails
+    AT COMPILE TIME with "undefined symbol" instead of failing to
+    load at run time.  Weak undefined symbols are exempt (they bind
+    to 0, per the C standard).
+  * C11 u8"..." string literals work (parsed as UTF-8 narrow
+    strings).  u/U wide literals are a clear compile-time error
+    (there is no wchar/char16_t machinery).
+
+    #include <stdio.h>
+
+    void main(char* args) {
+        printf("hi %s\n", args);
+        return 0;
+    }
+
+Edit it with 'vi hello.c', compile and run it:
+
+    tcc -c hello.c -o hello.o      # compile
+    ./hello.o some args            # run
+
+There is no linker, so 'tcc hello.c -o hello' (link an executable)
+is not supported; the wrapper downgrades it to compile-only, names
+the result hello.o and prints how to run it.
+
+Logins start in the user's home directory, /home/home (shown as ~ in
+the prompt; bare `cd` goes there too).
+
+To run any program, just type its name: './hello.o', 'hello.o' or
+'dir/prog.o' all work (there is no exec command - if a token isn't a
+builtin or a /bin command but names an existing file, the shell runs
+it: ELF32 objects as programs, text files as line-per-command scripts).
+
+Programs are entered as void main(char* args) (the single command-line
+argument string) - int main(void) works too. The kernel exports the full
+stdio/stdlib/string/ctype/time/math surface (printf/scanf families,
+malloc/calloc/realloc/free, FILE streams incl. fopen/fread/fwrite/fclose,
+open/close/read/write/lseek, stat/fstat, qsort/bsearch, strtol family,
+the x87 math library in all three tiers, locale/fenv/iso646 support,
+64-bit division/modulo helpers __divdi3 and friends), so ordinary C
+programs compile and run as-is. Anything NOT exported is caught at
+compile time by the wrapper's symbol check (see above).
+
+3. Building
+
+Use 'make' to compile (this compiles the source, all bin/ commands, and
+TinyCC - nothing else). Once compiling is finished, a bootable OS
+image 'tanja-base' will be located at arch/x86/boot, boot it with:
+
+    qemu-system-i386 -m 64 -kernel arch/x86/boot/tanja-base
+ ___________________
+[ REQUIRED PACKAGES ]
+|-------------------|
+| 1) make           |
+| 2) nasm           |
+| 3) gcc            |
+|___________________|
+
+For compiling on BSD systems, you should use gmake instead of make,
+this is because BSD's make can't use the traditional linker.ld for TanjaOS.
+You will see a file called "Makefile.bsd", this is the Makefile for BSD systems.
+To use Makefile.bsd, use 'gmake <option> -f Makefile.bsd'.
+ _________________________
+[ REQUIRED PACKAGES (BSD) ]
+|-------------------------|
+| 1) gmake                |
+| 2) nasm                 |
+| 3) gcc                  |
+|_________________________|
