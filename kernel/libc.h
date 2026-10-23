@@ -1,10 +1,11 @@
-/* X-macro list in the same style as atomic.h: elf.c expands it once
+/* libc.h - export list for the TanjaOS kernel C library (kernel/libc.c).
+ *
+ * X-macro list in the same style as atomic.h: elf.c expands it once
  * for the extern declarations and once for the export table, so every
  * libc symbol stays in one place.
  *
  * Each entry: (name, return type, parameter list)
  */
-
 #ifndef TANJA_LIBC_H
 #define TANJA_LIBC_H
 
@@ -12,7 +13,7 @@
 #include <stddef.h>
 #include <stdarg.h>
 
-/* Types the X-list below needs.  These mirror the user-side
+/* Types the X-list below needs. These mirror the user-side
  * declarations in /usr/include (sys/types.h, time.h, signal.h,
  * setjmp.h, stdio.h). */
 #ifndef _TANJA_LIBC_TYPES

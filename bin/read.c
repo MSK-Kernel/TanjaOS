@@ -5,7 +5,7 @@
 
 #define READ_BUF_SIZE 256
 
-// read NAME  (or read $NAME - either is accepted)
+// read NAME (or read $NAME - either is accepted)
 //
 // Blocks for a line of keyboard input, echoing what's typed, and stores
 // the result as a shell variable so a later "$NAME" elsewhere in the

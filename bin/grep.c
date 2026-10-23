@@ -173,7 +173,7 @@ void main(char* args)
     }
 
     /* No files: read lines from the keyboard until Ctrl-D,
-     * like `grep word` reading stdin in real bash. */
+ * like `grep word` reading stdin in real bash. */
     if(nfiles == 0)
     {
         static char line[512];
@@ -196,7 +196,9 @@ void main(char* args)
         return;
     }
 
-    static char buffer[MAX_FILE_SIZE + 1];
+    /* 512 KiB is far beyond any text file grep is meant for; the old
+ * MAX_FILE_SIZE static cost 4 MiB of per-applet BSS. */
+    static char buffer[512u * 1024u + 1];
 
     for(int f = 0; f < nfiles; f++)
     {

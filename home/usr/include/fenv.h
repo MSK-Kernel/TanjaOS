@@ -2,7 +2,7 @@
  *
  * TanjaOS runs user code with a fresh x87 environment; the round
  * mode is FE_TONEAREST and all exception flags are cleared at
- * program start.  These accessors are kernel exports.
+ * program start. These accessors are kernel exports.
  */
 #ifndef _FENV_H
 #define _FENV_H

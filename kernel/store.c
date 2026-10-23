@@ -32,13 +32,17 @@ static uint32_t store_lba = STORE_FALLBACK_LBA;
 
 // Sized generously above fs_store_size() (checked at runtime below) so
 // bumping MAX_F/MAX_D in fs.c doesn't silently overflow this buffer.
-/* Must cover STORE_HEADER_BYTES + fs_store_size() + config_store_size().
- * File contents now use an 8 MiB on-RAM pool, so a 9 MiB Storefile staging
- * buffer is enough without reserving the old 32+ MiB image. */
-#define STORE_BUF_SECTORS 18432
-#define STORE_BUF_BYTES   (STORE_BUF_SECTORS * 512)
+/* The Storefile image is streamed to/from disk through a small
+ * staging window instead of one whole-image buffer: the old design
+ * reserved a 35 MiB .bss buffer for the worst-case image and was the
+ * single biggest RAM consumer in the kernel. The on-disk format is
+ * unchanged: [16B header][fs image][config image], all streamed in
+ * sector-aligned batches. */
+#define STORE_STAGE_BYTES (64u * 1024)
+#define STORE_CFG_BUF     (16u * 1024)
 
-static uint8_t store_buf[STORE_BUF_BYTES];
+static uint8_t store_stage[STORE_STAGE_BYTES];
+static uint8_t store_cfgbuf[STORE_CFG_BUF];
 static int store_enabled = 0;
 static uint32_t store_sectors = 0;       /* sectors actually used by current image */
 static uint32_t store_capacity_sectors = 0; /* maximum reserved region */
@@ -117,59 +121,155 @@ static void le32_put(uint8_t* p, uint32_t v) {
     p[3] = (uint8_t)((v >> 24) & 0xFF);
 }
 
-static void store_write_header(uint32_t payload_bytes) {
-    store_buf[0] = 'T'; store_buf[1] = 'J';
-    store_buf[2] = 'S'; store_buf[3] = '1';
+static void store_write_header(uint8_t* b, uint32_t payload_bytes) {
+    b[0] = 'T'; b[1] = 'J'; b[2] = 'S'; b[3] = '1';
     /* bytes 4..7 = payload size after this 16-byte header */
-    le32_put(&store_buf[4], payload_bytes);
-    le32_put(&store_buf[8],  TANJA_BUILD_ID_LO);
-    le32_put(&store_buf[12], TANJA_BUILD_ID_HI);
+    le32_put(&b[4], payload_bytes);
+    le32_put(&b[8],  TANJA_BUILD_ID_LO);
+    le32_put(&b[12], TANJA_BUILD_ID_HI);
 }
 
-static int store_header_valid(void) {
-    return store_buf[0] == 'T' && store_buf[1] == 'J'
-        && store_buf[2] == 'S' && store_buf[3] == '1';
+static int store_header_valid_at(const uint8_t* b) {
+    return b[0] == 'T' && b[1] == 'J' && b[2] == 'S' && b[3] == '1';
 }
 
-static int store_header_matches_build(void) {
-    return le32_at(&store_buf[8])  == (uint32_t)TANJA_BUILD_ID_LO
-        && le32_at(&store_buf[12]) == (uint32_t)TANJA_BUILD_ID_HI;
+static int store_header_matches_build_at(const uint8_t* b) {
+    return le32_at(&b[8])  == (uint32_t)TANJA_BUILD_ID_LO
+        && le32_at(&b[12]) == (uint32_t)TANJA_BUILD_ID_HI;
+}
+
+/* streaming disk reader
+ * Serves sequential bytes of the store image [img_off, img_end) from
+ * disk through the 64 KiB staging window (1-128 sector aligned reads). */
+typedef struct {
+    uint32_t img_off;   /* next byte to deliver                     */
+    uint32_t img_end;   /* end of the image (exclusive)             */
+    uint32_t win_off;   /* image offset of window start             */
+    uint32_t win_len;   /* valid bytes in the window                */
+} store_rd_ctx;
+
+static int store_rd_fill(void* vctx, uint8_t* dst, uint32_t len)
+{
+    store_rd_ctx* c = (store_rd_ctx*)vctx;
+    while (len > 0) {
+        uint32_t off_in_win;
+        uint32_t take;
+        if (c->img_off + len > c->img_end) return -1;  /* past image */
+        off_in_win = c->img_off - c->win_off;
+        if (c->win_len == 0 || off_in_win >= c->win_len) {
+            /* refill: aligned batch covering the next request */
+            uint32_t sec = c->img_off / 512u;
+            uint32_t max_secs = (c->img_end - sec * 512u + 511u) / 512u;
+            uint32_t n = max_secs < 128u ? max_secs : 128u;
+            if (n < 1u) n = 1u;
+            if (store_backend_read(store_lba + sec, n, store_stage) != 0)
+                return -1;
+            c->win_off = sec * 512u;
+            c->win_len = n * 512u;
+            off_in_win = c->img_off - c->win_off;
+        }
+        take = c->win_len - off_in_win;
+        if (take > len) take = len;
+        {
+            uint32_t k;
+            for (k = 0; k < take; k++) dst[k] = store_stage[off_in_win + k];
+        }
+        dst += take; len -= take; c->img_off += take;
+    }
+    return 0;
+}
+
+/* streaming disk writer
+ * Stages sequential image bytes in 64 KiB (128-sector) aligned
+ * batches written straight to disk. */
+typedef struct {
+    uint32_t img_off;   /* next image byte to arrive               */
+    uint32_t staged;     /* bytes currently in store_stage          */
+    uint32_t start_off;  /* image offset of the staged batch        */
+    int      failed;      /* any batch write failed                   */
+} store_wr_ctx;
+
+static int store_wr_flush(store_wr_ctx* c)
+{
+    if (c->staged == 0) return 0;
+    {
+        uint32_t secs = (c->staged + 511u) / 512u;
+        uint32_t pad = secs * 512u - c->staged;
+        while (pad--) store_stage[c->staged + pad] = 0;
+        if (store_backend_write(store_lba + c->start_off / 512u, secs,
+                                store_stage) != 0) {
+            c->failed = 1;
+            return -1;
+        }
+    }
+    c->staged = 0;
+    return 0;
+}
+
+static void store_wr_sink(void* vctx, const uint8_t* data, uint32_t len)
+{
+    store_wr_ctx* c = (store_wr_ctx*)vctx;
+    while (len > 0) {
+        uint32_t take;
+        if (c->staged == 0) c->start_off = c->img_off;
+        take = STORE_STAGE_BYTES - c->staged;
+        if (take > len) take = len;
+        {
+            uint32_t k;
+            for (k = 0; k < take; k++) store_stage[c->staged + k] = data[k];
+        }
+        c->staged += take; c->img_off += take;
+        data += take; len -= take;
+        if (c->staged == STORE_STAGE_BYTES)
+            store_wr_flush(c);  /* failure recorded in c->failed */
+    }
 }
 
 void store_autosave(void) {
     if (!store_enabled) return;
 
-    /*
-     * Serialize only the live filesystem contents.  This is the main
-     * performance fix: mkdir/rm used to rewrite the entire 31 MB maximum
-     * filesystem image every time.  v4 writes only metadata + active file
-     * bytes, then only the sectors containing that compact image.
+    /* Serialize only the live filesystem contents. This is the main
+ * performance fix: mkdir/rm used to rewrite the entire 31 MB maximum
+ * filesystem image every time. v4 writes only metadata + active file
+ * bytes, then only the sectors containing that compact image.
      */
     uint32_t fs_bytes = fs_serialized_size();
     uint32_t payload_bytes = fs_bytes + store_cfg_need;
     uint32_t total_bytes = STORE_HEADER_BYTES + payload_bytes;
     uint32_t sectors = bytes_to_sectors(total_bytes);
+    store_wr_ctx wr;
+    uint8_t hdr[STORE_HEADER_BYTES];
 
     if (fs_bytes > store_fs_need ||
         payload_bytes > (store_capacity_sectors * 512u) - STORE_HEADER_BYTES ||
-        sectors > store_capacity_sectors ||
-        sectors > STORE_BUF_SECTORS) {
+        sectors > store_capacity_sectors) {
         return;
     }
 
-    if (fs_serialize(store_buf + STORE_HEADER_BYTES, fs_bytes) < 0)
+    store_write_header(hdr, payload_bytes);
+
+    wr.img_off = 0; wr.staged = 0; wr.start_off = 0;
+    wr.failed = 0;
+    store_wr_sink(&wr, hdr, STORE_HEADER_BYTES);
+    fs_serialize_sink(&wr, store_wr_sink);
+    if (config_serialize(store_cfgbuf, sizeof store_cfgbuf) != 0)
         return;
-    if (config_serialize(store_buf + STORE_HEADER_BYTES + fs_bytes,
-                         store_cfg_need) != 0)
+    store_wr_sink(&wr, store_cfgbuf, store_cfg_need);
+    if (store_wr_flush(&wr) != 0 || wr.failed)
         return;
 
-    store_write_header(payload_bytes);
     store_sectors = sectors;
 
-    if (store_backend_write(store_lba, store_sectors, store_buf) != 0) {
-        /* A failed persistence write must never make the kernel continue as
-           if the on-disk image were valid. */
-        store_enabled = 0;
+    /* A failed persistence write must never make the kernel continue
+       as if the on-disk image were valid. */
+    store_enabled = 0;   /* set back to 1 only after the write lands */
+    {
+        /* verify the header sector by reading it back */
+        uint8_t chk[512];
+        if (store_backend_read(store_lba, 1, chk) == 0 &&
+            store_header_valid_at(chk) &&
+            le32_at(&chk[4]) == payload_bytes)
+            store_enabled = 1;
     }
 }
 
@@ -257,17 +357,6 @@ void store_init(uint32_t mb_magic, uint32_t mb_addr) {
     store_capacity_sectors = bytes_to_sectors(capacity_bytes);
     store_sectors = 1; /* first read is just the header */
 
-    if (capacity_bytes > sizeof(store_buf) ||
-        store_capacity_sectors > STORE_BUF_SECTORS) {
-        if (boot_is_livecd(mb_magic, mb_addr)) {
-            boot_log("Storefile: This LiveCD session will run from RAM");
-            fs_init();
-            fs_seed_home();
-            return;
-        }
-        kernel_panic_storage("The Storefile image is too large for the kernel storage buffer.");
-    }
-
     ata_init();
 
     ata_drive_info_t info;
@@ -306,10 +395,9 @@ void store_init(uint32_t mb_magic, uint32_t mb_addr) {
     store_disk_sectors = disk_sectors;
     if (backend == BACKEND_ATA) log_slot(store_channel, store_drive);
 
-    /*
-     * Reserve enough room for the worst-case filesystem, but do NOT read
-     * that whole region at boot.  The first sector contains the exact
-     * compact image length; only that many sectors are read below.
+    /* Reserve enough room for the worst-case filesystem, but do NOT read
+ * that whole region at boot. The first sector contains the exact
+ * compact image length; only that many sectors are read below.
      */
     if (disk_sectors > (uint64_t)(store_capacity_sectors +
                                   STORE_RESERVED_TAIL_SECTORS + 32)) {
@@ -345,27 +433,30 @@ void store_init(uint32_t mb_magic, uint32_t mb_addr) {
         kernel_panic_storage("Disk too small, minimum recommended disk size is 47 MiB");
     }
 
-    /* Read only the tiny header first.  This removes the old ~31 MB boot
-       read when the real filesystem is only a few KB/MB. */
-    if (store_backend_read(store_lba, 1, store_buf) == 0 &&
-        store_header_valid() &&
-        store_header_matches_build()) {
+    /* Read only the tiny header first: one sector. If it validates,
+       the payload streams straight from disk through the staging
+       window - no whole-image RAM buffer. */
+    if (store_backend_read(store_lba, 1, store_stage) == 0 &&
+        store_header_valid_at(store_stage) &&
+        store_header_matches_build_at(store_stage)) {
 
-        uint32_t payload_bytes = le32_at(&store_buf[4]);
+        uint32_t payload_bytes = le32_at(&store_stage[4]);
         if (payload_bytes >= 8 + store_cfg_need &&
             payload_bytes <= store_fs_need + store_cfg_need) {
             uint32_t total_bytes = STORE_HEADER_BYTES + payload_bytes;
             store_sectors = bytes_to_sectors(total_bytes);
 
-            if (store_sectors <= store_capacity_sectors &&
-                store_sectors <= STORE_BUF_SECTORS &&
-                store_backend_read(store_lba, store_sectors, store_buf) == 0) {
-
+            if (store_sectors <= store_capacity_sectors) {
+                store_rd_ctx rd;
                 uint32_t fs_bytes = payload_bytes - store_cfg_need;
-                if (fs_deserialize(store_buf + STORE_HEADER_BYTES,
-                                   fs_bytes) == 0 &&
-                    config_deserialize(store_buf + STORE_HEADER_BYTES + fs_bytes,
-                                       store_cfg_need) == 0) {
+                rd.img_off  = STORE_HEADER_BYTES;
+                rd.img_end  = total_bytes;
+                rd.win_off  = 0;
+                rd.win_len  = 0;
+
+                if (fs_deserialize_fill(&rd, store_rd_fill) == 0 &&
+                    store_rd_fill(&rd, store_cfgbuf, store_cfg_need) == 0 &&
+                    config_deserialize(store_cfgbuf, store_cfg_need) == 0) {
                     store_enabled = 1;
                     boot_log("Storefile: loaded saved state from disk");
                     return;
@@ -373,8 +464,8 @@ void store_init(uint32_t mb_magic, uint32_t mb_addr) {
             }
         }
         boot_log("Storefile: saved image failed validation, starting fresh");
-    } else if (store_backend_read(store_lba, 1, store_buf) == 0) {
-        if (!store_header_valid())
+    } else if (store_backend_read(store_lba, 1, store_stage) == 0) {
+        if (!store_header_valid_at(store_stage))
             boot_log("Storefile: on-disk image starting from a fresh condition");
         else
             boot_log("Storefile: saved state is from a new/custom version");

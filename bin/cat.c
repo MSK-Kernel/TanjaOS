@@ -17,12 +17,12 @@ static int next_arg(char **pp, char *out, int max) {
 }
 
 /* Print one file: streamed in 4 KiB chunks so any file size the
- * filesystem stores works.  Returns 0 on success, -1 if missing. */
+ * filesystem stores works. Returns 0 on success, -1 if missing. */
 static int cat_one(const char* args) {
 
     if (!fs_file_exists(args)) {
         /* unreadable files exist but cannot be read (GNU cat reports
-         * the same message for both) */
+ * the same message for both) */
         int mode = fs_get_mode(args);
         if (mode < 0) {
             print("cat: ");
@@ -36,10 +36,9 @@ static int cat_one(const char* args) {
         return -1;
     }
 
-    /*
-     * Stream the file in chunks instead of copying the whole file into a
-     * fixed 4096-byte buffer.  This means cat works for every file size
-     * the filesystem can store.
+    /* Stream the file in chunks instead of copying the whole file into a
+ * fixed 4096-byte buffer. This means cat works for every file size
+ * the filesystem can store.
      */
     static char buffer[4096];
     uint32_t offset = 0;
@@ -54,7 +53,7 @@ static int cat_one(const char* args) {
             break;
 
         /* Bulk output: print_n() updates the VGA hardware cursor once per
-         * 4 KiB chunk instead of once per character. */
+ * 4 KiB chunk instead of once per character. */
         print_n(buffer, got);
 
         if (got == 0)
@@ -81,7 +80,7 @@ void main(char* args) {
     }
 
     /* Multiple files, one after another, like real cat - which is what
-     * makes `cat *.c` (wildcard-expanded by the shell) useful. */
+ * makes `cat *.c` (wildcard-expanded by the shell) useful. */
     char* p = args;
     char fn[256];
     int nfiles = 0;

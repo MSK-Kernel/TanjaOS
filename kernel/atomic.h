@@ -2,7 +2,7 @@
  *
  * tcc lowers C11 atomics (_Atomic types, __atomic builtins used by
  * /include/stdatomic.h) to calls to __atomic_<op>_<size> helpers, the
- * same set libtcc1/libatomic provide on a hosted system.  TanjaOS has
+ * same set libtcc1/libatomic provide on a hosted system. TanjaOS has
  * no linker, so the kernel itself implements and exports them.
  *
  * Kept as an X-macro list - each entry is X(name, ret, params) - so
@@ -91,7 +91,7 @@
     X(__atomic_nand_fetch_8, uint64_t, (volatile void*, uint64_t, int))
 
 /* The non-suffixed functions stdatomic.h itself declares (fences,
- * atomic_flag, is_lock_free).  _Bool returns are declared int: only
+ * atomic_flag, is_lock_free). _Bool returns are declared int: only
  * the address is taken, and the helpers return 0/1 in eax so al is
  * valid either way. */
 #define TANJA_ATOMIC_MISC(X) \

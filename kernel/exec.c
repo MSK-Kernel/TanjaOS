@@ -8,27 +8,34 @@ extern int elf_is_elf32(const uint8_t* image, uint32_t size);
 extern int linux_run(const uint8_t* image, uint32_t size,
                      const char* path, const char* args);
 
-#define EXEC_BUFFER (MAX_FILE_SIZE + 1)
+/* Depth 0 must hold the largest Linux ELF binaries (>= 4 MiB per the
+ * project requirement). Nested execs (a script running a script, an
+ * applet spawning another applet) are always small, so depths 1..3
+ * get compact 1 MiB buffers - this keeps 4 execution levels without
+ * reserving 4 x 4 MiB = 16 MiB of BSS. */
+#define EXEC_BUFFER_TOP   (4u * 1024u * 1024 + 1)
+#define EXEC_BUFFER_NEST  (1u * 1024u * 1024 + 1)
 
 /* exec_file re-enters itself: a script line can run a /bin applet,
  * which is itself loaded by exec_file, and scripts can call other
- * scripts.  One shared buffer would make the nested call wipe the
+ * scripts. One shared buffer would make the nested call wipe the
  * script text the outer call is still iterating, so each nesting
  * level gets its own buffer (kernel BSS is plentiful; store.c alone
  * reserves 20MB). */
 #define EXEC_MAX_DEPTH 4
-static uint8_t exec_buffers[EXEC_MAX_DEPTH][EXEC_BUFFER];
+static uint8_t exec_buffers[EXEC_MAX_DEPTH][EXEC_BUFFER_NEST];
+static uint8_t exec_buffer_top[EXEC_BUFFER_TOP];
 static int exec_depth = 0;
 
 static int exec_file_at(const char* path, const char* args,
-                        uint8_t* exec_buffer)
+                        uint8_t* exec_buffer, uint32_t exec_cap)
 {
     if (!path || !path[0]) {
         print("exec: missing file\n");
         return -1;
     }
 
-    uint32_t size = EXEC_BUFFER;
+    uint32_t size = exec_cap;
 
     if (fs_read_file(path, (char*)exec_buffer, &size) != 0) {
         print("exec: file not found: ");
@@ -38,15 +45,15 @@ static int exec_file_at(const char* path, const char* args,
     }
 
     /* Real ELF32: relocatable objects run through the TanjaOS program
-     * driver; EXEC images are real Linux binaries - run them through
-     * the Linux compat layer (kernel/linux.c). */
+ * driver; EXEC images are real Linux binaries - run them through
+ * the Linux compat layer (kernel/linux.c). */
     if (elf_is_elf32(exec_buffer, size)) {
         uint16_t e_type = *(uint16_t*)(exec_buffer + 16);
         uint16_t e_machine = *(uint16_t*)(exec_buffer + 18);
         if (e_machine == 3 /* EM_386 */ &&
             (e_type == 2 /* ET_EXEC */ ||
              (e_type == 3 /* ET_DYN: runnable if it is an executable,
-                           * i.e. has an entry point or an interpreter */))) {
+ * i.e. has an entry point or an interpreter */))) {
             uint32_t phoff = *(uint32_t*)(exec_buffer + 28);
             uint16_t phentsize = *(uint16_t*)(exec_buffer + 42);
             uint16_t phnum = *(uint16_t*)(exec_buffer + 44);
@@ -65,7 +72,7 @@ static int exec_file_at(const char* path, const char* args,
     }
 
     /* Text files are shell scripts. Execute one command per line, just
-     * as the old exec command did. (args is ignored for scripts.) */
+ * as the old exec command did. (args is ignored for scripts.) */
     exec_buffer[size] = 0;
 
     char line[256];
@@ -101,8 +108,11 @@ int exec_file(const char* path, const char* args)
         print("exec: nesting too deep\n");
         return -1;
     }
-    uint8_t* buf = exec_buffers[exec_depth++];
-    r = exec_file_at(path, args, buf);
+    uint8_t* buf; uint32_t cap;
+    if (exec_depth == 0) { buf = exec_buffer_top;   cap = sizeof exec_buffer_top; }
+    else                 { buf = exec_buffers[exec_depth - 1]; cap = sizeof exec_buffers[0]; }
+    exec_depth++;
+    r = exec_file_at(path, args, buf, cap);
     exec_depth--;
     return r;
 }

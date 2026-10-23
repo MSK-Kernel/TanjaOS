@@ -19,8 +19,11 @@ static void echo_copy(char *dst, const char *src, uint32_t n) {
 
 void main(char* args) {
 
-    static char data[MAX_FILE_SIZE + 1];
-    static char old[MAX_FILE_SIZE + 1];
+    /* Text buffers sized for the longest realistic shell line, not
+ * the 4 MiB file cap: two MAX_FILE_SIZE statics cost 8 MiB of
+ * per-applet BSS and blew the small-RAM applet window. */
+    static char data[512u * 1024u + 1];
+    static char old[512u * 1024u + 1];
     int no_newline = 0;
     int interpret = 0;
 
@@ -45,10 +48,9 @@ void main(char* args) {
 
     (void)interpret;
 
-    /*
-     * Find redirection only when it is outside quotes.  The old parser
-     * treated every '>' inside the message as redirection and also wrote
-     * the file twice.
+    /* Find redirection only when it is outside quotes. The old parser
+ * treated every '>' inside the message as redirection and also wrote
+ * the file twice.
      */
     char *redirect = 0;
     int quote = 0;
@@ -109,10 +111,9 @@ void main(char* args) {
         len -= 2;
     }
 
-    /*
-     * Echo should preserve the complete message.  The shell line buffer
-     * and MAX_FILE_SIZE are the only practical limits; there is no small
-     * 512/4096-byte echo buffer anymore.
+    /* Echo should preserve the complete message. The shell line buffer
+ * and MAX_FILE_SIZE are the only practical limits; there is no small
+ * 512/4096-byte echo buffer anymore.
      */
     if (!filename) {
         for (p = args; *p; p++) console_putc(*p);
@@ -145,7 +146,7 @@ void main(char* args) {
         }
     }
 
-    if (old_size + (uint32_t)len > MAX_FILE_SIZE - 1) {
+    if (old_size + (uint32_t)len > (512u * 1024u) - 1) {
         print("echo: append would make the file too large\n");
         return;
     }

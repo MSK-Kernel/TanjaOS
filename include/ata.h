@@ -48,7 +48,7 @@ typedef struct {
 void ata_init(void);
 
 // channel: 0 = primary (0x1F0), 1 = secondary (0x170)
-// drive:   0 = master, 1 = slave
+// drive: 0 = master, 1 = slave
 int ata_detect_drive(int channel, int drive, ata_drive_info_t *info);
 void ata_print_drive_info(ata_drive_info_t *info);
 

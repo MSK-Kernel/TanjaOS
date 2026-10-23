@@ -105,14 +105,23 @@ arch/x86/linux_asm.o: arch/x86/linux_asm.asm
 # The Doom program (ports/doom) and its IWAD are linked into the kernel image
 # as binary blobs (a program this size cannot live in the 320 KiB-per-file
 # filesystem); kernel/doom.c runs them via the `doom` shell command.
-DOOM_OBJ  = ports/doom/build/doom_elf.o ports/doom/build/doom_wad.o
-DOOM_DEPS = $(wildcard ports/doom/*.c ports/doom/Makefile ports/doom/engine/* ports/doom/include/* ports/doom/include/sys/* ports/doom/wad/*)
+# The IWAD embed is OPTIONAL: `make DOOM_NOWAD=1` (or removing the
+# wad/ sources) links the kernel WITHOUT the ~25 MiB WAD blob.  The
+# doom command then reports the WAD as not embedded at runtime.  This
+# is the switch for small-RAM machines: with the WAD linked in the
+# kernel image alone needs >= ~90 MiB of RAM; without it, 64 MiB
+# boots and runs dynamic ELF32 binaries fine.
+DOOM_WAD_PRESENT := $(filter-out wad/%,$(wildcard ports/doom/wad/*))
+DOOM_OBJ  = ports/doom/build/doom_elf.o \
+	$(if $(DOOM_NOWAD),,$(if $(DOOM_WAD_PRESENT),ports/doom/build/doom_wad.o))
+DOOM_DEPS = $(wildcard ports/doom/*.c ports/doom/Makefile ports/doom/engine/* ports/doom/include/* ports/doom/include/sys/*)
 
 $(DOOM_OBJ): $(DOOM_DEPS)
 	@echo "[DOOM] building ports/doom"
 	@$(MAKE) --no-print-directory -C ports/doom CC="$(CC)" LD="$(LD)" ARCH_FLAGS="$(filter -m32,$(CFLAGS))" \
 		$(if $(DOOM_WAD_SRC),DOOM_WAD_SRC="$(DOOM_WAD_SRC)") \
-		$(if $(DOOM_IWAD_NAME),DOOM_IWAD_NAME="$(DOOM_IWAD_NAME)")
+		$(if $(DOOM_IWAD_NAME),DOOM_IWAD_NAME="$(DOOM_IWAD_NAME)") \
+		build/doom_elf.o $(if $(DOOM_NOWAD),,$(if $(DOOM_WAD_PRESENT),build/doom_wad.o))
 
 arch/x86/boot/tanja-base: arch/x86/boot/boot.o arch/x86/idt_asm.o $(KERNEL_OBJ) fs/fs.o $(HOME_OBJ) $(DOOM_OBJ) | arch/x86/boot
 	@echo "[LD] Linking..."

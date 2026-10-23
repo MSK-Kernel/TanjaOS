@@ -4,11 +4,10 @@
 #include <stdint.h>
 
 /* SHARED UTF-8 SUPPORT
-
  * TanjaOS runs on the VGA text console, which is byte-oriented
- * (CP437 glyphs).  Real text files, however, contain UTF-8, so
+ * (CP437 glyphs). Real text files, however, contain UTF-8, so
  * punctuation like “ ” — ʼ used to render as two or three
- * jumbled CP437 characters (one per byte).  These helpers let
+ * jumbled CP437 characters (one per byte). These helpers let
  * the kernel console and the editor decode UTF-8 sequences and
  * draw a single sensible ASCII cell instead.
  */
@@ -18,7 +17,7 @@
 /* Decode one UTF-8 sequence starting at s, where at most `len`
  * bytes are available (the buffer may continue past `len`).
  * Stores the codepoint in *cp, or UTF8_INVALID if the sequence
- * is malformed.  Returns the number of bytes consumed (>= 1). */
+ * is malformed. Returns the number of bytes consumed (>= 1). */
 static int utf8_decode(const char *s, int len, uint32_t *cp)
 {
     unsigned char b0 = (unsigned char)s[0];
@@ -60,7 +59,7 @@ static int utf8_decode(const char *s, int len, uint32_t *cp)
 }
 
 /* ASCII replacement for Unicode punctuation that commonly appears
- * in text files.  Returns 0 when there is no mapping. */
+ * in text files. Returns 0 when there is no mapping. */
 static int utf8_map_ascii(uint32_t cp)
 {
     switch (cp) {
@@ -84,7 +83,7 @@ static int utf8_map_ascii(uint32_t cp)
 
 /* Console cell for a decoded codepoint: ASCII passes through,
  * mapped punctuation is transliterated, everything else renders
- * as '?'.  Returns 0 for UTF8_INVALID (caller draws raw bytes). */
+ * as '?'. Returns 0 for UTF8_INVALID (caller draws raw bytes). */
 static char utf8_to_cell(uint32_t cp)
 {
     int m;
@@ -103,10 +102,10 @@ typedef struct {
 
 /* Feed one byte to the state machine.
  * Returns: 0 -> byte consumed, sequence still in progress
- *          1 -> *cp holds a complete codepoint
- *          2 -> byte is not valid UTF-8 on its own (state reset);
- *               the caller should draw this raw byte like the
- *               old byte-oriented behavior did. */
+ * 1 -> *cp holds a complete codepoint
+ * 2 -> byte is not valid UTF-8 on its own (state reset);
+ * the caller should draw this raw byte like the
+ * old byte-oriented behavior did. */
 static int utf8_feed(utf8_feed_t *st, unsigned char c, uint32_t *cp)
 {
     *cp = UTF8_INVALID;
@@ -122,7 +121,7 @@ static int utf8_feed(utf8_feed_t *st, unsigned char c, uint32_t *cp)
             return 0;
         }
         /* Broken sequence: drop what was buffered and reprocess
-         * this byte from a clean state. */
+ * this byte from a clean state. */
         st->len = 0;
         st->need = 0;
     }

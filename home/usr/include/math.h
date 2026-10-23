@@ -6,7 +6,7 @@
 #define _MATH_H
 /* Hex-float literals that exceed the format's max exponent fold
  * to +inf at compile time (verified: tcc folds these warning-free,
- * even in static initializers).  2^1024 > double max 2^1023-eps. */
+ * even in static initializers). 2^1024 > double max 2^1023-eps. */
 #define HUGE_VAL  0x1p+1024
 #define HUGE_VALF 0x1p+128f
 #define HUGE_VALL 0x1p+16384L
@@ -16,7 +16,7 @@
 #define MATH_ERRNO 1
 #define MATH_ERREXCEPT 2
 
-/* --- classification macros (portable C; tcc has no fp builtins) --- */
+/* classification macros (portable C; tcc has no fp builtins) */
 #define isnan(x)          ((x) != (x))
 #define signbit(x)        (copysign(1.0, (x)) < 0.0)
 #define isgreater(x,y)      ((x) > (y))
@@ -47,7 +47,7 @@
 #define FP_SUBNORMAL 3
 #define FP_NORMAL 4
 
-/* --- double tier --- */
+/* double tier */
 double sin(double);    double cos(double);    double tan(double);
 double asin(double);    double acos(double);   double atan(double);
 double atan2(double, double);
@@ -82,7 +82,7 @@ double fma(double, double, double);
 double erf(double);     double erfc(double);
 double tgamma(double);  double lgamma(double);
 
-/* --- float tier --- */
+/* float tier */
 float sinf(float);      float cosf(float);      float tanf(float);
 float asinf(float);     float acosf(float);     float atanf(float);
 float atan2f(float, float);
@@ -117,7 +117,7 @@ float fmaf(float, float, float);
 float erff(float);      float erfcf(float);
 float tgammaf(float);   float lgammaf(float);
 
-/* --- long double tier (mapped onto double) --- */
+/* long double tier (mapped onto double) */
 long double sinl(long double);      long double cosl(long double);
 long double tanl(long double);
 long double asinl(long double);     long double acosl(long double);

@@ -77,7 +77,7 @@ int open(const char *path, int flags, ...) {
             uint32_t cap = sz;
             if (fs_read_file(path, fd->buffer, &cap) != 0) {
                 /* permission refused (FS sets fs_errno = 13): fail the
-                 * open instead of silently compiling an empty file */
+ * open instead of silently compiling an empty file */
                 fd->used = 0;
                 errno = EACCES;
                 return -1;
@@ -100,7 +100,7 @@ int close(int fd) {
     if (f->dirty) {
         if (fs_write_file(f->path, f->buffer, f->size) != 0) {
             /* fs_write_file refuses to write (e.g. output into a
-             * root-owned directory); report it like a compiler */
+ * root-owned directory); report it like a compiler */
             errno = EACCES;
             print("tcc: error: cannot write output file '");
             print(f->path);
@@ -775,7 +775,7 @@ unsigned long long __fixunsdfdi(double a) { return (unsigned long long)a; }
 long long __fixsfdi(float a) { return (long long)a; }
 unsigned long long __fixunssfdi(float a) { return (unsigned long long)a; }
 
-/* --- time support (__DATE__/__TIME__) --- */
+/* time support (__DATE__/__TIME__) */
 static struct tm g_tm;
 static time_t g_time_base = 0; /* seconds at boot (arbitrary epoch) */
 
@@ -812,7 +812,7 @@ long double ldexpl(long double x, int exp) {
 double ldexp(double x, int exp) { return (double)ldexpl((long double)x, exp); }
 double ldexpf(float x, int exp) { return (float)ldexpl((long double)x, exp); }
 
-/* --- signal / process / mman stubs (never called in compile mode) --- */
+/* signal / process / mman stubs (never called in compile mode) */
 static struct sigaction g_oldact;
 int sigaction(int signum, const struct sigaction *act, struct sigaction *old) {
     (void)signum; if (old) *old = g_oldact; if (act) g_oldact = *act;
@@ -862,7 +862,7 @@ void *dlsym(void *handle, const char *symbol) { (void)handle; (void)symbol; retu
 int dlclose(void *handle) { (void)handle; return 0; }
 char *dlerror(void) { return (char*)"no dynamic linking on TanjaOS"; }
 
-/* --- remaining libc bits tcc needs --- */
+/* remaining libc bits tcc needs */
 #define TANJA_PATH_MAX 1024
 
 void abort(void) { exit(134); }
@@ -920,7 +920,7 @@ char *getcwd(char *buf, size_t size) {
 
 char *realpath(const char *path, char *resolved_path) {
     /* TanjaOS has no symlinks: the resolved path IS the input path.
-     * Like glibc, fail if the file does not exist. */
+ * Like glibc, fail if the file does not exist. */
     if (!path || !fs_file_exists(path)) { errno = ENOENT; return NULL; }
     if (!resolved_path) {
         resolved_path = malloc(TANJA_PATH_MAX);
@@ -1005,11 +1005,11 @@ unsigned long long __udivmoddi4(unsigned long long a, unsigned long long b,
     return q;
 }
 
-/* ================= TanjaOS program heap =================
+/* TanjaOS program heap
  * tcc (and any libc user inside the tcc object) allocates from this
- * fixed arena carved out of the object's BSS.  First-fit with
+ * fixed arena carved out of the object's BSS. First-fit with
  * address-ordered coalescing; blocks are split and merged exactly the
- * way a textbook allocator does.  The kernel zero-fills and
+ * way a textbook allocator does. The kernel zero-fills and
  * save_brk-restores this region between execs, so a leak never
  * survives past one tcc invocation. */
 #define TANJA_HEAP_SIZE (6u * 1024u * 1024u)
@@ -1079,7 +1079,7 @@ void free(void *p)
     b->is_free = 1;
 
     /* coalesce: the list is address-ordered, so one pass merges
-     * every run of free neighbours */
+ * every run of free neighbours */
     prev = (tanja_block_t *)0;
     for (b = tanja_blocks; b; ) {
         if (b->is_free && b->next && b->next->is_free &&

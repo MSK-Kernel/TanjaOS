@@ -18,7 +18,7 @@ void _exit(int code)
     exit(code);
 }
 
-/* Kernel export-table introspection (kernel/elf.c) */
+/* kernel export-table introspection (kernel/elf.c) */
 extern int tanja_export_count(void);
 extern const char* tanja_export_name(int i);
 
@@ -28,11 +28,10 @@ static int streq(const char *a, const char *b)
     return *a == *b;
 }
 
-/* ============================================================
- * post-compile check: every external symbol a program references
- * must be a kernel export.  Reporting it HERE turns "elf: undefined
+/* post-compile check: every external symbol a program references
+ * must be a kernel export. Reporting it HERE turns "elf: undefined
  * symbol" run-time crashes into compile-time errors.
- * ============================================================ */
+ */
 
 /* minimal ELF32 structures (no elf.h in the freestanding build) */
 typedef struct {
@@ -66,7 +65,7 @@ static int sym_is_exported(const char *name)
     return 0;
 }
 
-/* check one produced object file.  Returns 1 if all external
+/* check one produced object file. Returns 1 if all external
  * symbols resolve against the kernel export table. */
 static int check_undef(const char *out_path)
 {
@@ -246,11 +245,11 @@ void main(char *args)
     const char *o_val = (o_idx > 0 && o_idx < argc) ? argv[o_idx] : 0;
     if (o_val && !o_val[0]) o_val = 0;
 
-    /* insert -Werror (first), then -c if link mode.  -Werror makes
-     * every tcc warning fail the compile: on TanjaOS a warning is
-     * almost always a run-time bomb (pointer/int mismatch, bad
-     * return, ...).  A user who wants lenient behavior can pass
-     * -Wno-error afterwards (later flags win). */
+    /* insert -Werror (first), then -c if link mode. -Werror makes
+ * every tcc warning fail the compile: on TanjaOS a warning is
+ * almost always a run-time bomb (pointer/int mismatch, bad
+ * return, ...). A user who wants lenient behavior can pass
+ * -Wno-error afterwards (later flags win). */
     {
         int shift = 1 + (link_mode ? 1 : 0);
         for (i = argc; i >= 1; i--)
@@ -279,8 +278,8 @@ void main(char *args)
         tcc_main_real(argc, argv);
 
     /* compile succeeded: verify the object(s) against the kernel
-     * export table so a missing symbol is reported HERE, not when
-     * the program fails to load at run time. */
+ * export table so a missing symbol is reported HERE, not when
+ * the program fails to load at run time. */
     if (g_exit_code == 0 && !mode_nobin && (o_val || ninputs > 0)) {
         if (o_val) {
             check_undef(o_val);

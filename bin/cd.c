@@ -6,7 +6,7 @@
 void main(char* args) {
 
     /* the home directory is per-user (root: /root, others:
-     * /home/<name>); the kernel exports the current login's home */
+ * /home/<name>); the kernel exports the current login's home */
     char home[256];
     tanja_get_home(home, sizeof(home));
 

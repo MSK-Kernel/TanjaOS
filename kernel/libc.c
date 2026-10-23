@@ -1,6 +1,8 @@
-/* This file: formatted output (printf family), formatted input
+/* libc.c - the TanjaOS kernel C library (part 1).
+ *
+ * This file: formatted output (printf family), formatted input
  * (scanf family), memory management (malloc family) and the
- * exit()/atexit() machinery.  FILE streams, POSIX fds, time, math
+ * exit()/atexit() machinery. FILE streams, POSIX fds, time, math
  * and the string extras live in libc2.c; the export list for both
  * is libc.h.
  *
@@ -29,8 +31,8 @@ extern int isdigit(int c);
 extern int toupper(int c);
 extern uint32_t get_uptime_ms(void);
 
-// exit() support: elf_run hooks a __builtin_setjmp into these.
-
+/* exit() support: elf_run hooks a __builtin_setjmp into these.
+ */
 int tanja_exit_jmp[5];
 int tanja_exit_active = 0;
 int tanja_exit_code = 0;
@@ -73,8 +75,8 @@ void abort(void) {
     exit(134);
 }
 
-// malloc: first-fit free list over a static 4 MB arena
-
+/* malloc: first-fit free list over a static 4 MB arena
+ */
 #define MALLOC_ARENA_SIZE (4u * 1024u * 1024u)
 #define MALLOC_ALIGN      16u
 #define MALLOC_MAGIC      0xB10CA0Fu
@@ -250,7 +252,7 @@ static void fmt_integer(fmtsink_t* s, unsigned long long v, int negative,
     if (sp->minus) pad_out(s, sp->width, total, 0);
 }
 
-/* --- floating point helpers --- */
+/* floating point helpers */
 
 static void fmt_double(fmtsink_t* s, double v, int prec, char conv,
                        const spec_t* sp, char forced_sign);
@@ -646,7 +648,7 @@ static int fmt_core(fmtsink_t* s, const char* fmt, va_list ap) {
     return s->count;
 }
 
-/* --- sinks --- */
+/* sinks */
 
 static void console_emit(void* ctx, char c) { (void)ctx; extern void console_putc(char); console_putc(c); }
 
@@ -730,7 +732,8 @@ int fprintf(struct tanja_fd* f, const char* fmt, ...) {
     return r;
 }
 
-// scanf family
+/* scanf family
+ */
 
 struct scanctx {
     int (*next)(void*);     /* returns next char, or -1 at end */

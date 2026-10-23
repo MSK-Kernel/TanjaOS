@@ -4,6 +4,7 @@
 #include "../include/fs.h"
 #include "../include/store.h"
 #include "../include/idt.h"
+#include "../include/multiboot.h"
 #include "../include/utf8.h"
 
 // VGA CONSTANTS
@@ -34,9 +35,9 @@ static inline void fpu_init(void) {
     __asm__ volatile("mov %0, %%cr0" :: "r"(cr0));
     __asm__ volatile("fninit");
     /* SSE/SSE2 for Linux binaries (glibc's IFUNC-optimized string and
-     * math functions use them): without CR4.OSFXSR every SSE insn
-     * raises #UD.  OSXMMEXCPT lets #XM (SIMD FP exceptions) reach the
-     * handler instead of aborting. */
+ * math functions use them): without CR4.OSFXSR every SSE insn
+ * raises #UD. OSXMMEXCPT lets #XM (SIMD FP exceptions) reach the
+ * handler instead of aborting. */
     {
         uint32_t cr4;
         __asm__ volatile("mov %%cr4, %0" : "=r"(cr4));
@@ -93,7 +94,7 @@ typedef struct {
 #define MAX_USERS 8
 
 /* Supplementary groups (like /etc/group): named groups with username
- * members.  A "wheel" group with members gates sudo, like real Unix:
+ * members. A "wheel" group with members gates sudo, like real Unix:
  * while wheel is absent or empty every user may sudo (the historical
  * TanjaOS behavior); once wheel has members, only they may. */
 #define MAX_GROUPS 8
@@ -114,9 +115,9 @@ typedef struct {
     int is_setup;
 } user_config_t;
 
-/* The account table.  users[0] is ALWAYS root (uid 0, home /root):
+/* The account table. users[0] is ALWAYS root (uid 0, home /root):
  * root exists from the moment the system boots - only its password
- * is set during setup.  users[1..] are the created accounts. */
+ * is set during setup. users[1..] are the created accounts. */
 /* Statically initialized so root exists even on a store-less boot
  * (config_deserialize/config_reset rebuild the table too, for
  * persistent and factory-reset boots respectively). */
@@ -130,13 +131,13 @@ int shell_exit_flag = 0;
 
 /* Account management
  * The account table lives in the store blob next to the filesystem
- * so it survives reboots on persistent installs.  Blob format v2:
- *   [0]      2                (format version; anything else = legacy)
- *   [1..64]  hostname (64)
- *   [65]     is_setup
- *   [66..97] root password (32)
- *   [98]     users_count (incl. root)
- *   then per user: username(32) + password(32) + uid(4)
+ * so it survives reboots on persistent installs. Blob format v2:
+ * [0] 2 (format version; anything else = legacy)
+ * [1..64] hostname (64)
+ * [65] is_setup
+ * [66..97] root password (32)
+ * [98] users_count (incl. root)
+ * then per user: username(32) + password(32) + uid(4)
  * A legacy (v1) blob carries the old single-user login; it is
  * migrated on load: that user keeps their password as uid 1000
  * and root's password starts empty, so the next boot asks for
@@ -224,10 +225,10 @@ int config_deserialize(const uint8_t* buf, uint32_t buf_size) {
         if (cnt < 1 || cnt > MAX_USERS) cnt = 1;
         users_count = 1;   /* root was just loaded above */
         /* The serializer writes ALL users as records, root included:
-         * record 0 IS root (whose password was already read above), so
-         * skip over it before loading the regular users.  The old code
-         * started reading at record 0, re-creating root as a phantom
-         * "root" account and dropping every real user. */
+ * record 0 IS root (whose password was already read above), so
+ * skip over it before loading the regular users. The old code
+ * started reading at record 0, re-creating root as a phantom
+ * "root" account and dropping every real user. */
         p += MAX_USERNAME + MAX_PASSWORD + 4;
         for (i = 1; i < cnt; i++) {
             int ui = users_count;
@@ -241,8 +242,8 @@ int config_deserialize(const uint8_t* buf, uint32_t buf_size) {
             if (users[ui].uid <= 0) users[ui].uid = 1000 + i;
             if (users[ui].uid >= next_uid) next_uid = users[ui].uid + 1;
             /* stores written by the buggy loader may carry a phantom
-             * duplicate "root"; real users can never be named root, so
-             * drop those records instead of resurrecting them */
+ * duplicate "root"; real users can never be named root, so
+ * drop those records instead of resurrecting them */
             if (users[ui].username[0] && !streq(users[ui].username, "root"))
                 users_count++;
         }
@@ -371,7 +372,7 @@ int user_del(const char* name) {
     return 0;
 }
 
-/* Group helpers */
+/* group helpers */
 
 static int group_find(const char* name) {
     int i;
@@ -487,8 +488,8 @@ void sync_cursor() {
 
 /* Ctrl+C support: while a program runs, the timer tick sniffs the
  * keyboard (programs that never read input would otherwise be
- * unkillable).  Everything typed is preserved through a small ring
- * so get_key still delivers it.  Declared here, defined with the
+ * unkillable). Everything typed is preserved through a small ring
+ * so get_key still delivers it. Declared here, defined with the
  * keyboard code below. */
 static int ctrlc_poll(void);
 void print(const char* s);
@@ -504,8 +505,8 @@ void timer_handler()
 
     if (tanja_exit_active && !kb_raw_mode && ctrlc_poll()) {
         /* unwinds exactly like exit() / a program fault: back into
-         * elf_run, which restores the program break, then the shell
-         * prompt continues. */
+ * elf_run, which restores the program break, then the shell
+ * prompt continues. */
         print("\n[dbg] timer ctrlc path\n");
         print("\nprogram interrupted (Ctrl+C) - program terminated\n");
         asm volatile ("sti");
@@ -533,7 +534,7 @@ void scroll() {
 
 /* Draw a single already-decoded cell: control codes (newline,
  * backspace, tab) plus one printable character, then scroll if
- * needed.  This is the raw drawing primitive both the byte
+ * needed. This is the raw drawing primitive both the byte
  * interface and the UTF-8 decoder below funnel into. */
 static void putc_draw(char c, uint16_t color) {
     if (c == '\n') {
@@ -567,9 +568,9 @@ static void putc_draw(char c, uint16_t color) {
  *
  * Why: the VGA console only has CP437 glyphs, so printing UTF-8
  * one raw byte at a time showed punctuation like “ ” — as two or
- * three jumbled characters.  Now a full sequence is decoded and
+ * three jumbled characters. Now a full sequence is decoded and
  * drawn as a single ASCII cell: quotes become ", dashes become -,
- * ʼ becomes ', and anything unmappable becomes '?'.  Bytes that
+ * ʼ becomes ', and anything unmappable becomes '?'. Bytes that
  * are not valid UTF-8 (e.g. binary junk) still draw raw, exactly
  * like the old byte-oriented behavior. */
 static utf8_feed_t console_utf8 = {{0, 0, 0, 0}, 0, 0};
@@ -612,15 +613,15 @@ void print(const char* s) {
     while (*s) console_putc(*s++);
 }
 
-/* Fast bulk console output.  Unlike print()/console_putc(), this only updates the
- * hardware cursor once for the whole chunk.  Commands such as cat can use
+/* Fast bulk console output. Unlike print()/console_putc(), this only updates the
+ * hardware cursor once for the whole chunk. Commands such as cat can use
  * this to avoid one sync_cursor() call per byte. */
 void print_n(const char* s, uint32_t len) {
     if (!s || len == 0) return;
 
     /* Fast bulk console output: decode UTF-8 (via the shared
-     * console decoder, same as putc/print) but only update the
-     * hardware cursor once for the whole chunk. */
+ * console decoder, same as putc/print) but only update the
+ * hardware cursor once for the whole chunk. */
     for (uint32_t i = 0; i < len; i++)
         console_feed(s[i], VGA_COLOR);
 
@@ -703,7 +704,7 @@ int ctrl = 0;
 /* Programs that need the RAW PS/2 stream (Doom polls 0x60/0x64
  * directly for key-up events and mouse packets) set this; while it is
  * on, the timer's Ctrl+C sniffing leaves the controller alone so the
- * program sees every byte.  elf_run clears it when the program ends. */
+ * program sees every byte. elf_run clears it when the program ends. */
 /* defined above, next to the timer handler */
 
 char keymap[128] = {
@@ -743,7 +744,7 @@ static int kb_ring_count(void) {
 }
 static void kb_ring_push(uint8_t sc) {
     if (kb_ring_count() < KB_RING) {   /* full: drop newest, beats
-                                        * corrupting old input */
+ * corrupting old input */
         kb_ring[kb_head] = sc;
         kb_head = (kb_head + 1) % KB_RING;
     }
@@ -757,7 +758,7 @@ static int kb_ring_pop(uint8_t* out) {
 
 /* Consume waiting scancodes, keeping the shift/ctrl/caps state that
  * get_key also maintains exactly in sync, and buffering everything
- * else for get_key.  Returns 1 when Ctrl+C is seen. */
+ * else for get_key. Returns 1 when Ctrl+C is seen. */
 static int ctrlc_poll(void) {
     int got_cc = 0;
     while (inb(0x64) & 1) {
@@ -810,10 +811,10 @@ int get_key() {
         if (sc & 0x80) continue;
         if (sc >= 128) continue;
         /* Caps Lock should only flip the case of letters, not act like
-         * a second shift key for symbols/numbers. So: for letter keys,
-         * shift and caps_lock cancel each other out (shift while caps
-         * is on types lowercase). For everything else, only shift
-         * matters, exactly like caps_lock isn't pressed at all. */
+ * a second shift key for symbols/numbers. So: for letter keys,
+ * shift and caps_lock cancel each other out (shift while caps
+ * is on types lowercase). For everything else, only shift
+ * matters, exactly like caps_lock isn't pressed at all. */
         char res;
         char base = keymap[sc];
         int is_letter = (base >= 'a' && base <= 'z');
@@ -1000,7 +1001,7 @@ void read_line(char* buffer, int max_len) {
     buffer[copy_len] = 0;
 
     /* Ctrl-D marks end-of-input with a trailing '\x04' (stripped by
-     * callers that care; grep uses it to stop reading stdin). */
+ * callers that care; grep uses it to stop reading stdin). */
     if (eof && copy_len < max_len - 1) {
         buffer[copy_len] = 4;
         buffer[copy_len + 1] = 0;
@@ -1424,10 +1425,10 @@ void expand_vars(const char* in, char* out, int outsize) {
 
 // SHELL WILDCARD (GLOB) EXPANSION
 //
-// `rm *.o`, `ls *.c`, `cat /docs/*` ...  Every whitespace-separated
+// `rm *.o`, `ls *.c`, `cat /docs/*` ... Every whitespace-separated
 // argument containing a `*` is expanded at the shell level into the
 // matching entries of the directory it names, alphabetically sorted
-// like a POSIX shell.  The command never sees the `*`; it receives
+// like a POSIX shell. The command never sees the `*`; it receives
 // plain file names as separate arguments.
 
 #define GLOB_MAX_MATCHES 128   /* MAX_D + MAX_F in fs.c is 64 + 64 */
@@ -1437,8 +1438,8 @@ void expand_vars(const char* in, char* out, int outsize) {
 static char glob_list_buf[GLOB_LIST_CAP];
 static char glob_names[GLOB_MAX_MATCHES][GLOB_NAME_LEN];
 
-/* Does `name` match `pat`?  A `*` in the pattern stands for any run
- * of zero or more characters.  Classic backtracking matcher: try the
+/* Does `name` match `pat`? A `*` in the pattern stands for any run
+ * of zero or more characters. Classic backtracking matcher: try the
  * longest run for each star, shrink it on mismatch. */
 static int glob_match(const char* pat, const char* name) {
     const char *p = pat, *n = name;
@@ -1465,9 +1466,9 @@ static int glob_name_cmp(const char* a, const char* b) {
 /* Expands `*` wildcards in `in`, writing the result into `out`.
  *
  * A pattern may carry a directory part ("dir/*.c", "/home/*.o"); the
- * base pattern is matched against that directory's entries.  A pattern
+ * base pattern is matched against that directory's entries. A pattern
  * that matches nothing is passed through unchanged so the command
- * reports "No such file or directory" itself, like bash.  Dot-prefixed
+ * reports "No such file or directory" itself, like bash. Dot-prefixed
  * names only match patterns that start with a dot, and tokens holding
  * quotes or backslashes are never expanded (the user suppressed the
  * wildcard). */
@@ -1499,7 +1500,7 @@ void expand_globs(const char* in, char* out, int outsize) {
         int expanded = 0;
         if (has_star && !quoted) {
             /* split at the last '/', so "dir/*.c" lists "dir" and
-             * matches "*.c"; a bare "*.c" lists the cwd. */
+ * matches "*.c"; a bare "*.c" lists the cwd. */
             int slash = -1;
             for (int i = 0; i < tlen; i++) if (tok[i] == '/') slash = i;
             int dlen = (slash < 0) ? 0 : slash + 1;
@@ -1652,11 +1653,11 @@ void execute_command(const char* cmd_line) {
         cmd = cmd->next;
     }
 
-    /* Not a built-in.  Commands are standalone ELF32 binaries in
-     * /bin (built by the Makefile from bin/*.c and embedded in the
-     * kernel image).  Then try /Programs - any file there (ELF32
-     * object or shell script) is runnable, which lets the user add
-     * or override commands by dropping files into bin/. */
+    /* Not a built-in. Commands are standalone ELF32 binaries in
+ * /bin (built by the Makefile from bin/*.c and embedded in the
+ * kernel image). Then try /Programs - any file there (ELF32
+ * object or shell script) is runnable, which lets the user add
+ * or override commands by dropping files into bin/. */
     static const char* dirs[] = { "/bin/", "/Programs/" };
     static const char* exts[] = { "", ".o" };
     char prog_path[320];
@@ -1683,11 +1684,11 @@ void execute_command(const char* cmd_line) {
     }
 
     /* Direct file execution: if the token names an existing file,
-     * run it - ELF32 objects through the program driver, text files
-     * as line-per-command scripts (exactly what exec_file always
-     * did for the old `exec` command). Leading './' is skipped, so
-     * './test.o', 'test.o' and 'dir/test.o' all work: you just type
-     * the file name. */
+ * run it - ELF32 objects through the program driver, text files
+ * as line-per-command scripts (exactly what exec_file always
+ * did for the old `exec` command). Leading './' is skipped, so
+ * './test.o', 'test.o' and 'dir/test.o' all work: you just type
+ * the file name. */
     {
         const char* fn = cmd_name;
         while (fn[0] == '.' && fn[1] == '/') fn += 2;
@@ -1709,9 +1710,9 @@ void setup_wizard() {
     print("===== TanjaOS Setup =====\n");
     print("\n");
 
-    /* root exists from boot; only its password is chosen here.  This
-     * runs BEFORE the account step, and also on upgraded installs
-     * where the legacy config had no root password yet. */
+    /* root exists from boot; only its password is chosen here. This
+ * runs BEFORE the account step, and also on upgraded installs
+ * where the legacy config had no root password yet. */
     while (1) {
         char pw1[MAX_PASSWORD], pw2[MAX_PASSWORD];
         print("Set a root password: "); read_line(pw1, MAX_PASSWORD);
@@ -1723,9 +1724,9 @@ void setup_wizard() {
     }
 
     /* Creating regular users is optional and repeatable: the prompt
-     * loops so as many accounts as wanted can be made during setup,
-     * and only n/N (or Enter, the default) moves on.  Each password
-     * is confirmed like the root password above. */
+ * loops so as many accounts as wanted can be made during setup,
+ * and only n/N (or Enter, the default) moves on. Each password
+ * is confirmed like the root password above. */
     {
         char ans[8];
         while (1) {
@@ -1750,7 +1751,7 @@ void setup_wizard() {
                     break;
                 }
                 /* password: a mismatch re-asks only the password pair
-                 * for this login, not the name */
+ * for this login, not the name */
                 while (1) {
                     char pass[MAX_PASSWORD], conf[MAX_PASSWORD];
                     print("Create a password: "); read_line(pass, MAX_PASSWORD);
@@ -1771,7 +1772,7 @@ void setup_wizard() {
 
 static void prompt_root_password(void) {
     /* upgrade path: an account table migrated from the old single-
-     * user config has no root password yet.  Ask for it once. */
+ * user config has no root password yet. Ask for it once. */
     if (users[0].password[0]) return;
     print("\nThis system has no root password yet.\n");
     while (1) {
@@ -1787,7 +1788,7 @@ static void prompt_root_password(void) {
 }
 
 /* record `idx` as the logged-in session user: prompt name, effective
- * uid, and home directory (~).  Shared by login and su. */
+ * uid, and home directory (~). Shared by login and su. */
 static void set_session_user(int idx) {
     strncpy(cur_username, users[idx].username, MAX_USERNAME);
     cur_uid = users[idx].uid;
@@ -1810,7 +1811,7 @@ void login_prompt() {
         print(config.hostname); print(" login: "); read_line(u, MAX_USERNAME);
         int idx = user_find(u);
         /* an account with an empty password (passwd with a blank new
-         * password) logs straight in, like the classic Unix behavior */
+ * password) logs straight in, like the classic Unix behavior */
         if (idx >= 0 && users[idx].password[0] == 0) {
             set_session_user(idx);
             return;
@@ -1862,7 +1863,7 @@ static int split_args(char* s, char** tv, int max) {
 
 /* Account / Permission builtins
  * sudo runs one command as root; useradd/userdel/usermod manage
- * accounts (root only); chmod/chown manage file ownership.  They
+ * accounts (root only); chmod/chown manage file ownership. They
  * are builtins rather than /bin applets because they need the
  * kernel-internal account table and execute_command(). */
 void execute_command(const char* cmd_line);
@@ -1871,8 +1872,8 @@ void cmd_sudo(char* args) {
     if (!args || !args[0]) { print("usage: sudo <command>\n"); return; }
     if (cur_uid == 0) { execute_command(args); return; }
     /* sudoers gate: while a "wheel" group has members, only they may
-     * sudo (root always may).  Without wheel (or with it empty) every
-     * user may, like before. */
+ * sudo (root always may). Without wheel (or with it empty) every
+ * user may, like before. */
     {
         int w = group_find("wheel");
         if (w >= 0 && groups[w].count > 0
@@ -1883,8 +1884,8 @@ void cmd_sudo(char* args) {
         }
     }
     /* like real sudo: the prompt asks for the INVOKING user's own
-     * password (not root's), verified against their own account,
-     * with up to 3 tries */
+ * password (not root's), verified against their own account,
+ * with up to 3 tries */
     int self = user_find(cur_username);
     if (self < 0) { print("sudo: unknown account\n"); return; }
     int tries;
@@ -1989,7 +1990,7 @@ void cmd_usermod(char* args) {
             continue;
         }
         /* combined short flags, like real usermod: -aG wheel, -aGwheel,
-         * -LU, -p pass ... */
+ * -LU, -p pass ... */
         const char* fl = tv[i] + 1;
         while (*fl) {
             if (*fl == 'a') { append_groups = 1; fl++; }
@@ -2120,13 +2121,13 @@ void cmd_usermod(char* args) {
 }
 
 void cmd_su(char* args) {
-    /* su [-] [name] - switch the session user.  Without a name it
-     * goes to root.  "-" is the classic login-shell form and behaves
-     * the same.  root may become anyone without a password; everyone
-     * else must give the TARGET user's password (real su rules) -
-     * switching to root therefore always asks for root's password.
-     * The change lasts until exit logs out; the prompt and ~ follow
-     * the new user. */
+    /* su [-] [name] - switch the session user. Without a name it
+ * goes to root. "-" is the classic login-shell form and behaves
+ * the same. root may become anyone without a password; everyone
+ * else must give the TARGET user's password (real su rules) -
+ * switching to root therefore always asks for root's password.
+ * The change lasts until exit logs out; the prompt and ~ follow
+ * the new user. */
     char buf[128];
     char* tv[8];
     strncpy(buf, args ? args : "", sizeof(buf));
@@ -2143,7 +2144,7 @@ void cmd_su(char* args) {
     int idx = user_find(name);
     if (idx < 0) { print("su: user "); print(name); print(" does not exist\n"); return; }
     /* an empty target password (passwd with a blank new password)
-     * needs no prompt, mirroring the login screen */
+ * needs no prompt, mirroring the login screen */
     if (fs_cur_uid != 0 && users[idx].password[0]) {
         char pw[MAX_PASSWORD];
         print("Password: "); read_line(pw, MAX_PASSWORD);
@@ -2228,13 +2229,13 @@ void cmd_groups(char* args) {
 
 void cmd_passwd(char* args) {
     /* passwd [name] - mirrors util-linux passwd:
-     *   Changing password for carl.
-     *   Current password:
-     *   New password:
-     *   Retype new password:
-     *   passwd: password updated successfully
-     * A blank new password erases the password (this system's
-     * passwordless-account feature, worded like real `passwd -d`). */
+ * Changing password for carl.
+ * Current password:
+ * New password:
+ * Retype new password:
+ * passwd: password updated successfully
+ * A blank new password erases the password (this system's
+ * passwordless-account feature, worded like real `passwd -d`). */
     char buf[128];
     char* tv[4];
     strncpy(buf, args ? args : "", sizeof(buf));
@@ -2394,7 +2395,7 @@ void cmd_chmod(char* args) {
 /* make sure every account has its home directory with the standard
  * folders (root's /root is seeded by fs_seed_home on every boot;
  * this covers users, e.g. a login migrated from a pre-multiuser
- * install whose /home/<name> was never created).  Runs as root at
+ * install whose /home/<name> was never created). Runs as root at
  * boot, once, after the account table is loaded. */
 static void users_ensure_homes(void) {
     int i;
@@ -2413,7 +2414,7 @@ static void users_ensure_homes(void) {
 
 void cmd_chown(char* args) {
     /* fs_chown refuses non-root callers; the GNU-style message comes
-     * from the failure path below (like real chown's EPERM report) */
+ * from the failure path below (like real chown's EPERM report) */
     char buf[512];
     char* tv[24];
     strncpy(buf, args ? args : "", sizeof(buf));
@@ -2450,7 +2451,7 @@ void print_prompt_path() {
     fs_get_current_path(cwd);
 
     /* The logged-in user's home directory displays as ~ (root's
-     * home is /root; everyone else's is /home/<name>). */
+ * home is /root; everyone else's is /home/<name>). */
     int hl = 0;
     while (cur_home[hl] && hl < 95) hl++;
     int cl = 0;
@@ -2509,8 +2510,8 @@ void kernel_panic_storage(const char *reason) {
 
 static void kernel_panic_no_bin(void) {
     /* This is intentionally a hard boot failure, not a recovery path.
-     * If /bin has been removed or emptied, TanjaOS refuses to start
-     * another shell and leaves the panic message on screen. */
+ * If /bin has been removed or emptied, TanjaOS refuses to start
+ * another shell and leaves the panic message on screen. */
     clear_screen();
     print("panic: due to: TanjaOS cannot boot because /bin is missing or empty\n");
     print("The command binaries are required for userspace.\n");
@@ -2518,6 +2519,9 @@ static void kernel_panic_no_bin(void) {
     print("panic: due to: TanjaOS cannot boot because /bin is missing or empty\n");
     for (;;) asm volatile("cli; hlt");
 }
+
+extern void linux_set_layout(uint32_t kernel_end, uint32_t ram_top);
+extern char __kernel_end[];
 
 void kernel_main(uint32_t mb_magic, uint32_t mb_addr)
 {
@@ -2533,14 +2537,27 @@ void kernel_main(uint32_t mb_magic, uint32_t mb_addr)
 
     boot_log("Kernel starting");
 
+    /* Size the Linux compat regions (ld.so, mmap, PIE exe, stack) to
+ * the actual RAM of this machine. mem_upper is in KiB above 1 MiB;
+ * without usable multiboot memory info assume a 128 MiB machine. */
+    {
+        uint32_t ram_top = 128u << 20;
+        if (mb_magic == MULTIBOOT_BOOTLOADER_MAGIC && mb_addr) {
+            multiboot_info_t* mbi = (multiboot_info_t*)mb_addr;
+            if ((mbi->flags & 0x00000001u) && mbi->mem_upper > 0)
+                ram_top = (mbi->mem_lower + mbi->mem_upper) * 1024u;
+        }
+        linux_set_layout((uint32_t)__kernel_end, ram_top);
+    }
+
     boot_log("Initializing filesystem");
     store_init(mb_magic, mb_addr);
 
     boot_log("Loading command binaries");
 
-    /* /bin is mandatory at boot.  Do not recreate it and do not fall back
-     * to kernel-provided command binaries: if it was deleted or emptied
-     * and the machine is power-cycled/rebooted, deliberately panic here. */
+    /* /bin is mandatory at boot. Do not recreate it and do not fall back
+ * to kernel-provided command binaries: if it was deleted or emptied
+ * and the machine is power-cycled/rebooted, deliberately panic here. */
     if (!fs_directory_exists("/bin") || fs_directory_is_empty("/bin"))
         kernel_panic_no_bin();
 
@@ -2578,9 +2595,9 @@ void kernel_main(uint32_t mb_magic, uint32_t mb_addr)
         login_prompt();
 
         /* A login always starts in the user's home directory (root's
-         * is /root, everyone else's /home/<name>).  The filesystem
-         * persists cwd for storage, but cwd is a shell-session state
-         * and should not leak from a previous login/reboot. */
+ * is /root, everyone else's /home/<name>). The filesystem
+ * persists cwd for storage, but cwd is a shell-session state
+ * and should not leak from a previous login/reboot. */
         fs_cur_uid = 0;                    /* home must exist / be reachable */
         if (fs_change_directory(cur_home) != 0)
             fs_change_directory("/");

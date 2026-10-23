@@ -2,13 +2,13 @@
 #include <stddef.h>
 #include "../include/fs.h"
 
-/* Console (for error reporting) */
+/* console (for error reporting) */
 extern void print(const char* s);
 extern int printf(const char* fmt, ...);
 extern char* itoa(int value, char* buf, int base);
 extern void print_n(const char* s, uint32_t len);
 
-/* Kernel exports available to programs */
+/* kernel exports available to programs */
 extern void print_color(const char* s, uint16_t color);
 extern void console_putc(char c);
 extern void putc_color(char c, uint16_t color);
@@ -81,7 +81,7 @@ extern uint8_t* tanja_wad_base;
 extern uint32_t tanja_wad_size;
 
 /* The C errno: a real global exported to programs (errno.h declares
- * it extern).  Kernel routines that report failures through return
+ * it extern). Kernel routines that report failures through return
  * codes are free to set it. */
 int errno = 0;
 
@@ -90,7 +90,7 @@ int errno = 0;
 TANJA_ATOMIC_ALL(TANJA_ATOMIC_EX)
 #undef TANJA_ATOMIC_EX
 
-/* Kernel C library (kernel/libc.c + libc2.c; list in libc.h) */
+/* kernel C library (kernel/libc.c + libc2.c; list in libc.h) */
 #include "libc.h"
 #define TANJA_LIBC_EX(name, ret, params) extern ret name params;
 TANJA_LIBC_ALL(TANJA_LIBC_EX)
@@ -116,7 +116,7 @@ extern int tanja_exit_code;
 
 /* libgcc 64-bit helpers */
 /* tcc-generated i386 code calls these for 64-bit arithmetic and
- * float<->64-bit conversions.  They live in libgcc.a (linked into
+ * float<->64-bit conversions. They live in libgcc.a (linked into
  * the kernel); referencing them in the export table below forces
  * the linker to keep them, and gives tcc-compiled programs the
  * exact gcc semantics. */
@@ -232,6 +232,7 @@ static const struct tanja_export tanja_exports[] = {
     { "fs_read_file", (void*)fs_read_file },
     { "fs_read_file_prefix", (void*)fs_read_file_prefix },
     { "fs_read_file_range", (void*)fs_read_file_range },
+    { "fs_append_file", (void*)fs_append_file },
     { "fs_get_file_size", (void*)fs_get_file_size },
     { "fs_file_exists", (void*)fs_file_exists },
     { "fs_directory_exists", (void*)fs_directory_exists },
@@ -364,25 +365,26 @@ typedef struct {
 #define R_386_PC32     2
 #define R_386_PLT32    4
 
-/* Program region */
+/* program region */
 /* Real ELF executables on x86-32 traditionally load at 0x40000000
- * (1 GiB).  Nothing else in the kernel lives there, so programs get
- * the whole 16 MiB window.  Loading is stack-disciplined: nested
+ * (1 GiB). Nothing else in the kernel lives there, so programs get
+ * the whole 16 MiB window. Loading is stack-disciplined: nested
  * loads (a program running execute_command() which loads another
  * program) each reclaim their own memory on return. */
-/*
- * Keep loaded commands close to the kernel instead of hard-coding them at
- * 0x40000000 (1 GiB).  The old address meant even a tiny command required a
- * VM with more than 1 GiB of physical RAM.  The linker places __kernel_end
+/* Keep loaded commands close to the kernel instead of hard-coding them at
+ * 0x40000000 (1 GiB). The old address meant even a tiny command required a
+ * VM with more than 1 GiB of physical RAM. The linker places __kernel_end
  * after the kernel, embedded home image, and Doom blobs, so this remains safe
  * while working on genuinely small-memory machines.
  */
 extern uint8_t __kernel_end;
+uint32_t linux_applet_region_base(void);
+uint32_t linux_applet_region_limit(void);
 #define PROGRAM_GUARD  (1024u * 1024u)
 #define PROGRAM_LIMIT_SIZE (16u * 1024u * 1024u)
 
 
-/* Export table introspection */
+/* export table introspection */
 /* tcc uses these at COMPILE time to verify that every external
  * symbol a program references is actually provided by the kernel,
  * so a missing function is reported when compiling, not when the
@@ -403,7 +405,11 @@ static uint8_t* program_brk = 0;
 
 static void elf_program_init(void) {
     if (!program_brk) {
-        uintptr_t p = (uintptr_t)&__kernel_end + PROGRAM_GUARD;
+        /* Applets load into the shared Linux mmap window (see
+ * linux.c): that area is free while any applet runs, and
+ * placing them here keeps the 1 MiB guard above the kernel
+ * image free for the dynamic loader. */
+        uintptr_t p = (uintptr_t)linux_applet_region_base();
         p = (p + 0xFFFFu) & ~0xFFFFu;
         program_brk = (uint8_t*)p;
     }
@@ -495,7 +501,7 @@ int elf_run(const uint8_t* image, uint32_t size, const char* path, const char* a
     }
     sh = (const Elf32_Shdr*)(image + eh->e_shoff);
 
-    /* Pass 1: place every allocatable section in the region */
+    /* pass 1: place every allocatable section in the region */
     uint8_t* save_brk = program_brk;
     uint32_t cur = (uint32_t)program_brk;
 
@@ -510,7 +516,7 @@ int elf_run(const uint8_t* image, uint32_t size, const char* path, const char* a
 
         if (sh[i].sh_type == SHT_NOBITS) {
             /* .bss: zero the space (the region is plain RAM; nothing
-             * guarantees it was ever zeroed for us). */
+ * guarantees it was ever zeroed for us). */
             uint32_t k;
             for (k = 0; k < sh[i].sh_size; k += 4) {
                 /* word-wise when possible, byte tail */
@@ -520,8 +526,8 @@ int elf_run(const uint8_t* image, uint32_t size, const char* path, const char* a
                     *(uint8_t*)(cur + k) = 0;
             }
         } else {
-            /* Contents come from the file.  Zero-size PROGBITS
-             * sections (empty .data etc) are legal - skip them. */
+            /* Contents come from the file. Zero-size PROGBITS
+ * sections (empty .data etc) are legal - skip them. */
             if (sh[i].sh_size > 0) {
                 if (sh[i].sh_offset + sh[i].sh_size > size) {
                     print("elf: section contents out of bounds\n");
@@ -536,14 +542,14 @@ int elf_run(const uint8_t* image, uint32_t size, const char* path, const char* a
         cur += sh[i].sh_size;
     }
 
-    if (cur > (uint32_t)program_brk + PROGRAM_LIMIT_SIZE) {
+    if (cur > (uint32_t)linux_applet_region_limit()) {
         print("elf: program region exhausted\n");
         program_brk = save_brk;
         return -1;
     }
     program_brk = (uint8_t*)cur;
 
-    /* Find the symbol table and its string table */
+    /* find the symbol table and its string table */
     const Elf32_Sym* symtab = 0;
     uint32_t nsyms = 0;
     const char* symstr = 0;
@@ -564,7 +570,7 @@ int elf_run(const uint8_t* image, uint32_t size, const char* path, const char* a
         return -1;
     }
 
-    /* Pass 2: apply relocations */
+    /* pass 2: apply relocations */
     uint32_t rel_ok = 1;
     for (i = 0; i < nsec && rel_ok; i++) {
         if (sh[i].sh_type != SHT_REL)
@@ -617,7 +623,7 @@ int elf_run(const uint8_t* image, uint32_t size, const char* path, const char* a
                 S = symtab[sym].st_value;
             } else if (symtab[sym].st_shndx == SHN_COMMON) {
                 /* -fno-common makes these impossible; refuse rather
-                 * than silently misbinding */
+ * than silently misbinding */
                 print("elf: COMMON symbols not supported "
                       "(recompile with -fno-common)\n");
                 rel_ok = 0;
@@ -658,7 +664,7 @@ int elf_run(const uint8_t* image, uint32_t size, const char* path, const char* a
         }
     }
 
-    /* Find the entry point */
+    /* find the entry point */
     uint32_t entry = 0;
     for (i = 0; i < (int)nsyms; i++) {
         const char* nm = symstr + symtab[i].st_name;
@@ -679,15 +685,15 @@ int elf_run(const uint8_t* image, uint32_t size, const char* path, const char* a
         return -1;
     }
 
-    /* Run it */
+    /* run it */
     {
         /* Build argc/argv for programs that want them (argv[0] is
-         * the program path; also exported as tanja_argc/argv). */
+ * the program path; also exported as tanja_argc/argv). */
         tanja_setargs(path, args);
 
-        /* exit() support: longjmp back here.  The buffer is saved
-         * and restored so nested programs (a program running
-         * execute_command) unwind to their OWN elf_run. */
+        /* exit() support: longjmp back here. The buffer is saved
+ * and restored so nested programs (a program running
+ * execute_command) unwind to their OWN elf_run. */
         int save_active = tanja_exit_active;
         int save_jmp[5];
         memcpy(save_jmp, tanja_exit_jmp, sizeof save_jmp);
@@ -704,8 +710,8 @@ int elf_run(const uint8_t* image, uint32_t size, const char* path, const char* a
     }
 
     /* Stack discipline: the program's memory is dead once it returns
-     * (all persistent state lives in the filesystem), so nested
-     * program loads can reuse the same region. */
+ * (all persistent state lives in the filesystem), so nested
+ * program loads can reuse the same region. */
     program_brk = save_brk;
     return 0;
 }

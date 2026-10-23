@@ -25,7 +25,7 @@ extern void print_hex(uint32_t n);
 extern void boot_log(const char* msg);
 
 /* Direct VGA access for full-screen programs (the editor is the
- * main user).  cursor is the current cell index into VGA[]. */
+ * main user). cursor is the current cell index into VGA[]. */
 extern uint16_t* VGA;
 extern int cursor;
 extern void sync_cursor(void);

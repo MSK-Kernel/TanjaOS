@@ -6,7 +6,13 @@
 #define ESC_KEY 27
 #define TAB_KEY 9
 #define CTRL(c) ((c) & 0x1F)
-#define MAX_TEXT (MAX_FILE_SIZE + 1)
+/* vi's text cap is deliberately decoupled from MAX_FILE_SIZE: the
+ * file limit was raised to 4 MiB for Linux binaries, and vi's undo
+ * rings scale with MAX_TEXT (UNDO_DEPTH snapshots x 2 rings), which
+ * would cost ~48 MiB of BSS. A 512 KiB editing buffer keeps vi
+ * loadable on small-RAM machines (about 7 MiB of BSS). */
+#define VI_TEXT_MAX  (512u * 1024u + 1)
+#define MAX_TEXT     VI_TEXT_MAX
 
 #define VI_TOP_ROW 0
 #define VI_BOTTOM_ROW 23
@@ -611,9 +617,9 @@ static int match_bracket(int pos)
     return -1;
 }
 
-// MINI REGEX  (for / ? :s)
+// MINI REGEX (for / ? :s)
 // Supports: literals . [...] * ^ $ \(..\); \-escapes; ic option.
-// Greedy backtracking with a step budget.  Groups recorded in
+// Greedy backtracking with a step budget. Groups recorded in
 // rx_spans for \1..\9 in substitute replacements.
 
 static int rx_spans[10][2];
@@ -703,7 +709,7 @@ static int rx_atom_extent(const char *pat, int pi)
 }
 
 /* match pat[pi..stop) against s; exact >= 0 = must consume exactly
- * that many bytes.  On success sets *slen. */
+ * that many bytes. On success sets *slen. */
 static int rxm(const char *pat, int pi, int stop, const char *s, int exact, int *slen)
 {
     int c, i;
@@ -990,7 +996,7 @@ static void redraw(const char *prompt)
     sync_cursor();
 }
 
-/* read a ':' '/' or '?' command.  Returns 1 on Enter, 0 on Esc. */
+/* read a ':' '/' or '?' command. Returns 1 on Enter, 0 on Esc. */
 static char g_prompt[VI_COLS + 1];
 static int read_prompt(int lead, char *buf, int cap)
 {
@@ -1017,7 +1023,7 @@ static int read_prompt(int lead, char *buf, int cap)
     }
 }
 
-// SEARCH  ( / ? n N )  - pure: does not move the cursor itself
+// SEARCH ( / ? n N ) - pure: does not move the cursor itself
 
 static char last_pat[128];
 static int last_dir = 1;
@@ -1213,7 +1219,7 @@ static Motion resolve_motion(int key, int count, int replay)
     return m;
 }
 
-// OPERATORS  (d c y < >)
+// OPERATORS (d c y < >)
 
 static char opbuf[REG_CAP];
 static char savebuf[MAX_TEXT];

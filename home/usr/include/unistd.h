@@ -10,7 +10,7 @@
 #include <stdint.h>
 #include <sys/types.h>
 
-/* --- tcc libc shim (not kernel exports) --- */
+/* tcc libc shim (not kernel exports) */
 int    open(const char *path, int flags, ...);
 int    close(int fd);
 ssize_t read(int fd, void *buf, size_t count);
@@ -24,14 +24,13 @@ int    execvp(const char *file, char *const argv[]);
 char  *getcwd(char *buf, size_t size);
 char  *realpath(const char *path, char *resolved_path);
 
-/* --- hardware port access (kernel exports) --- */
+/* hardware port access (kernel exports) */
 uint8_t  inb(uint16_t port);
 void     outb(uint16_t port, uint8_t val);
 void     outw(uint16_t port, uint16_t val);
 
-/* =================================================================
- * TanjaOS filesystem API (kernel exports)
- * ================================================================= */
+/* TanjaOS filesystem API (kernel exports)
+ */
 #define MAX_PATH     256
 #define MAX_FILENAME 256
 /* Public max file size; kept in sync with MAX_FILE_DATA in fs/fs.c. */
@@ -61,7 +60,7 @@ void fs_get_current_path(char* path);
 int parse_path(const char* path, char* parent_path, char* name);
 int find_in_directory(int dir_index, const char* name, fs_type_t type);
 
-/* --- persistence / system (kernel exports) --- */
+/* persistence / system (kernel exports) */
 void fs_init(void);
 void fs_seed_home(void);
 void store_save(void);

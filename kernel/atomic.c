@@ -1,13 +1,15 @@
-/* tcc lowers atomics to calls like __atomic_store_4 / __atomic_load_8
+/* kernel/atomic.c - C11 stdatomic runtime helpers.
+ *
+ * tcc lowers atomics to calls like __atomic_store_4 / __atomic_load_8
  * (see tccgen.c parse_atomic), the same helpers libtcc1's stdatomic.c
- * and libatomic provide on hosted systems.  TanjaOS programs resolve
+ * and libatomic provide on hosted systems. TanjaOS programs resolve
  * symbols against the kernel export table, so the kernel exports the
  * whole set (table entries in kernel/elf.c, prototypes in atomic.h).
  *
  * TanjaOS is single-CPU and programs run in ring 0, so cli/sti around
  * the access is a complete atomicity guarantee for every width,
  * including the 8-byte ops real i386 hardware cannot do in one
- * instruction.  The "memory" clobbers keep the compiler from moving
+ * instruction. The "memory" clobbers keep the compiler from moving
  * the access outside the cli..sti window.
  *
  * The memory-model parameter is accepted and ignored, matching
@@ -21,6 +23,7 @@ static inline void irq_off(void) { __asm__ __volatile__("cli" ::: "memory"); }
 static inline void irq_on(void)  { __asm__ __volatile__("sti" ::: "memory"); }
 
 /* per-width load / store / exchange / compare_exchange */
+
 #define ATOMIC_BASIC_FUNCS(SZ, T) \
 void __atomic_store_##SZ(volatile void* p, T v, int model) { \
     (void)model; irq_off(); *(volatile T*)p = v; irq_on(); \
@@ -49,6 +52,7 @@ ATOMIC_BASIC_FUNCS(4, uint32_t)
 ATOMIC_BASIC_FUNCS(8, uint64_t)
 
 /* read-modify-write: fetch_X returns old, X_fetch returns new */
+
 #define ATOMIC_RMW_FUNCS(SZ, T, NAME, NEWV) \
 T __atomic_fetch_##NAME##_##SZ(volatile void* p, T v, int model) { \
     T o, n; (void)model; irq_off(); o = *(volatile T*)p; n = (T)(NEWV); \
@@ -72,7 +76,8 @@ ATOMIC_ALL_RMW(2, uint16_t)
 ATOMIC_ALL_RMW(4, uint32_t)
 ATOMIC_ALL_RMW(8, uint64_t)
 
-/* The helpers <stdatomic.h> itself declares */
+/* the helpers <stdatomic.h> itself declares */
+
 void atomic_thread_fence(int model)  { (void)model; irq_off(); irq_on(); }
 void atomic_signal_fence(int model)  { (void)model; }
 

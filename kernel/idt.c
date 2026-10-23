@@ -102,14 +102,14 @@ static void fault_line(const char* label, uint32_t v) {
 
 /* Called from exception_common in idt_asm.asm. Two cases:
  *
- *  - the fault happened inside a LOADED PROGRAM (eip above the
- *    kernel image while one is running): terminate that program and
- *    return to the shell.  A bad user program must not take the
- *    whole OS down.
- *  - anything else is a kernel fault: print a full dump (faulting
- *    instruction address, error code, register state, instruction
- *    bytes) and halt.  With eip + bytes, an objdump of the built
- *    kernel names the exact faulting instruction.
+ * - the fault happened inside a LOADED PROGRAM (eip above the
+ * kernel image while one is running): terminate that program and
+ * return to the shell. A bad user program must not take the
+ * whole OS down.
+ * - anything else is a kernel fault: print a full dump (faulting
+ * instruction address, error code, register state, instruction
+ * bytes) and halt. With eip + bytes, an objdump of the built
+ * kernel names the exact faulting instruction.
  */
 void fault_handler(uint32_t vector, uint32_t err, uint32_t eip,
                    uint32_t cs, uint32_t eflags, const fault_regs_t* r) {
@@ -122,7 +122,7 @@ void fault_handler(uint32_t vector, uint32_t err, uint32_t eip,
         fault_print_hex(eip);
         print(") - program terminated\n");
         /* unwind exactly like exit(): back into elf_run, which
-         * restores its own state and the program break */
+ * restores its own state and the program break */
         {
             extern int lx_unwind_reason;
             lx_unwind_reason = 1;
@@ -166,13 +166,13 @@ void fault_handler(uint32_t vector, uint32_t err, uint32_t eip,
     fault_line("esi     = 0x", r->esi);
     fault_line("edi     = 0x", r->edi);
 #if 0  /* full extras (stack frame, GOT.PLT, bytes, syscall tail) -
-         * disabled while debugging: keep the fault compact so the
-         * pre-fault debug prints stay on the VGA screen */
+ * disabled while debugging: keep the fault compact so the
+ * pre-fault debug prints stay on the VGA screen */
     fault_line("ebx     = 0x", r->ebx);
     {
         /* the caller: [esp] holds the return address of the faulting
-         * call (this OS runs programs in kernel mode, so esp is the
-         * program's own stack even for a "kernel" fault) */
+ * call (this OS runs programs in kernel mode, so esp is the
+ * program's own stack even for a "kernel" fault) */
         int k;
         for (k = 2; k < 8; k++) {
             uint32_t v = *(volatile const uint32_t*)(r->esp + 4*k);
@@ -185,8 +185,8 @@ void fault_handler(uint32_t vector, uint32_t err, uint32_t eip,
     }
     {
         /* GOT.PLT dump: ebx is the PIC register pointing at .got.plt
-         * (set by _start before any PLT call) - GOT[1] link_map,
-         * GOT[2] _dl_runtime_resolve tell us if lazy binding works */
+ * (set by _start before any PLT call) - GOT[1] link_map,
+ * GOT[2] _dl_runtime_resolve tell us if lazy binding works */
         int k;
         for (k = 0; k < 8; k++) {
             uint32_t v = *(volatile const uint32_t*)(r->ebx + 4*k);
@@ -246,7 +246,7 @@ void idt_init(void) {
 
     idt_set_gate(0x20, (uint32_t)irq0_stub, cur_cs, 0x8E);
 
-    // Linux syscall gate (compat layer, kernel/linux.c).  Ring 0, so
+    // Linux syscall gate (compat layer, kernel/linux.c). Ring 0, so
     // no privilege switch is needed - just a pusha/dispatch/iretd.
     idt_set_gate(0x80, (uint32_t)linux_int80_stub, cur_cs, 0x8E);
 

@@ -36,7 +36,7 @@ void*  memcpy(void* dst, const void* src, unsigned int count);
 void*  memmove(void* dst, const void* src, unsigned int count);
 int    memcmp(const void* a, const void* b, unsigned int count);
 
-/* --- TanjaOS helpers --- */
+/* TanjaOS helpers */
 int    streq(const char* a, const char* b);
 void   clean(char* s);
 

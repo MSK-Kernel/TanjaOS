@@ -2,7 +2,7 @@
  *
  * The full C stdio surface (printf/scanf/fopen/...) is implemented
  * by the kernel C library (kernel/libc.c) and resolved by the ELF
- * loader at exec time.  The TanjaOS kernel console exports are
+ * loader at exec time. The TanjaOS kernel console exports are
  * marked below. */
 #ifndef _STDIO_H
 #define _STDIO_H
@@ -29,7 +29,7 @@ extern FILE *stderr;
 #define SEEK_CUR 1
 #define SEEK_END 2
 
-/* --- file stdio (tcc libc shim) --- */
+/* file stdio (tcc libc shim) */
 FILE *fopen(const char *path, const char *mode);
 int fclose(FILE *fp);
 size_t fread(void *ptr, size_t size, size_t nmemb, FILE *fp);
@@ -50,11 +50,11 @@ int putc(int c, FILE *fp);
 FILE *fdopen(int fd, const char *mode);
 FILE *freopen(const char *path, const char *mode, FILE *stream);
 
-/* --- file operations --- */
+/* file operations */
 int remove(const char *path);
 int rename(const char *oldpath, const char *newpath);
 
-/* --- formatted output --- */
+/* formatted output */
 int vsnprintf(char *str, size_t size, const char *format, va_list ap);
 int snprintf(char *str, size_t size, const char *format, ...);
 int sprintf(char *str, const char *format, ...);
@@ -66,7 +66,7 @@ int printf(const char *format, ...);
 int puts(const char *s);
 int putchar(int c);
 
-/* --- TanjaOS kernel console exports --- */
+/* TanjaOS kernel console exports */
 void print(const char* s);
 void print_n(const char* s, uint32_t len);
 void print_color(const char* s, uint16_t color);
@@ -76,13 +76,13 @@ void print_dec(uint32_t n);
 void print_dec_pad(uint32_t n, int width);
 void print_hex(uint32_t n);
 
-/* Direct VGA text access for full-screen programs.  cursor is the
+/* Direct VGA text access for full-screen programs. cursor is the
  * current cell index into VGA[]. */
 extern uint16_t* VGA;
 extern int cursor;
 void sync_cursor(void);
 
-/* --- formatted input --- */
+/* formatted input */
 int scanf(const char *format, ...);
 int sscanf(const char *str, const char *format, ...);
 int fscanf(FILE *stream, const char *format, ...);
@@ -90,7 +90,7 @@ int vscanf(const char *format, va_list ap);
 int vsscanf(const char *str, const char *format, va_list ap);
 int vfscanf(FILE *stream, const char *format, va_list ap);
 
-/* --- TanjaOS keyboard --- */
+/* TanjaOS keyboard */
 int get_key(void);            /* blocks; returns ASCII or a KEY_* code */
 int key_available(void);
 /* extras */

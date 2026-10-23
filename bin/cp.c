@@ -39,15 +39,27 @@ static const char* cp_basename(const char* path) {
     return base;
 }
 
+#define CP_CHUNK (64u * 1024u)
+
 static int cp_copy_file(const char* src, const char* dst) {
 
-    /* Whole-file copy: needs to hold up to MAX_FILE_SIZE bytes. */
-    static char buffer[MAX_FILE_SIZE + 1];
-    uint32_t size = MAX_FILE_SIZE;
+    /* Chunked copy: 64 KiB at a time through a small stack buffer, so
+ * arbitrarily large files (up to the fs pool cap) copy without a
+ * whole-file staging buffer - the old MAX_FILE_SIZE static cost
+ * 4 MiB of per-applet BSS and blew the small-RAM applet window. */
+    char buffer[CP_CHUNK];
+    uint32_t total = fs_get_file_size(src);
+    uint32_t off = 0;
 
-    if (fs_read_file(src, buffer, &size) != 0) return -1;
-    if (!fs_file_exists(dst)) fs_create_file(dst);
-    return fs_write_file(dst, buffer, size);
+    if (fs_file_exists(dst) && fs_delete_file(dst) != 0) return -1;
+    while (off < total) {
+        uint32_t n = CP_CHUNK;
+        if (n > total - off) n = total - off;
+        if (fs_read_file_range(src, off, buffer, n, &n) != 0) return -1;
+        if (fs_append_file(dst, buffer, n) != 0) return -1;
+        off += n;
+    }
+    return 0;
 }
 
 static int cp_copy_dir(const char* src, const char* dst) {

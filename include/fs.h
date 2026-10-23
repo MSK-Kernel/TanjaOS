@@ -27,6 +27,7 @@ int fs_read_file(const char* path, char* buffer, uint32_t* size);
 int fs_read_file_prefix(const char* path, char* buffer, uint32_t capacity, uint32_t* size);
 int fs_read_file_range(const char* path, uint32_t offset, char* buffer,
                        uint32_t capacity, uint32_t* size);
+int fs_append_file(const char* path, const char* data, uint32_t len);
 uint32_t fs_get_file_size(const char* path);
 int fs_file_exists(const char* path);
 int fs_directory_exists(const char* path);
@@ -54,6 +55,9 @@ int find_in_directory(int dir_index, const char* name, fs_type_t type);
 // needs to be; it never changes at runtime.
 uint32_t fs_store_size(void);
 int fs_serialize(uint8_t* buf, uint32_t buf_size);
+int fs_serialize_sink(void* ctx, void (*emit)(void*, const uint8_t*, uint32_t));
 int fs_deserialize(const uint8_t* buf, uint32_t buf_size);
+int fs_deserialize_fill(void* ctx, int (*fill)(void*, uint8_t*, uint32_t));
+const char* fs_file_data_ptr(const char* path, uint32_t* size_out);
 
 #endif

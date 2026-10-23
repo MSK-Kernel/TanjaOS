@@ -35,27 +35,26 @@ static int strlen_safe(const char* s) {
 
 #define MAX_F 96
 #define MAX_D 64
-/* Per-file capacity.  The largest shipped home/ files (the Torah books
+/* Per-file capacity. The largest shipped home/ files (the Torah books
  * up to ~200KB; the tcc compiler at ~281KB) must fit in one slot, or
  * fs_seed_home silently skips them and datareset can never restore them.
- * 320KB covers them with headroom.  NOTE: fs.c BSS and the Storefile buffer in store.c
+ * 320KB covers them with headroom. NOTE: fs.c BSS and the Storefile buffer in store.c
  * scale with this (see fs_store_size / STORE_BUF_SECTORS). */
 #define MAX_FILE_DATA (4u * 1048576)
 #define FS_PATH_CAP 256
 
-/*
- * Keep the filesystem metadata small on low-RAM machines.
+/* Keep the filesystem metadata small on low-RAM machines.
  *
  * The old implementation reserved MAX_F * MAX_FILE_DATA bytes in .bss
- * (about 30 MiB) even when almost every file was empty.  That made the
+ * (about 30 MiB) even when almost every file was empty. That made the
  * kernel need a huge amount of RAM just to boot simple commands.
  *
  * Files now live in a compact 8 MiB first-fit pool and are allocated only
- * when they actually contain data.  MAX_FILE_DATA is still the per-file
+ * when they actually contain data. MAX_FILE_DATA is still the per-file
  * limit, so normal large files (including TCC source/header files) keep
  * working without reserving 30+ MiB up front.
  */
-#define FS_DATA_POOL_SIZE (32u * 1024u * 1024u)
+#define FS_DATA_POOL_SIZE (16u * 1024u * 1024u)
 
 typedef struct fs_pool_block {
     uint32_t size;       /* payload bytes in this block */
@@ -73,13 +72,13 @@ static int fused[MAX_F];
 static char dname[MAX_D][FS_PATH_CAP];
 static int dused[MAX_D];
 
-/* Ownership & permissions
+/* ownership & permissions
  * Every file and directory carries a UNIX-style owner uid and a
  * 9-bit mode (rwx for owner/group/other; TanjaOS has no groups
- * yet, so the group bits are stored but not enforced).  The
+ * yet, so the group bits are stored but not enforced). The
  * current effective uid lives in fs_cur_uid (0 = root = bypass).
  * root bypasses all checks; the owner uses the owner bits and
- * everyone else the other bits.  Login sets fs_cur_uid; sudo
+ * everyone else the other bits. Login sets fs_cur_uid; sudo
  * switches it to 0 for one command. */
 static int fowner[MAX_F];
 static int fmode[MAX_F];
@@ -89,8 +88,8 @@ static int dmode[MAX_D];
 int fs_cur_uid = 0;   /* 0 = root: full access (boot, login sets it) */
 
 /* Set by the FS layer when an operation is refused by the permission
- * system.  Commands report it themselves, GNU-style:
- *   rc == -2  ->  "Permission denied"
+ * system. Commands report it themselves, GNU-style:
+ * rc == -2 -> "Permission denied"
  * fs_errno keeps 13 (EACCES) so callers can use strerror() too. */
 int fs_errno = 0;
 
@@ -147,7 +146,7 @@ static int may_modify_parent(const char* abs) {
 
 static char cwd[256];
 
-/* Small private allocator for file contents.  It never calls libc malloc,
+/* Small private allocator for file contents. It never calls libc malloc,
  * so the filesystem remains usable before the program heap exists. */
 static void fpool_init(void) {
     fs_pool_block_t* b = (fs_pool_block_t*)fpool;
@@ -247,7 +246,7 @@ static int fdata_resize(int idx, uint32_t size) {
 
 
 
-/* Built-in source-tree home/ archive.  The build embeds home/ as a tar
+/* Built-in source-tree home/ archive. The build embeds home/ as a tar
  * archive; this keeps the user-facing interface as simple as an ordinary
  * directory while allowing arbitrary files and nested directories to ship
  * in the boot image. */
@@ -307,8 +306,8 @@ void fs_seed_home(void) {
                 } else if (fs_create_file(path) == 0) {
                     fs_write_file(path, (const char*)(p + 512), size);
                     /* Command binaries under /bin are executable
-                     * programs - seed them 0755 like a real system's
-                     * /bin, so ls colors them by their +x bit. */
+ * programs - seed them 0755 like a real system's
+ * /bin, so ls colors them by their +x bit. */
                     if (path[0] == '/' && path[1] == 'b' &&
                         path[2] == 'i' && path[3] == 'n' &&
                         (path[4] == '/' || path[4] == 0))
@@ -349,13 +348,13 @@ void fs_init(void) {
     strcpy_safe(cwd, "/", 256);
 }
 
-/* Build a canonical absolute path.  This is deliberately done inside the
+/* Build a canonical absolute path. This is deliberately done inside the
  * filesystem layer so EVERY command gets . and .. support automatically:
- *   ../file       -> parent of cwd
- *   ../../file    -> two parents up
- *   ./file        -> file in cwd
- *   /a/../b       -> /b
- *   /../../x      -> /x (cannot go above root)
+ * ../file -> parent of cwd
+ * ../../file -> two parents up
+ * ./file -> file in cwd
+ * /a/../b -> /b
+ * /../../x -> /x (cannot go above root)
  * Repeated slashes are also collapsed. */
 static void abs_path(const char* name, char* out) {
     if (!name || !out) return;
@@ -378,7 +377,7 @@ static void abs_path(const char* name, char* out) {
     }
     combined[pos] = 0;
 
-    /* Store component start offsets.  MAX_PATH_DEPTH is deliberately
+    /* Store component start offsets. MAX_PATH_DEPTH is deliberately
        small because FS_PATH_CAP is only 256 bytes anyway. */
     int starts[64];
     int depth = 0;
@@ -402,9 +401,9 @@ static void abs_path(const char* name, char* out) {
         if (len == 2 && combined[start] == '.' && combined[start + 1] == '.') {
             if (depth > 0) {
                 /* starts[] points just past the separator slash, so cut
-                 * one earlier to drop it too (keep the lone root "/").
-                 * Without this "/a/b/.." became "/a/" and the next
-                 * component then produced "/a//x". */
+ * one earlier to drop it too (keep the lone root "/").
+ * Without this "/a/b/.." became "/a/" and the next
+ * component then produced "/a//x". */
                 int cut = starts[depth - 1];
                 if (cut > 1) cut--;
                 out[cut] = 0;
@@ -607,9 +606,8 @@ int fs_delete_directory_recursive(const char* path) {
     if (!path || !path[0]) return -1;
     if (!fs_directory_exists(path)) return -1;
 
-    /*
-     * rm -rf used to call store_autosave() once per child.  Batch the whole
-     * tree deletion into one compact Storefile write.
+    /* rm -rf used to call store_autosave() once per child. Batch the whole
+ * tree deletion into one compact Storefile write.
      */
     fs_batch_depth++;
 
@@ -755,7 +753,7 @@ int fs_write_file(const char* path, const char* data, uint32_t size) {
         }
     } else {
         /* creation goes through fs_create_file, which checks the
-         * parent directory for write access */
+ * parent directory for write access */
         if (fs_create_file(path) != 0)
             return -1;
         for (i = 0; i < MAX_F; i++)
@@ -770,9 +768,55 @@ int fs_write_file(const char* path, const char* data, uint32_t size) {
     return 0;
 }
 
+/* Append bytes to a file (create if missing). Lets commands copy
+ * arbitrarily large files in small chunks without a whole-file buffer:
+ * fdata_resize reallocates with the old bytes preserved, then the new
+ * chunk lands at the old end. Write permission is checked like
+ * fs_write_file (parent dir w for create, file w for append). */
+int fs_append_file(const char* path, const char* data, uint32_t len)
+{
+    fs_errno = 0;
+    if (!path || !path[0] || !data || len == 0) return -1;
+    {
+        char full[FS_PATH_CAP];
+        int i, idx = -1;
+        uint32_t oldsz;
+        abs_path(path, full);
+
+        for (i = 0; i < MAX_F; i++)
+            if (fused[i] && strcmp_safe(fname[i], full)) { idx = i; break; }
+
+        if (idx < 0) {
+            int cr = fs_create_file(path);
+            if (cr != 0) return cr;
+            for (i = 0; i < MAX_F; i++)
+                if (fused[i] && strcmp_safe(fname[i], full)) { idx = i; break; }
+            if (idx < 0) return -1;
+            oldsz = 0;
+        } else {
+            if (!perm_allows(fmode[idx], fowner[idx], 0200)) {
+                fs_deny(full);
+                return -2;
+            }
+            oldsz = (uint32_t)(fsize[idx] < 0 ? 0 : fsize[idx]);
+        }
+
+        if (oldsz + len > MAX_FILE_DATA - 1) return -3;   /* full pool */
+
+        if (fdata_resize(idx, oldsz + len) != 0) return -4;
+        {
+            uint32_t k;
+            for (k = 0; k < len; k++)
+                fdata[idx][oldsz + k] = data[k];
+        }
+        fdata[idx][oldsz + len] = 0;
+        return 0;
+    }
+}
+
 int fs_read_file(const char* path, char* buffer, uint32_t* size) {
     fs_errno = 0;
-    /* Callers pass their buffer capacity in *size.  Never write more
+    /* Callers pass their buffer capacity in *size. Never write more
        than that: the old implementation copied the WHOLE file into the
        caller's buffer and smashed the stack of any command holding a
        small buffer (grep's 4KB buffer crashed on the ~200KB Torah
@@ -874,9 +918,9 @@ int fs_list_directory(const char* path, char* buf, uint32_t* size) {
     if (path && path[0]) abs_path(path, lp);
     else strcpy_safe(lp, cwd, 256);
     
-    /* A missing path is an error, not an empty directory.  Previously
-     * ls could silently succeed because this function simply found zero
-     * matching children and returned an empty listing. */
+    /* A missing path is an error, not an empty directory. Previously
+ * ls could silently succeed because this function simply found zero
+ * matching children and returned an empty listing. */
     if (!fs_directory_exists(lp))
         return -1;
 
@@ -985,28 +1029,40 @@ int find_in_directory(int a, const char* b, fs_type_t c) { (void)a;(void)b;(void
 int parse_path(const char* a, char* b, char* c) { (void)a; if(b)b[0]=0; if(c)c[0]=0; return 0; }
 
 // STOREFILE SERIALIZATION
+//
+// Packs the static fname/fdata/fsize/fused/dname/dused/cwd tables into
+// a flat blob (and back). Layout, in order:
+// 4 bytes magic "TJFS"
+// 1 byte version
+// 3 bytes reserved/padding
+// MAX_D bytes dused[]
+// MAX_D*64 bytes dname[][64]
+// MAX_F bytes fused[]
+// MAX_F*4 bytes fsize[] (little-endian)
+// MAX_F*64 bytes fname[][64]
+// an 8 MiB on-demand file-data pool
+// 256 bytes cwd
 
 #define STORE_VERSION 4
 
-/*
- * Storefile format v4 is intentionally sparse.  The old format reserved
+/* Storefile format v4 is intentionally sparse. The old format reserved
  * MAX_FILE_DATA bytes for EVERY file slot, so a single mkdir/rm caused a
  * ~31 MB serialize + disk write even when the filesystem only contained a
- * few KB.  v4 keeps the fixed directory/file metadata but stores only the
+ * few KB. v4 keeps the fixed directory/file metadata but stores only the
  * bytes belonging to files that are actually in use.
  *
  * Layout:
- *   8       magic/version
- *   MAX_D   directory used flags
- *   MAX_D*256 directory names
- *   MAX_F   file used flags
- *   MAX_F*4 file sizes
- *   MAX_F*256 file names
- *   sum(fsize[i]) file data for used files, in slot order
- *   256     cwd
+ * 8 magic/version
+ * MAX_D directory used flags
+ * MAX_D*256 directory names
+ * MAX_F file used flags
+ * MAX_F*4 file sizes
+ * MAX_F*256 file names
+ * sum(fsize[i]) file data for used files, in slot order
+ * 256 cwd
  */
-/* Ownership API
- * chmod: owner or root.  chown: root only.  The kernel's user-
+/* ownership API
+ * chmod: owner or root. chown: root only. The kernel's user-
  * management builtins call these; they return 0 on success. */
 int fs_chmod(const char* path, int mode) {
     if (!path || !path[0]) return -1;
@@ -1115,7 +1171,7 @@ static int path_under(const char* child, const char* dir) {
 
 /* chmod applied to `path` and everything underneath it (chmod -R).
  * Each entry still obeys the owner-or-root rule; entries the caller
- * may not change are skipped.  Returns the number of entries
+ * may not change are skipped. Returns the number of entries
  * changed, or -1 if the target itself does not exist. */
 int fs_chmod_recursive(const char* path, int mode) {
     if (!path || !path[0]) return -1;
@@ -1169,7 +1225,7 @@ int fs_chown_recursive(const char* path, int uid) {
 
 /* hand every file in the filesystem owned by `old_uid` over to
  * `new_uid` (used by usermod -u, like real usermod re-owning the
- * user's files).  Returns how many entries changed. */
+ * user's files). Returns how many entries changed. */
 int fs_reassign_uid(int old_uid, int new_uid) {
     int count = 0, i;
     for (i = 0; i < MAX_F; i++) {
@@ -1213,73 +1269,115 @@ uint32_t fs_serialized_size(void) {
     return need;
 }
 
+/* Streaming serializer: emits the v4 Storefile image piece by piece
+ * through a caller sink. The store layer streams these bytes straight
+ * to disk in small chunks, so no full-image RAM buffer is needed any
+ * more. The layout is IDENTICAL to the historical buffer-based format
+ * (fs_serialize below is a thin wrapper). */
+typedef void (*fs_emit_fn)(void* ctx, const uint8_t* data, uint32_t len);
+
+static void fs_emit_le32(void* ctx, fs_emit_fn emit, uint32_t v)
+{
+    uint8_t t[4];
+    t[0] = (uint8_t)(v & 0xFF);
+    t[1] = (uint8_t)((v >> 8) & 0xFF);
+    t[2] = (uint8_t)((v >> 16) & 0xFF);
+    t[3] = (uint8_t)((v >> 24) & 0xFF);
+    emit(ctx, t, 4);
+}
+
+int fs_serialize_sink(void* ctx, fs_emit_fn emit)
+{
+    uint8_t hdr[8];
+    int i;
+
+    hdr[0] = 'T'; hdr[1] = 'J'; hdr[2] = 'F'; hdr[3] = 'S';
+    hdr[4] = STORE_VERSION; hdr[5] = 0; hdr[6] = 0; hdr[7] = 0;
+    emit(ctx, hdr, 8);
+
+    for (i = 0; i < MAX_D; i++) {
+        uint8_t b = (uint8_t)dused[i];
+        emit(ctx, &b, 1);
+    }
+    for (i = 0; i < MAX_D; i++)
+        emit(ctx, (const uint8_t*)dname[i], FS_PATH_CAP);
+
+    for (i = 0; i < MAX_F; i++) {
+        uint8_t b = (uint8_t)fused[i];
+        emit(ctx, &b, 1);
+    }
+    for (i = 0; i < MAX_F; i++) {
+        uint32_t sz = (fsize[i] < 0) ? 0u : (uint32_t)fsize[i];
+        fs_emit_le32(ctx, emit, sz);
+    }
+    for (i = 0; i < MAX_F; i++)
+        emit(ctx, (const uint8_t*)fname[i], FS_PATH_CAP);
+
+    for (i = 0; i < MAX_F; i++) {
+        if (!fused[i] || fsize[i] <= 0) continue;
+        emit(ctx, (const uint8_t*)fdata[i], (uint32_t)fsize[i]);
+    }
+
+    emit(ctx, (const uint8_t*)cwd, 256);
+
+    /* ownership metadata (appended; older images lack it - see the
+ * deserialize note). Modes exceed one byte, 2 bytes LE. */
+    for (i = 0; i < MAX_D; i++) {
+        fs_emit_le32(ctx, emit, (uint32_t)downer[i]);
+        {
+            uint8_t t[2];
+            t[0] = (uint8_t)(dmode[i] & 0xFF);
+            t[1] = (uint8_t)((dmode[i] >> 8) & 0xFF);
+            emit(ctx, t, 2);
+        }
+    }
+    for (i = 0; i < MAX_F; i++) {
+        fs_emit_le32(ctx, emit, (uint32_t)fowner[i]);
+        {
+            uint8_t t[2];
+            t[0] = (uint8_t)(fmode[i] & 0xFF);
+            t[1] = (uint8_t)((fmode[i] >> 8) & 0xFF);
+            emit(ctx, t, 2);
+        }
+    }
+    return 0;
+}
+
+/* buffer wrapper: same bytes as the historical implementation */
+typedef struct { uint8_t* p; } fs_buf_sink_ctx;
+static void fs_buf_sink(void* vctx, const uint8_t* data, uint32_t len)
+{
+    fs_buf_sink_ctx* ctx = (fs_buf_sink_ctx*)vctx;
+    uint32_t k;
+    for (k = 0; k < len; k++) *ctx->p++ = data[k];
+}
+
 int fs_serialize(uint8_t* buf, uint32_t buf_size) {
     if (!buf) return -1;
     uint32_t need = fs_serialized_size();
     if (buf_size < need) return -1;
-
-    uint32_t p = 0;
-    int i, j;
-
-    buf[p++] = 'T'; buf[p++] = 'J'; buf[p++] = 'F'; buf[p++] = 'S';
-    buf[p++] = STORE_VERSION; buf[p++] = 0; buf[p++] = 0; buf[p++] = 0;
-
-    for (i = 0; i < MAX_D; i++) buf[p++] = (uint8_t)dused[i];
-    for (i = 0; i < MAX_D; i++)
-        for (j = 0; j < FS_PATH_CAP; j++) buf[p++] = (uint8_t)dname[i][j];
-
-    for (i = 0; i < MAX_F; i++) buf[p++] = (uint8_t)fused[i];
-    for (i = 0; i < MAX_F; i++) {
-        uint32_t sz = (fsize[i] < 0) ? 0u : (uint32_t)fsize[i];
-        buf[p++] = (uint8_t)(sz & 0xFF);
-        buf[p++] = (uint8_t)((sz >> 8) & 0xFF);
-        buf[p++] = (uint8_t)((sz >> 16) & 0xFF);
-        buf[p++] = (uint8_t)((sz >> 24) & 0xFF);
-    }
-
-    for (i = 0; i < MAX_F; i++)
-        for (j = 0; j < FS_PATH_CAP; j++) buf[p++] = (uint8_t)fname[i][j];
-
-    for (i = 0; i < MAX_F; i++) {
-        if (!fused[i]) continue;
-        for (j = 0; j < fsize[i]; j++)
-            buf[p++] = (uint8_t)fdata[i][j];
-    }
-
-    for (j = 0; j < 256; j++) buf[p++] = (uint8_t)cwd[j];
-
-    /* ownership metadata (appended after cwd: older images simply
-     * lack these bytes, and deserialize then defaults to root-
-     * owned 0755, so old Storefiles keep loading).  Modes exceed
-     * one byte (0755 = 493), so they serialize as 2 bytes LE. */
-    for (i = 0; i < MAX_D; i++) {
-        buf[p++] = (uint8_t)(downer[i] & 0xFF);
-        buf[p++] = (uint8_t)((downer[i] >> 8) & 0xFF);
-        buf[p++] = (uint8_t)((downer[i] >> 16) & 0xFF);
-        buf[p++] = (uint8_t)((downer[i] >> 24) & 0xFF);
-        buf[p++] = (uint8_t)(dmode[i] & 0xFF);
-        buf[p++] = (uint8_t)((dmode[i] >> 8) & 0xFF);
-    }
-    for (i = 0; i < MAX_F; i++) {
-        buf[p++] = (uint8_t)(fowner[i] & 0xFF);
-        buf[p++] = (uint8_t)((fowner[i] >> 8) & 0xFF);
-        buf[p++] = (uint8_t)((fowner[i] >> 16) & 0xFF);
-        buf[p++] = (uint8_t)((fowner[i] >> 24) & 0xFF);
-        buf[p++] = (uint8_t)(fmode[i] & 0xFF);
-        buf[p++] = (uint8_t)((fmode[i] >> 8) & 0xFF);
-    }
-
-    return (int)p;
+    fs_buf_sink_ctx ctx = { buf };
+    fs_serialize_sink(&ctx, fs_buf_sink);
+    return (int)need;
 }
 
-int fs_deserialize(const uint8_t* buf, uint32_t buf_size) {
-    if (!buf) return -1;
-    if (buf_size < 8) return -1;
-    if (buf[0] != 'T' || buf[1] != 'J' || buf[2] != 'F' || buf[3] != 'S') return -1;
-    if (buf[4] != STORE_VERSION) return -1;
+/* Streaming deserializer: pulls the image through a caller fill
+ * function. fill returns -1 when the image ends (older images lack
+ * the ownership section, so a short read there is not an error). */
+typedef int (*fs_fill_fn)(void* ctx, uint8_t* dst, uint32_t len);
 
-    uint32_t p = 8;
+int fs_deserialize_fill(void* ctx, fs_fill_fn fill)
+{
+    uint8_t hdr[8];
+    uint8_t tmp4[4];
+    uint8_t tmp2[2];
+    uint8_t used[MAX_F > MAX_D ? MAX_F : MAX_D];
     int i, j;
+
+    if (!fill) return -1;
+    if (fill(ctx, hdr, 8) != 0) return -1;
+    if (hdr[0] != 'T' || hdr[1] != 'J' || hdr[2] != 'F' || hdr[3] != 'S') return -1;
+    if (hdr[4] != STORE_VERSION) return -1;
 
     /* Rebuild file storage from scratch. */
     for (i = 0; i < MAX_F; i++) {
@@ -1289,69 +1387,110 @@ int fs_deserialize(const uint8_t* buf, uint32_t buf_size) {
     }
     fpool_init();
 
-    if (buf_size < p + MAX_D + (MAX_D * FS_PATH_CAP) +
-                   MAX_F + (MAX_F * 4) + (MAX_F * FS_PATH_CAP) + 256)
-        return -1;
+    if (fill(ctx, used, MAX_D) != 0) return -1;
+    for (i = 0; i < MAX_D; i++) dused[i] = used[i];
 
-    for (i = 0; i < MAX_D; i++) dused[i] = buf[p++];
     for (i = 0; i < MAX_D; i++)
-        for (j = 0; j < FS_PATH_CAP; j++) dname[i][j] = (char)buf[p++];
+        if (fill(ctx, (uint8_t*)dname[i], FS_PATH_CAP) != 0) return -1;
 
-    for (i = 0; i < MAX_F; i++) fused[i] = buf[p++];
+    if (fill(ctx, used, MAX_F) != 0) return -1;
+    for (i = 0; i < MAX_F; i++) fused[i] = used[i];
+
     for (i = 0; i < MAX_F; i++) {
-        uint32_t sz = (uint32_t)buf[p]
-                    | ((uint32_t)buf[p + 1] << 8)
-                    | ((uint32_t)buf[p + 2] << 16)
-                    | ((uint32_t)buf[p + 3] << 24);
-        if (sz >= MAX_FILE_DATA) return -1;
-        fsize[i] = (int)sz;
-        p += 4;
+        if (fill(ctx, tmp4, 4) != 0) return -1;
+        {
+            uint32_t sz = (uint32_t)tmp4[0] | ((uint32_t)tmp4[1] << 8)
+                        | ((uint32_t)tmp4[2] << 16) | ((uint32_t)tmp4[3] << 24);
+            if (sz >= MAX_FILE_DATA) return -1;
+            fsize[i] = (int)sz;
+        }
     }
 
     for (i = 0; i < MAX_F; i++)
-        for (j = 0; j < FS_PATH_CAP; j++) fname[i][j] = (char)buf[p++];
+        if (fill(ctx, (uint8_t*)fname[i], FS_PATH_CAP) != 0) return -1;
 
     for (i = 0; i < MAX_F; i++) {
         if (!fused[i]) {
             fsize[i] = 0;
             continue;
         }
-        if (p + (uint32_t)fsize[i] > buf_size) return -1;
         if (fdata_resize(i, (uint32_t)fsize[i]) != 0) return -1;
-        for (j = 0; j < fsize[i]; j++)
-            fdata[i][j] = (char)buf[p++];
+        if (fill(ctx, (uint8_t*)fdata[i], (uint32_t)fsize[i]) != 0) return -1;
         fdata[i][fsize[i]] = 0;
     }
 
-    if (p + 256 > buf_size) return -1;
-    for (j = 0; j < 256; j++) cwd[j] = (char)buf[p++];
+    if (fill(ctx, (uint8_t*)cwd, 256) != 0) return -1;
 
-    /* ownership metadata: appended section.  Older Storefiles lack
-     * it entirely; those files become root-owned 0755 (safe
-     * default: only root could have created them anyway, since the
-     * permission system did not exist yet). */
+    /* ownership metadata: appended section. Older Storefiles lack
+ * it entirely; those files become root-owned 0755 (safe
+ * default: only root could have created them anyway, since the
+ * permission system did not exist yet). */
     for (i = 0; i < MAX_F; i++) { fowner[i] = 0; fmode[i] = 0755; }
     for (i = 0; i < MAX_D; i++) { downer[i] = 0; dmode[i] = 0755; }
-    if (p + (uint32_t)(MAX_D * 6 + MAX_F * 6) <= buf_size) {
-        for (i = 0; i < MAX_D; i++) {
-            downer[i] = (int)((uint32_t)buf[p]
-                    | ((uint32_t)buf[p + 1] << 8)
-                    | ((uint32_t)buf[p + 2] << 16)
-                    | ((uint32_t)buf[p + 3] << 24));
-            p += 4;
-            dmode[i] = (int)buf[p] | ((int)buf[p + 1] << 8);
-            p += 2;
+    {
+        int have_owners = 1;
+        for (i = 0; i < MAX_D && have_owners; i++) {
+            if (fill(ctx, tmp4, 4) != 0) { have_owners = 0; break; }
+            downer[i] = (int)((uint32_t)tmp4[0] | ((uint32_t)tmp4[1] << 8)
+                     | ((uint32_t)tmp4[2] << 16) | ((uint32_t)tmp4[3] << 24));
+            if (fill(ctx, tmp2, 2) != 0) { have_owners = 0; break; }
+            dmode[i] = (int)tmp2[0] | ((int)tmp2[1] << 8);
         }
-        for (i = 0; i < MAX_F; i++) {
-            fowner[i] = (int)((uint32_t)buf[p]
-                    | ((uint32_t)buf[p + 1] << 8)
-                    | ((uint32_t)buf[p + 2] << 16)
-                    | ((uint32_t)buf[p + 3] << 24));
-            p += 4;
-            fmode[i] = (int)buf[p] | ((int)buf[p + 1] << 8);
-            p += 2;
+        for (i = 0; i < MAX_F && have_owners; i++) {
+            if (fill(ctx, tmp4, 4) != 0) { have_owners = 0; break; }
+            fowner[i] = (int)((uint32_t)tmp4[0] | ((uint32_t)tmp4[1] << 8)
+                     | ((uint32_t)tmp4[2] << 16) | ((uint32_t)tmp4[3] << 24));
+            if (fill(ctx, tmp2, 2) != 0) { have_owners = 0; break; }
+            fmode[i] = (int)tmp2[0] | ((int)tmp2[1] << 8);
         }
     }
+    return 0;
+}
 
+/* buffer wrapper: identical semantics to the historical reader */
+typedef struct { const uint8_t* p; const uint8_t* end; } fs_buf_fill_ctx;
+static int fs_buf_fill(void* vctx, uint8_t* dst, uint32_t len)
+{
+    fs_buf_fill_ctx* ctx = (fs_buf_fill_ctx*)vctx;
+    if ((uint32_t)(ctx->end - ctx->p) < len) return -1;
+    {
+        uint32_t k;
+        for (k = 0; k < len; k++) dst[k] = ctx->p[k];
+    }
+    ctx->p += len;
+    return 0;
+}
+
+int fs_deserialize(const uint8_t* buf, uint32_t buf_size) {
+    fs_buf_fill_ctx ctx;
+    if (!buf) return -1;
+    ctx.p = buf; ctx.end = buf + buf_size;
+    return fs_deserialize_fill(&ctx, fs_buf_fill);
+}
+
+/* Zero-copy read access: pointer straight into the file-data pool.
+ * The pool never moves existing allocations, so the pointer stays
+ * valid while the file is not rewritten. Read permission is checked
+ * exactly like fs_read_file; NULL + fs_errno=13 on denial. */
+const char* fs_file_data_ptr(const char* path, uint32_t* size_out)
+{
+    fs_errno = 0;
+    if (!path || !path[0]) return 0;
+    {
+        char full[256];
+        int i;
+        abs_path(path, full);
+        for (i = 0; i < MAX_F; i++) {
+            if (fused[i] && strcmp_safe(fname[i], full)) {
+                if (!perm_allows(fmode[i], fowner[i], 0400)) {
+                    fs_deny(full);
+                    return 0;
+                }
+                if (size_out)
+                    *size_out = (uint32_t)(fsize[i] < 0 ? 0 : fsize[i]);
+                return fdata[i];
+            }
+        }
+    }
     return 0;
 }

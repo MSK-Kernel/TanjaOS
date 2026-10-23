@@ -28,7 +28,7 @@ static void ls_build_path(const char* base_args, const char* child, char* out, i
     out[p] = 0;
 }
 
-/* Format a byte count into out (>= 12 bytes).  human=0 -> plain bytes,
+/* Format a byte count into out (>= 12 bytes). human=0 -> plain bytes,
  * human=1 -> 1.5K / 12K / 3.2M style (one decimal under 10, like ls -h). */
 static void ls_fmt_size(uint32_t n, int human, char* out) {
     char num[16];
@@ -62,7 +62,7 @@ static void ls_fmt_size(uint32_t n, int human, char* out) {
 }
 
 /* Number of entries ls would show inside directory `path`
- * (dotfiles only count when show_hidden).  Uses buf as scratch. */
+ * (dotfiles only count when show_hidden). Uses buf as scratch. */
 static int ls_count_entries(const char* path, char* buf, int show_hidden) {
     uint32_t sz = 0;
     int n = 0, i = 0;
@@ -76,7 +76,7 @@ static int ls_count_entries(const char* path, char* buf, int show_hidden) {
     return n;
 }
 
-/* Shared entry state
+/* shared entry state
  * One set of arrays holds whichever entries are about to be printed:
  * a directory's children, or the plain file operands of a multi-arg
  * ls (what `ls *.c` expands to). */
@@ -116,7 +116,7 @@ extern int fs_errno;
 extern int fs_cur_uid;
 
 /* Green when marked executable (chmod +x - the same signal real ls
- * uses) or when the content looks like a program or script.  Content
+ * uses) or when the content looks like a program or script. Content
  * sniffing is skipped for files the current user may not read, so
  * listings of mixed-permission directories don't spray "permission
  * denied". */
@@ -131,8 +131,8 @@ static int ls_is_green(const char* path) {
         }
     }
     /* Content sniffing is gone: a text file whose line begins with a
-     * command word used to be painted green.  The +x bit is now the
-     * single source of truth - chmod +x makes a file green. */
+ * command word used to be painted green. The +x bit is now the
+ * single source of truth - chmod +x makes a file green. */
     return 0;
 }
 
@@ -359,8 +359,8 @@ void main(char* args) {
     }
 
     /* multiple operands: missing ones are reported, file operands are
-     * listed together in one grid, and directories each get a
-     * "path:" header - the same shape as coreutils ls. */
+ * listed together in one grid, and directories each get a
+ * "path:" header - the same shape as coreutils ls. */
     static char fpaths[LS_MAX_OPERANDS][256];
     static char dpaths[LS_MAX_OPERANDS][256];
     int nfiles = 0, ndirs = 0, i;

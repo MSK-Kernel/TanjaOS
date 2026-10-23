@@ -85,18 +85,69 @@ typedef struct {
 #define AT_FLAGS_L    8
 #define AT_ENTRY_L    9
 
-#define LINUX_STACK_TOP   0x09040000u
-#define LX_EXE_DYN_BASE   0x08048000u   /* load base for ET_DYN (PIE) images */
-#define LX_LD_BASE        0x54000000u   /* where PT_INTERP (ld-linux) is placed */
-#define LINUX_MMAP_BASE   0x50000000u
-#define LINUX_MMAP_LIMIT  0x51000000u
+/* runtime memory layout
+ * The Linux ABI regions used to sit at fixed high addresses
+ * (ld.so at 0x54000000 = 1.31 GiB, mmap at 0x50000000), which forced
+ * every machine to have >= 1.5 GiB of RAM just to run a dynamic
+ * binary. They are now placed just above the kernel image and sized
+ * relative to the ACTUAL top of RAM, so a 64 MiB machine runs the
+ * same dynamic binaries a 1.5 GiB machine does. linux_set_layout()
+ * is called once at boot (kernel.c) with the kernel image end and the
+ * RAM top from the multiboot info. */
+static uint32_t lx_ld_base;       /* where PT_INTERP (ld-linux) is placed */
+static uint32_t lx_mmap_base;     /* Linux mmap region [base, limit)      */
+static uint32_t lx_mmap_limit;
+static uint32_t lx_exe_base;      /* load base for ET_DYN (PIE) images    */
+static uint32_t lx_stack_top;     /* initial program stack top            */
+static uint32_t lx_brk_limit;     /* sbrk ceiling (below the stack)       */
+
+/* The native applet/program region SHARES the linux mmap window:
+ * a loaded applet and a running Linux binary never coexist (Linux
+ * programs cannot execve() an applet, and every shell script runs
+ * its lines strictly one at a time), so applets can load into the
+ * mmap area and still leave the exe/brk/stack space untouched. */
+uint32_t linux_applet_region_base(void) { return lx_mmap_base; }
+uint32_t linux_applet_region_limit(void) { return lx_mmap_limit; }
+
+void linux_set_layout(uint32_t kernel_end, uint32_t ram_top)
+{
+    /* 2 MiB of headroom above the kernel image for the native
+ * applet/program region, then (in order): ld.so, the mmap
+ * region (libs + arena), then the PIE exe area, then free
+ * brk space up to the stack, which sits 512 KiB below top of
+ * RAM. */
+    uint32_t base = (kernel_end + (2u << 20) + 4095u) & ~4095u;
+    uint32_t avail, win;
+    lx_ld_base    = base;
+    lx_mmap_base  = base + (1u << 20);
+    if (ram_top > (512u << 10)) {
+        lx_stack_top = (ram_top - (512u << 10)) & ~4095u;
+        lx_brk_limit = lx_stack_top - (1u << 20);
+    } else {
+        lx_stack_top = 0;
+        lx_brk_limit = 0;
+        return;
+    }
+
+    /* The mmap/applet window is shared by the Linux libs, applets and
+ * the exe. It wants 16 MiB (doom's BSS alone is ~12 MiB), but on
+ * a 64 MiB machine there is only ~9 MiB to give after the kernel
+ * image - so size it to what actually fits, keeping at least a
+ * small exe/brk reserve above it. */
+    avail = (lx_stack_top > lx_mmap_base) ? (lx_stack_top - lx_mmap_base) : 0;
+    win = (avail > (4u << 20)) ? avail - (4u << 20) : 0;
+    if (win > (16u << 20)) win = (16u << 20);
+    if (win < (9u << 20)) win = (9u << 20);
+    lx_mmap_limit = lx_mmap_base + win;
+    lx_exe_base   = lx_mmap_limit;
+}
 
 static uint32_t linux_brk_start;
 static uint32_t linux_brk_cur;
-static uint32_t linux_mmap_next = LINUX_MMAP_BASE;
+static uint32_t linux_mmap_next;        /* set per-run from lx_mmap_base */
 static int      linux_exit_code;
 
-/* Optional debug trace (shell: `set LINUX_TRACE 1`) */
+/* optional debug trace (shell: `set LINUX_TRACE 1`) */
 static int      lx_trace;
 static char     linux_prog_path[MAX_PATH];
 
@@ -170,20 +221,51 @@ void lx_log_dump(void)
 /* fd emulation */
 #define LINUX_MAX_FD   6
 
+/* Writable fds stage their bytes in a small shared scratch instead of
+ * an inline per-fd copy (a full MAX_FILE_SIZE buffer per fd cost 24 MiB
+ * of BSS). Two concurrent writable files, 2 MiB each. Read-only fds
+ * do not copy at all: data points straight into the fs file pool. */
+#define LX_WRITE_SLOTS      2
+#define LX_WRITE_SLOT_BYTES (2u * 1024u * 1024)
+#define LX_DIR_LIST_BYTES   (64u * 1024)
+#define ENOSPC_L   28
+
 typedef struct {
     int      used;
     int      is_dir;
     int      writable;
     int      dirty;
     int      append;
+    int      zero_copy;     /* data points into the fs pool (ro fd) */
     char     path[MAX_PATH];
     uint32_t pos;
     uint32_t len;
     uint32_t dir_pos;
-    char     data[MAX_FILE_SIZE];
+    char*    data;           /* pool ptr (ro) or scratch slot (rw)  */
+    uint32_t cap;            /* scratch capacity for writable fds    */
+    int      slot;           /* scratch slot index, -1 = none       */
 } linux_fd_t;
 
 static linux_fd_t lfd[LINUX_MAX_FD];
+static uint8_t lx_write_scratch[LX_WRITE_SLOTS][LX_WRITE_SLOT_BYTES];
+static uint8_t lx_write_slot_used[LX_WRITE_SLOTS];
+static char    lx_dir_list[LX_DIR_LIST_BYTES];
+
+static int slot_claim(void)
+{
+    int i;
+    for (i = 0; i < LX_WRITE_SLOTS; i++)
+        if (!lx_write_slot_used[i]) {
+            lx_write_slot_used[i] = 1;
+            return i;
+        }
+    return -1;
+}
+
+static void slot_release(int s)
+{
+    if (s >= 0 && s < LX_WRITE_SLOTS) lx_write_slot_used[s] = 0;
+}
 
 static char* lxstrcpy(char* d, const char* s)
 {
@@ -260,8 +342,8 @@ static uint32_t sys_set_thread_area(uint32_t* udesc)
 
     if (entry_number == 0xFFFFFFFFu) {
         /* single tasking: every run may reuse entry 6; the
-         * descriptor only lives while the program runs, so
-         * slots are never exhausted */
+ * descriptor only lives while the program runs, so
+ * slots are never exhausted */
         entry_number = 6;
         udesc[0] = entry_number;
     }
@@ -290,7 +372,7 @@ static linux_fd_t* fd_get(uint32_t fd)
 
 static void fd_flush(linux_fd_t* f)
 {
-    if (f->dirty && f->writable)
+    if (f->dirty && f->writable && !f->zero_copy)
         fs_write_file(f->path, f->data, f->len);
     f->dirty = 0;
 }
@@ -302,7 +384,8 @@ static void fd_flush_all(void)
         if (lfd[i].used) fd_flush(&lfd[i]);
 }
 
-/* Syscalls */
+/* syscalls */
+
 static uint32_t sys_open(const char* path, uint32_t flags)
 {
     int i;
@@ -319,18 +402,30 @@ static uint32_t sys_open(const char* path, uint32_t flags)
 
     memset(f, 0, sizeof(*f));
     f->used = 1;
+    f->slot = -1;
     if (flags & (O_WRONLY_L | O_RDWR_L)) f->writable = 1;
+
+    /* writable fds claim a staging slot up front (or the open fails:
+ * a small-RAM machine cannot afford an inline copy per fd). */
+    if (f->writable) {
+        int s = slot_claim();
+        if (s < 0) { f->used = 0; return (uint32_t)-ENOMEM_L; }
+        f->slot = s;
+        f->data = (char*)lx_write_scratch[s];
+        f->cap  = LX_WRITE_SLOT_BYTES;
+    }
 
     if (fs_directory_exists(path)) {
         f->is_dir = 1;
-        if (fs_list_directory(path, f->data, &size) != 0) {
+        if (fs_list_directory(path, lx_dir_list, &size) != 0) {
             /* directory exists but may not be listed (no read bit):
-             * report EACCES instead of handing out an empty fd */
+ * report EACCES instead of handing out an empty fd */
             f->used = 0;
             return (uint32_t)-EACCES_L;
         }
 
         f->len = size;
+        f->data = lx_dir_list;
         for (i = 0; i < MAX_PATH - 1 && path[i]; i++)
             f->path[i] = path[i];
         f->path[i] = 0;
@@ -340,19 +435,22 @@ static uint32_t sys_open(const char* path, uint32_t flags)
     if (!fs_file_exists(path)) {
         if (!(flags & O_CREAT_L)) {
             f->used = 0;
+            slot_release(f->slot);
             return (uint32_t)-ENOENT_L;
         }
         if (flags & O_EXCL_L) {
             f->used = 0;
+            slot_release(f->slot);
             return (uint32_t)-EEXIST_L;
         }
         {
             int cr = fs_create_file(path);
             if (cr != 0) {
                 /* -2 = permission denied; anything else = bad parent
-                 * path (ENOENT).  Without this the open pretended
-                 * to succeed and writes vanished on flush. */
+ * path (ENOENT). Without this the open pretended
+ * to succeed and writes vanished on flush. */
                 f->used = 0;
+                slot_release(f->slot);
                 return (uint32_t)(cr == -2 ? -EACCES_L : -ENOENT_L);
             }
         }
@@ -364,13 +462,30 @@ static uint32_t sys_open(const char* path, uint32_t flags)
         return (uint32_t)(f - lfd);
     }
 
-    if (fs_read_file(path, f->data, &size) != 0) {
-        /* the file exists but may not be read (fs_deny): EACCES,
-         * not an fd full of zeros */
-        f->used = 0;
-        return (uint32_t)-EACCES_L;
+    if (!f->writable) {
+        /* read-only: zero-copy pointer straight into the fs pool */
+        const char* d = fs_file_data_ptr(path, &size);
+        if (!d && fs_errno == 13) {
+            f->used = 0;
+            return (uint32_t)-EACCES_L;
+        }
+        f->data = (char*)d;
+        f->len = size;
+        f->zero_copy = 1;
+    } else {
+        /* writable: stage the current content in the scratch slot */
+        if (fs_read_file(path, f->data, &size) != 0) {
+            f->used = 0;
+            slot_release(f->slot);
+            return (uint32_t)-EACCES_L;
+        }
+        if (size > f->cap) {
+            f->used = 0;
+            slot_release(f->slot);
+            return (uint32_t)-ENOSPC_L;
+        }
+        f->len = size;
     }
-    f->len = size;
     for (i = 0; i < MAX_PATH - 1 && path[i]; i++)
         f->path[i] = path[i];
     f->path[i] = 0;
@@ -384,8 +499,19 @@ static uint32_t sys_open(const char* path, uint32_t flags)
 static uint32_t sys_close(uint32_t fd)
 {
     linux_fd_t* f = fd_get(fd);
+    int i, shared;
     if (!f) return (uint32_t)-EBADF_L;
     fd_flush(f);
+    /* dup() makes fds share a scratch slot; only the last holder
+ * releases it back to the pool. */
+    shared = 0;
+    for (i = 3; i < LINUX_MAX_FD; i++)
+        if (lfd[i].used && &lfd[i] != f && lfd[i].slot == f->slot) {
+            shared = 1;
+            break;
+        }
+    if (!shared) slot_release(f->slot);
+    f->slot = -1;
     f->used = 0;
     return 0;
 }
@@ -418,6 +544,17 @@ static uint32_t sys_read(uint32_t fd, uint8_t* buf, uint32_t count)
     f = fd_get(fd);
     if (!f) return (uint32_t)-EBADF_L;
     if (f->is_dir) return (uint32_t)-EISDIR_L;
+
+    if (f->zero_copy) {
+        /* re-resolve: the pool never moves an allocation, but the
+ * file may have been rewritten (or deleted) since open */
+        uint32_t size = 0;
+        const char* d = fs_file_data_ptr(f->path, &size);
+        if (!d && fs_errno == 13) return (uint32_t)-EACCES_L;
+        if (!d) { f->len = 0; return 0; }     /* deleted or empty */
+        f->data = (char*)d;
+        f->len = size;
+    }
     if (f->pos >= f->len) return 0;           /* EOF */
 
     avail = f->len - f->pos;
@@ -448,12 +585,12 @@ static uint32_t sys_write(uint32_t fd, const uint8_t* buf, uint32_t count)
     if (f->append) f->pos = f->len;
     if (f->pos > f->len) {                    /* sparse gap: zero-fill */
         uint32_t gap = f->pos - f->len;
-        if (f->len + gap > MAX_FILE_SIZE) return (uint32_t)-ENOMEM_L;
+        if (f->len + gap > f->cap) return (uint32_t)-ENOSPC_L;
         memset(f->data + f->len, 0, gap);
         f->len = f->pos;
     }
 
-    room = MAX_FILE_SIZE - f->pos;
+    room = f->cap - f->pos;
     n = count < room ? count : room;
     memcpy(f->data + f->pos, buf, n);
     f->pos += n;
@@ -501,7 +638,7 @@ static uint32_t sys_llseek(uint32_t fd, uint32_t off_hi, uint32_t off_lo,
     if (np == (uint32_t)-EINVAL_L) return np;
     f->pos = np;
     /* result is a loff_t* (64-bit): high dword must be zeroed or
-     * glibc sees a huge offset and lseek() reports EOVERFLOW */
+ * glibc sees a huge offset and lseek() reports EOVERFLOW */
     result[0] = np;
     result[1] = 0;
     return 0;
@@ -517,8 +654,8 @@ static uint32_t sys_getdents64(uint32_t fd, uint8_t* buf, uint32_t bufsize)
     if (!buf || bufsize < 32) return (uint32_t)-EINVAL_L;
 
     /* The listing in f->data is "name[/]\n" per entry; emit
-     * linux_dirent64 records until the buffer fills or the
-     * listing is exhausted. */
+ * linux_dirent64 records until the buffer fills or the
+ * listing is exhausted. */
     while (f->dir_pos < f->len) {
         char name[MAX_FILENAME + 2];
         int n = 0, is_dir = 0, reclen, need;
@@ -540,9 +677,9 @@ static uint32_t sys_getdents64(uint32_t fd, uint8_t* buf, uint32_t bufsize)
 
         rec = buf + filled;
         memset(rec, 0, (uint32_t)reclen);
-        *(uint64_t*)(rec + 0)  = (uint64_t)(need);  /* d_ino  */
-        *(uint64_t*)(rec + 8)  = (uint64_t)(need);  /* d_off  */
-        *(uint16_t*)(rec + 16) = (uint16_t)reclen;  /* d_reclen */
+ * (uint64_t*)(rec + 0) = (uint64_t)(need); /* d_ino */
+ * (uint64_t*)(rec + 8) = (uint64_t)(need); /* d_off */
+ * (uint16_t*)(rec + 16) = (uint16_t)reclen; /* d_reclen */
         rec[18] = (uint8_t)(is_dir ? DT_DIR_L : DT_REG_L);
         lxstrcpy((char*)(rec + 19), name);
 
@@ -551,7 +688,7 @@ static uint32_t sys_getdents64(uint32_t fd, uint8_t* buf, uint32_t bufsize)
     return filled;
 }
 
-/* Stable, unique, non-zero pseudo-inode for a path.  MUST be
+/* Stable, unique, non-zero pseudo-inode for a path. MUST be
  * identical for every stat of the same file and different across
  * files: glibc's dynamic loader identifies already-loaded objects
  * by (st_dev, st_ino) and will alias a second library to the first
@@ -569,18 +706,18 @@ static void fill_stat64m(uint8_t* s, int is_dir, uint32_t size, int fmode,
                          const char* path)
 {
     /* Only 96 bytes: never write past the caller's struct - the
-     * extra st_ino field of the 104-byte kernel layout overlaps
-     * the caller's stack and corrupts its locals. */
+ * extra st_ino field of the 104-byte kernel layout overlaps
+ * the caller's stack and corrupts its locals. */
     memset(s, 0, 96);
-    *(uint32_t*)(s + 12) = lxino(path);                          /* __st_ino   */
+ * (uint32_t*)(s + 12) = lxino(path); /* __st_ino */
     uint32_t perm = (fmode > 0) ? ((uint32_t)fmode & 0777u)
                                  : (is_dir ? 0755u : 0644u);
     *(uint32_t*)(s + 16) = (is_dir ? S_IFDIR_L : S_IFREG_L) | perm; /* st_mode */
-    *(uint32_t*)(s + 20) = 1;                                   /* st_nlink   */
-    *(uint32_t*)(s + 44) = size;                                /* st_size lo */
-    *(uint32_t*)(s + 52) = 512;                                 /* st_blksize */
-    *(uint64_t*)(s + 56) = (size + 511) / 512;                  /* st_blocks  */
-    *(uint32_t*)(s + 80) = get_uptime_ms() / 1000;               /* st_mtime   */
+ * (uint32_t*)(s + 20) = 1; /* st_nlink */
+ * (uint32_t*)(s + 44) = size; /* st_size lo */
+ * (uint32_t*)(s + 52) = 512; /* st_blksize */
+ * (uint64_t*)(s + 56) = (size + 511) / 512; /* st_blocks */
+ * (uint32_t*)(s + 80) = get_uptime_ms() / 1000; /* st_mtime */
 }
 
 /* callers without a known mode keep the old defaults */
@@ -683,22 +820,22 @@ static uint32_t sys_fstatat64(int32_t dirfd, const char* path, uint8_t* s,
 }
 
 /* statx(dirfd, path, flags, mask, struct statx*): the first stat call
- * modern glibc makes.  Fills a 256-byte struct statx. */
+ * modern glibc makes. Fills a 256-byte struct statx. */
 static void fill_statxm(uint8_t* x, int is_dir, uint32_t size, int fmode,
                         const char* path)
 {
     uint32_t perm = (fmode > 0) ? ((uint32_t)fmode & 0777u)
                                 : (is_dir ? 0755u : 0644u);
     memset(x, 0, 256);
-    *(uint32_t*)(x + 0)  = 0x000007ff;          /* stx_mask: BASIC_STATS */
-    *(uint32_t*)(x + 4)  = 512;                 /* stx_blksize */
-    *(uint32_t*)(x + 16) = 1;                   /* stx_nlink */
+ * (uint32_t*)(x + 0) = 0x000007ff; /* stx_mask: BASIC_STATS */
+ * (uint32_t*)(x + 4) = 512; /* stx_blksize */
+ * (uint32_t*)(x + 16) = 1; /* stx_nlink */
     *(uint16_t*)(x + 28) = (uint16_t)((is_dir ? S_IFDIR_L : S_IFREG_L) | perm);
-    *(uint64_t*)(x + 32) = lxino(path);         /* stx_ino */
-    *(uint64_t*)(x + 40) = size;                /* stx_size */
-    *(uint64_t*)(x + 48) = (size + 511) / 512;  /* stx_blocks */
-    *(uint64_t*)(x + 56) = 0x000007ff;          /* attributes_mask */
-    *(uint32_t*)(x + 112) = get_uptime_ms() / 1000;  /* mtime sec lo */
+ * (uint64_t*)(x + 32) = lxino(path); /* stx_ino */
+ * (uint64_t*)(x + 40) = size; /* stx_size */
+ * (uint64_t*)(x + 48) = (size + 511) / 512; /* stx_blocks */
+ * (uint64_t*)(x + 56) = 0x000007ff; /* attributes_mask */
+ * (uint32_t*)(x + 112) = get_uptime_ms() / 1000; /* mtime sec lo */
 }
 
 /* callers without a known mode keep the old defaults */
@@ -772,21 +909,21 @@ static uint32_t sys_mmap(uint32_t addr, uint32_t len, uint32_t flags,
     len = (len + 4095) & ~4095u;
 
     if (flags & 0x10) {                       /* MAP_FIXED */
-        if (addr < LINUX_MMAP_BASE || addr + len > LINUX_MMAP_LIMIT)
+        if (addr < lx_mmap_base || addr + len > lx_mmap_limit)
             return (uint32_t)-ENOMEM_L;
         a = addr;
     } else {
         if (addr) return (uint32_t)-ENODEV_L; /* only anonymous supported */
         a = linux_mmap_next;
-        if (a + len > LINUX_MMAP_LIMIT) return (uint32_t)-ENOMEM_L;
+        if (a + len > lx_mmap_limit) return (uint32_t)-ENOMEM_L;
         linux_mmap_next += len;
     }
     memset((void*)a, 0, len);
 
     /* File-backed mapping: the file lives whole in RAM (the fs
-     * keeps it in its pool), so "mapping" is a plain copy of the
-     * requested window into the freshly zeroed area.  MAP_PRIVATE
-     * semantics are free: no other user shares the pages. */
+ * keeps it in its pool), so "mapping" is a plain copy of the
+ * requested window into the freshly zeroed area. MAP_PRIVATE
+ * semantics are free: no other user shares the pages. */
     if (file_backed) {
         linux_fd_t* f = fd_get((uint32_t)fd);
         if (!f) return (uint32_t)-EBADF_L;
@@ -802,11 +939,11 @@ static uint32_t sys_mmap(uint32_t addr, uint32_t len, uint32_t flags,
 
 static uint32_t sys_brk(uint32_t addr)
 {
-    if (addr >= linux_brk_start && addr < linux_brk_start + 0x4000000u) {
+    if (addr >= linux_brk_start && addr < lx_brk_limit) {
         /* Linux guarantees fresh anonymous memory is zero-filled:
-         * every byte the program newly extends its heap by arrives
-         * zeroed, or a next-run malloc reads the previous run's
-         * stale chunks. */
+ * every byte the program newly extends its heap by arrives
+ * zeroed, or a next-run malloc reads the previous run's
+ * stale chunks. */
         if (addr > linux_brk_cur)
             memset((void*)linux_brk_cur, 0, addr - linux_brk_cur);
         linux_brk_cur = addr;
@@ -856,7 +993,7 @@ static uint32_t sys_writev(uint32_t fd, uint32_t iov, uint32_t iovcnt)
 }
 
 
-/* Misc syscall helpers */
+/* misc syscall helpers */
 
 static uint32_t lxstrlen(const char* s)
 {
@@ -881,9 +1018,9 @@ static uint32_t sys_getrandom(uint8_t* buf, uint32_t count)
 static void lx_fill_timespec64(uint8_t* p)
 {
     uint32_t ms = get_uptime_ms();
-    *(uint32_t*)(p + 0)  = ms / 1000;             /* tv_sec lo */
-    *(uint32_t*)(p + 4)  = 0;                     /* tv_sec hi */
-    *(uint32_t*)(p + 8)  = (ms % 1000) * 1000000; /* tv_nsec lo */
+ * (uint32_t*)(p + 0) = ms / 1000; /* tv_sec lo */
+ * (uint32_t*)(p + 4) = 0; /* tv_sec hi */
+ * (uint32_t*)(p + 8) = (ms % 1000) * 1000000; /* tv_nsec lo */
     *(uint32_t*)(p + 12) = 0;
 }
 
@@ -906,17 +1043,17 @@ static uint32_t sys_gettimeofday(uint8_t* tv)
 static uint32_t sys_getrlimit(uint8_t* rlim)
 {
     if (!rlim) return (uint32_t)-EINVAL_L;
-    *(uint32_t*)(rlim + 0) = 0xFFFFFFFFu;     /* rlim_cur = inf */
-    *(uint32_t*)(rlim + 4) = 0xFFFFFFFFu;     /* rlim_max */
+ * (uint32_t*)(rlim + 0) = 0xFFFFFFFFu; /* rlim_cur = inf */
+ * (uint32_t*)(rlim + 4) = 0xFFFFFFFFu; /* rlim_max */
     return 0;
 }
 
 static uint32_t sys_prlimit64(uint8_t* oldp)
 {
     if (oldp) {
-        *(uint32_t*)(oldp + 0)  = 0xFFFFFFFFu;
-        *(uint32_t*)(oldp + 4)  = 0xFFFFFFFFu;
-        *(uint32_t*)(oldp + 8)  = 0xFFFFFFFFu;
+ * (uint32_t*)(oldp + 0) = 0xFFFFFFFFu;
+ * (uint32_t*)(oldp + 4) = 0xFFFFFFFFu;
+ * (uint32_t*)(oldp + 8) = 0xFFFFFFFFu;
         *(uint32_t*)(oldp + 12) = 0xFFFFFFFFu;
     }
     return 0;
@@ -1043,8 +1180,8 @@ static uint32_t sys_getrusage(uint8_t* ru)
     uint32_t ms = get_uptime_ms();
     if (!ru) return 0;
     memset(ru, 0, 72);
-    *(uint32_t*)(ru + 0) = ms / 1000;   /* ru_utime.tv_sec  */
-    *(uint32_t*)(ru + 8) = ms / 1000;   /* ru_stime.tv_sec  */
+ * (uint32_t*)(ru + 0) = ms / 1000; /* ru_utime.tv_sec */
+ * (uint32_t*)(ru + 8) = ms / 1000; /* ru_stime.tv_sec */
     return 0;
 }
 
@@ -1052,10 +1189,10 @@ static uint32_t sys_sysinfo(uint8_t* si)
 {
     if (!si) return (uint32_t)-EINVAL_L;
     memset(si, 0, 64);
-    *(uint32_t*)(si + 0)  = get_uptime_ms() / 1000;  /* uptime  */
-    *(uint32_t*)(si + 16) = 0x40000000;               /* totalram */
-    *(uint32_t*)(si + 20) = 0x10000000;               /* freeram  */
-    *(uint32_t*)(si + 40) = 1;                        /* procs   */
+ * (uint32_t*)(si + 0) = get_uptime_ms() / 1000; /* uptime */
+ * (uint32_t*)(si + 16) = 0x40000000; /* totalram */
+ * (uint32_t*)(si + 20) = 0x10000000; /* freeram */
+ * (uint32_t*)(si + 40) = 1; /* procs */
     return 0;
 }
 
@@ -1069,7 +1206,8 @@ static uint32_t sys_mremap(uint32_t old, uint32_t oldsz, uint32_t newsz)
     return n;
 }
 
-/* The dispatch table */
+/* the dispatch table */
+
 void linux_syscall(linux_regs_t* r)
 {
     uint32_t nr = r->eax;
@@ -1130,7 +1268,7 @@ void linux_syscall(linux_regs_t* r)
     case 45: r->eax = sys_brk(a1); break;
     case 54:                                                 /* ioctl */
         /* TCGETS on a console fd: report it as a tty so glibc's
-         * isatty() returns 1 for fd 0/1/2; everything else ENOTTY */
+ * isatty() returns 1 for fd 0/1/2; everything else ENOTTY */
         if (a2 == 0x5401u && a1 <= 2) {
             if (a3) memset((void*)a3, 0, 36);    /* struct termios */
             r->eax = 0;
@@ -1178,8 +1316,8 @@ void linux_syscall(linux_regs_t* r)
     case 163: r->eax = sys_mremap(a1, a2, a3); break;            /* mremap */
     case 174: case 175: r->eax = 0; break;      /* rt_sigaction/mask */
     case 180: { /* pread64: (fd, buf, count, pad, off_lo, off_hi) - i386
-                 * passes a 32-bit pad then the 64-bit offset; glibc
-                 * puts lo in the stack slot right after the pad */
+ * passes a 32-bit pad then the 64-bit offset; glibc
+ * puts lo in the stack slot right after the pad */
         linux_fd_t* f = fd_get(a1);
         if (!f || f->is_dir) { r->eax = (uint32_t)-EBADF_L; break; }
         {
@@ -1204,8 +1342,8 @@ void linux_syscall(linux_regs_t* r)
     case 220: r->eax = sys_getdents64(a1, (uint8_t*)a2, a3); break;
     case 224: r->eax = 1; break;                       /* gettid */
     case 240: /* futex: single thread - WAKE reports 1 woken, WAIT
-                * never actually blocks (nothing else can hold the
-                * lock; a real wait would deadlock the program) */
+ * never actually blocks (nothing else can hold the
+ * lock; a real wait would deadlock the program) */
         r->eax = ((a2 & 0x7fu) == 1) ? 1 : 0;
         break;
     case 243: r->eax = sys_set_thread_area((uint32_t*)a1); break;
@@ -1227,9 +1365,9 @@ void linux_syscall(linux_regs_t* r)
     case 355: r->eax = sys_getrandom((uint8_t*)a1, a2); break;
     case 172: r->eax = 0; break;                         /* prctl */
     case 37:  case 270: {                    /* kill / tgkill */
-        /* glibc abort()/raise() end here with SIGABRT.  Honour the
-         * signal as program termination and unwind to the shell,
-         * exactly like exit(), so a failed program cannot spin. */
+        /* glibc abort()/raise() end here with SIGABRT. Honour the
+ * signal as program termination and unwind to the shell,
+ * exactly like exit(), so a failed program cannot spin. */
         int sig = (nr == 270) ? (int)a3 : (int)a2;
         if (sig == 6 || sig == 9) {              /* ABRT / KILL */
             print("program aborted (signal ");
@@ -1248,9 +1386,9 @@ void linux_syscall(linux_regs_t* r)
               r->eax = 0; break;               /* clock_getres_time64 */
 
     /* Known-benign syscalls a static binary probes but this single
-     * tasking, no-network model cannot honour.  glibc/real programs
-     * tolerate ENOSYS for all of these - staying QUIET avoids
-     * misleading error spam on a successful run. */
+ * tasking, no-network model cannot honour. glibc/real programs
+ * tolerate ENOSYS for all of these - staying QUIET avoids
+ * misleading error spam on a successful run. */
     case 2:   case 7:   case 9:   case 11:  case 42:  case 67:  /* fork.. */
     case 82:  case 114: case 117: case 120: case 126: case 141:
     case 168: case 298: case 301: case 302: case 305:
@@ -1269,7 +1407,8 @@ void linux_syscall(linux_regs_t* r)
     lx_log_res[(lx_log_i - 1) % LX_LOG_N] = r->eax;
 }
 
-// linux_run - load a static ET_EXEC i386 image and run it
+/* linux_run - load a static ET_EXEC i386 image and run it
+ */
 
 int linux_run(const uint8_t* image, uint32_t size, const char* path,
               const char* args)
@@ -1294,10 +1433,10 @@ int linux_run(const uint8_t* image, uint32_t size, const char* path,
     if (phoff + phnum * phentsize > size) return -1;
 
     /* ET_DYN executables (PIE) carry relative addresses; they get a
-     * fixed load bias so their absolute code lives below the static
-     * ET_EXEC area.  Everything else is mapped verbatim as before. */
+ * fixed load bias so their absolute code lives below the static
+ * ET_EXEC area. Everything else is mapped verbatim as before. */
     if (e_type == 3 /* ET_DYN */)
-        load_bias = LX_EXE_DYN_BASE;
+        load_bias = lx_exe_base;
 
     /* find PT_INTERP (a dynamic executable names its interpreter) */
     for (i = 0; i < (int)phnum; i++) {
@@ -1323,25 +1462,25 @@ int linux_run(const uint8_t* image, uint32_t size, const char* path,
         if (load_bias + ph->p_vaddr + ph->p_memsz > max_end)
             max_end = load_bias + ph->p_vaddr + ph->p_memsz;
         /* the segment that contains file offset 0 holds the ELF
-         * header and the program-header table: remember where it
-         * landed so AT_PHDR can point at the mapped phdrs */
+ * header and the program-header table: remember where it
+ * landed so AT_PHDR can point at the mapped phdrs */
         if (ph->p_offset == 0)
             hdr_vaddr = load_bias + ph->p_vaddr;
     }
     if (!max_end) return -1;
 
     /* Zero the tail of the last page past p_memsz: ld.so's minimal
-     * malloc arena starts at _end and glibc's __minimal_calloc
-     * assumes bump-allocated memory is already zero.  Without this,
-     * a second dynamic run reuses stale link-map bytes from the
-     * previous run and dl_main skips the main map's relocation. */
+ * malloc arena starts at _end and glibc's __minimal_calloc
+ * assumes bump-allocated memory is already zero. Without this,
+ * a second dynamic run reuses stale link-map bytes from the
+ * previous run and dl_main skips the main map's relocation. */
     {
         uint32_t tail_end = (max_end + 4095) & ~4095u;
         if (tail_end > max_end)
             memset((void*)max_end, 0, tail_end - max_end);
     }
 
-    /* Dynamic: load the ELF interpreter (ld-linux) */
+    /* dynamic: load the ELF interpreter (ld-linux) */
     if (interp_path) {
         static uint8_t ldimg[512 * 1024];
         uint32_t ldsize = sizeof ldimg;
@@ -1365,13 +1504,13 @@ int linux_run(const uint8_t* image, uint32_t size, const char* path,
                 (const Elf32_Phdr*)(ldimg + ldph + i * ldphent);
             if (ph->p_type != PT_LOAD) continue;
             if (ph->p_offset + ph->p_filesz > ldsize) return -1;
-            memcpy((void*)(LX_LD_BASE + ph->p_vaddr),
+            memcpy((void*)(lx_ld_base + ph->p_vaddr),
                    ldimg + ph->p_offset, ph->p_filesz);
             if (ph->p_memsz > ph->p_filesz)
-                memset((void*)(LX_LD_BASE + ph->p_vaddr + ph->p_filesz), 0,
+                memset((void*)(lx_ld_base + ph->p_vaddr + ph->p_filesz), 0,
                        ph->p_memsz - ph->p_filesz);
-            if (LX_LD_BASE + ph->p_vaddr + ph->p_memsz > ldmax)
-                ldmax = LX_LD_BASE + ph->p_vaddr + ph->p_memsz;
+            if (lx_ld_base + ph->p_vaddr + ph->p_memsz > ldmax)
+                ldmax = lx_ld_base + ph->p_vaddr + ph->p_memsz;
         }
         if (!ldmax) return -1;
         {
@@ -1379,10 +1518,10 @@ int linux_run(const uint8_t* image, uint32_t size, const char* path,
             if (tail_end > ldmax)
                 memset((void*)ldmax, 0, tail_end - ldmax);
         }
-        ld_base = LX_LD_BASE;
+        ld_base = lx_ld_base;
         /* execution begins in the interpreter; it relocates itself
-         * against ld_base, maps libc, then jumps to AT_ENTRY */
-        entry = LX_LD_BASE + lde;
+ * against ld_base, maps libc, then jumps to AT_ENTRY */
+        entry = lx_ld_base + lde;
     } else if (load_bias) {
         entry = load_bias + entry;   /* static-PIE: bias the entry too */
     }
@@ -1397,18 +1536,33 @@ int linux_run(const uint8_t* image, uint32_t size, const char* path,
         linux_prog_path[i] = path[i];
     linux_prog_path[i] = 0;
 
+    /* The image must fit between the mmap region and the brk limit
+ * (which sits below the stack). On small-RAM machines a very
+ * large PIE can be too big to place - refuse with a clear error
+ * instead of overwriting the stack or mmap region. */
+    if (max_end > lx_brk_limit) {
+        print("linux: executable too large for this machine's RAM");
+        print(" (needs more than ");
+        print_dec((max_end - load_bias) / (1024u * 1024u));
+        print(" MiB above ");
+        print_dec((lx_exe_base) / (1024u * 1024u));
+        print(" MiB)\n");
+        return -1;
+    }
+
     linux_brk_start = (max_end + 4095) & ~4095u;
     linux_brk_cur  = linux_brk_start;
-    linux_mmap_next = LINUX_MMAP_BASE;
+    linux_mmap_next = lx_mmap_base;
     linux_exit_code = 0;
     lx_log_i = 0;                       /* fresh syscall trace per run */
 
     /* Fresh RAM per run: a previous dynamic run leaves stale bytes
-     * in the program stack area (below the initial sp) and in the
-     * mmap region; zero both so every run starts from identical RAM. */
-    memset((void*)0x09000000u, 0, 0x00050000u);   /* stack area      */
-    memset((void*)LINUX_MMAP_BASE, 0,
-           LINUX_MMAP_LIMIT - LINUX_MMAP_BASE);    /* mmap region     */
+ * in the program stack area (below the initial sp) and in the
+ * mmap region; zero both so every run starts from identical RAM. */
+    memset((void*)(lx_stack_top - 0x00050000u), 0, 0x00050000u); /* stack */
+    memset((void*)lx_mmap_base, 0,
+           lx_mmap_limit - lx_mmap_base);           /* mmap region   */
+    memset(lx_write_slot_used, 0, sizeof lx_write_slot_used);
     for (i = 0; i < LINUX_MAX_FD; i++) {
         lfd[i].used = 0;
         memset(&lfd[i], 0, sizeof lfd[i]);
@@ -1416,9 +1570,9 @@ int linux_run(const uint8_t* image, uint32_t size, const char* path,
     lfd[0].used = lfd[1].used = lfd[2].used = 1;   /* std fds */
     lx_stdin_pos = lx_stdin_len = 0;
 
-    /* Build the initial stack (Linux process ABI) */
+    /* build the initial stack (Linux process ABI) */
     {
-        char* sp_top = (char*)LINUX_STACK_TOP;
+        char* sp_top = (char*)lx_stack_top;
         char* sp;
         uint32_t argv_ptrs[32];
         uint32_t randp, execfnp;
@@ -1455,7 +1609,7 @@ int linux_run(const uint8_t* image, uint32_t size, const char* path,
         sp_top = (char*)(((uint32_t)sp_top + 16 + 3) & ~3u);
 
         /* AT_EXECFN: the full path as given (glibc's dl prints it
-         * in loader diagnostics and reads it for /proc/self/exe) */
+ * in loader diagnostics and reads it for /proc/self/exe) */
         execfnp = (uint32_t)(char*)sp_top;
         {
             const char* p2 = path;
@@ -1487,22 +1641,22 @@ int linux_run(const uint8_t* image, uint32_t size, const char* path,
         words[w++] = AT_BASE_L;   words[w++] = ld_base;
         words[w++] = AT_FLAGS_L;  words[w++] = 0;
         /* AT_ENTRY is the USER program's entry even though control
-         * starts in the interpreter - ld.so jumps there when done */
+ * starts in the interpreter - ld.so jumps there when done */
         words[w++] = AT_ENTRY_L;
         words[w++] = load_bias + *(uint32_t*)(e + 24);
         words[w++] = AT_NULL_L;   words[w++] = 0;
 
         /* The word block must end AT OR BELOW the string area's
-         * start (LINUX_STACK_TOP), never inside the strings: sp_top
-         * has already advanced past the strings + AT_RANDOM bytes. */
-        sp = (char*)(((uint32_t)LINUX_STACK_TOP - (uint32_t)(w * 4)) & ~15u);
+ * start (LINUX_STACK_TOP), never inside the strings: sp_top
+ * has already advanced past the strings + AT_RANDOM bytes. */
+        sp = (char*)(((uint32_t)lx_stack_top - (uint32_t)(w * 4)) & ~15u);
         memcpy(sp, words, (uint32_t)(w * 4));
 
         
         /* Crash isolation: a fault or Ctrl+C inside the program
-         * longjmps back here, exactly as exit() does through
-         * linux_exit_restore.  The jmp buffer is saved/restored so
-         * nested programs unwind to their own linux_run/elf_run. */
+ * longjmps back here, exactly as exit() does through
+ * linux_exit_restore. The jmp buffer is saved/restored so
+ * nested programs unwind to their own linux_run/elf_run. */
         {
             int save_active = tanja_exit_active;
             int save_jmp[5];
@@ -1530,7 +1684,7 @@ int linux_run(const uint8_t* image, uint32_t size, const char* path,
     }
 
     /* linux_enter "returns" here after exit(): the asm restored the
-     * kernel stack, so we unwind exactly as if it never happened. */
+ * kernel stack, so we unwind exactly as if it never happened. */
     return linux_exit_code;
 }
 
