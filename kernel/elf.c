@@ -2,13 +2,13 @@
 #include <stddef.h>
 #include "../include/fs.h"
 
-/* ---- console (for error reporting) ------------------------- */
+/* Console (for error reporting) */
 extern void print(const char* s);
 extern int printf(const char* fmt, ...);
 extern char* itoa(int value, char* buf, int base);
 extern void print_n(const char* s, uint32_t len);
 
-/* ---- kernel exports available to programs ------------------- */
+/* Kernel exports available to programs */
 extern void print_color(const char* s, uint16_t color);
 extern void console_putc(char c);
 extern void putc_color(char c, uint16_t color);
@@ -90,7 +90,7 @@ int errno = 0;
 TANJA_ATOMIC_ALL(TANJA_ATOMIC_EX)
 #undef TANJA_ATOMIC_EX
 
-/* ---- kernel C library (kernel/libc.c + libc2.c; list in libc.h) ---- */
+/* Kernel C library (kernel/libc.c + libc2.c; list in libc.h) */
 #include "libc.h"
 #define TANJA_LIBC_EX(name, ret, params) extern ret name params;
 TANJA_LIBC_ALL(TANJA_LIBC_EX)
@@ -114,7 +114,7 @@ extern int kb_raw_mode;   /* raw-keyboard program mode; cleared on exit */
 extern int tanja_exit_code;
 
 
-/* ---- libgcc 64-bit helpers ------------------------------- */
+/* libgcc 64-bit helpers */
 /* tcc-generated i386 code calls these for 64-bit arithmetic and
  * float<->64-bit conversions.  They live in libgcc.a (linked into
  * the kernel); referencing them in the export table below forces
@@ -294,7 +294,7 @@ static const struct tanja_export tanja_exports[] = {
     { "__fixunsxfdi", (void*)__fixunsxfdi },
 };
 
-/* ---- ELF32 definitions ------------------------------------- */
+/* ELF32 definitions */
 typedef struct {
     uint8_t  e_ident[16];
     uint16_t e_type;
@@ -364,7 +364,7 @@ typedef struct {
 #define R_386_PC32     2
 #define R_386_PLT32    4
 
-/* ---- program region ----------------------------------------- */
+/* Program region */
 /* Real ELF executables on x86-32 traditionally load at 0x40000000
  * (1 GiB).  Nothing else in the kernel lives there, so programs get
  * the whole 16 MiB window.  Loading is stack-disciplined: nested
@@ -382,7 +382,7 @@ extern uint8_t __kernel_end;
 #define PROGRAM_LIMIT_SIZE (16u * 1024u * 1024u)
 
 
-/* ---- export table introspection ---------------------------- */
+/* Export table introspection */
 /* tcc uses these at COMPILE time to verify that every external
  * symbol a program references is actually provided by the kernel,
  * so a missing function is reported when compiling, not when the
@@ -495,7 +495,7 @@ int elf_run(const uint8_t* image, uint32_t size, const char* path, const char* a
     }
     sh = (const Elf32_Shdr*)(image + eh->e_shoff);
 
-    /* ---- pass 1: place every allocatable section in the region ---- */
+    /* Pass 1: place every allocatable section in the region */
     uint8_t* save_brk = program_brk;
     uint32_t cur = (uint32_t)program_brk;
 
@@ -543,7 +543,7 @@ int elf_run(const uint8_t* image, uint32_t size, const char* path, const char* a
     }
     program_brk = (uint8_t*)cur;
 
-    /* ---- find the symbol table and its string table ---- */
+    /* Find the symbol table and its string table */
     const Elf32_Sym* symtab = 0;
     uint32_t nsyms = 0;
     const char* symstr = 0;
@@ -564,7 +564,7 @@ int elf_run(const uint8_t* image, uint32_t size, const char* path, const char* a
         return -1;
     }
 
-    /* ---- pass 2: apply relocations ---- */
+    /* Pass 2: apply relocations */
     uint32_t rel_ok = 1;
     for (i = 0; i < nsec && rel_ok; i++) {
         if (sh[i].sh_type != SHT_REL)
@@ -658,7 +658,7 @@ int elf_run(const uint8_t* image, uint32_t size, const char* path, const char* a
         }
     }
 
-    /* ---- find the entry point ---- */
+    /* Find the entry point */
     uint32_t entry = 0;
     for (i = 0; i < (int)nsyms; i++) {
         const char* nm = symstr + symtab[i].st_name;
@@ -679,7 +679,7 @@ int elf_run(const uint8_t* image, uint32_t size, const char* path, const char* a
         return -1;
     }
 
-    /* ---- run it ---- */
+    /* Run it */
     {
         /* Build argc/argv for programs that want them (argv[0] is
          * the program path; also exported as tanja_argc/argv). */

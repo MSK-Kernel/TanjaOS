@@ -24,7 +24,7 @@ typedef struct {
     uint32_t edi, esi, ebp, esp, ebx, edx, ecx, eax;
 } linux_regs_t;
 
-/* ---- ELF32 program header ------------------------------------ */
+/* ELF32 program header */
 typedef struct {
     uint32_t p_type;
     uint32_t p_offset;
@@ -38,7 +38,7 @@ typedef struct {
 
 #define PT_LOAD 1
 
-/* ---- Linux ABI constants -------------------------------------- */
+/* Linux ABI constants */
 #define ENOSYS_L   38
 #define ENOENT_L    2
 #define EBADF_L     9
@@ -96,7 +96,7 @@ static uint32_t linux_brk_cur;
 static uint32_t linux_mmap_next = LINUX_MMAP_BASE;
 static int      linux_exit_code;
 
-/* ---- optional debug trace (shell: `set LINUX_TRACE 1`) ------- */
+/* Optional debug trace (shell: `set LINUX_TRACE 1`) */
 static int      lx_trace;
 static char     linux_prog_path[MAX_PATH];
 
@@ -167,7 +167,7 @@ void lx_log_dump(void)
     if (((total - first) & 1) == 1) print("\n");
 }
 
-/* ---- fd emulation --------------------------------------------- */
+/* fd emulation */
 #define LINUX_MAX_FD   6
 
 typedef struct {
@@ -223,7 +223,7 @@ static const char* lxbasename(const char* p)
     return s;
 }
 
-/* ---- GDT extension for set_thread_area (TLS) ------------------- */
+/* GDT extension for set_thread_area (TLS) */
 static uint8_t gdt_new[16 * 8];              /* 16 entries */
 static struct { uint16_t limit; uint32_t base; } __attribute__((packed)) gdt_ptr;
 static int gdt_ready = 0;
@@ -281,7 +281,7 @@ static uint32_t sys_set_thread_area(uint32_t* udesc)
     return 0;
 }
 
-/* ---- fd helpers ------------------------------------------------ */
+/* fd helpers */
 static linux_fd_t* fd_get(uint32_t fd)
 {
     if (fd < 3 || fd >= LINUX_MAX_FD || !lfd[fd].used) return 0;
@@ -302,8 +302,7 @@ static void fd_flush_all(void)
         if (lfd[i].used) fd_flush(&lfd[i]);
 }
 
-/* ---- syscalls -------------------------------------------------- */
-
+/* Syscalls */
 static uint32_t sys_open(const char* path, uint32_t flags)
 {
     int i;
@@ -857,7 +856,7 @@ static uint32_t sys_writev(uint32_t fd, uint32_t iov, uint32_t iovcnt)
 }
 
 
-/* ---- misc syscall helpers --------------------------------------- */
+/* Misc syscall helpers */
 
 static uint32_t lxstrlen(const char* s)
 {
@@ -1070,8 +1069,7 @@ static uint32_t sys_mremap(uint32_t old, uint32_t oldsz, uint32_t newsz)
     return n;
 }
 
-/* ---- the dispatch table ---------------------------------------- */
-
+/* The dispatch table */
 void linux_syscall(linux_regs_t* r)
 {
     uint32_t nr = r->eax;
@@ -1271,9 +1269,7 @@ void linux_syscall(linux_regs_t* r)
     lx_log_res[(lx_log_i - 1) % LX_LOG_N] = r->eax;
 }
 
-/* ============================================================
- * linux_run - load a static ET_EXEC i386 image and run it
- * ============================================================ */
+// linux_run - load a static ET_EXEC i386 image and run it
 
 int linux_run(const uint8_t* image, uint32_t size, const char* path,
               const char* args)
@@ -1345,7 +1341,7 @@ int linux_run(const uint8_t* image, uint32_t size, const char* path,
             memset((void*)max_end, 0, tail_end - max_end);
     }
 
-    /* ---- dynamic: load the ELF interpreter (ld-linux) ------------- */
+    /* Dynamic: load the ELF interpreter (ld-linux) */
     if (interp_path) {
         static uint8_t ldimg[512 * 1024];
         uint32_t ldsize = sizeof ldimg;
@@ -1420,7 +1416,7 @@ int linux_run(const uint8_t* image, uint32_t size, const char* path,
     lfd[0].used = lfd[1].used = lfd[2].used = 1;   /* std fds */
     lx_stdin_pos = lx_stdin_len = 0;
 
-    /* ---- build the initial stack (Linux process ABI) -------- */
+    /* Build the initial stack (Linux process ABI) */
     {
         char* sp_top = (char*)LINUX_STACK_TOP;
         char* sp;

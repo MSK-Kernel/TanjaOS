@@ -943,7 +943,7 @@ char *strpbrk(const char *s, const char *accept) {
     return NULL;
 }
 
-/* ---- 64-bit divide helpers (gcc emits calls to these on i386) ----
+/* 64-bit divide helpers (gcc emits calls to these on i386)
  * Implemented with a plain shift-subtract loop so they never recurse
  * into themselves the way a `/` in C would (gcc would emit a call to
  * the very helper we are defining). */

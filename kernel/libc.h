@@ -1,11 +1,10 @@
-/* libc.h - export list for the TanjaOS kernel C library (kernel/libc.c).
- *
- * X-macro list in the same style as atomic.h: elf.c expands it once
+/* X-macro list in the same style as atomic.h: elf.c expands it once
  * for the extern declarations and once for the export table, so every
  * libc symbol stays in one place.
  *
  * Each entry: (name, return type, parameter list)
  */
+
 #ifndef TANJA_LIBC_H
 #define TANJA_LIBC_H
 
@@ -69,7 +68,7 @@ struct stat {
  * symbols are declared by hand in elf.c instead. */
 
 #define TANJA_LIBC_ALL(X) \
-    /* --- stdio: formatted output (console + files) --- */ \
+    /* stdio: formatted output (console + files) */ \
     X(printf, int, (const char* fmt, ...)) \
     X(vprintf, int, (const char* fmt, va_list ap)) \
     X(fprintf, int, (FILE_T* f, const char* fmt, ...)) \
@@ -78,14 +77,14 @@ struct stat {
     X(vsprintf, int, (char* str, const char* fmt, va_list ap)) \
     X(snprintf, int, (char* str, size_t size, const char* fmt, ...)) \
     X(vsnprintf, int, (char* str, size_t size, const char* fmt, va_list ap)) \
-    /* --- stdio: formatted input --- */ \
+    /* stdio: formatted input */ \
     X(scanf, int, (const char* fmt, ...)) \
     X(vscanf, int, (const char* fmt, va_list ap)) \
     X(sscanf, int, (const char* s, const char* fmt, ...)) \
     X(vsscanf, int, (const char* s, const char* fmt, va_list ap)) \
     X(fscanf, int, (FILE_T* f, const char* fmt, ...)) \
     X(vfscanf, int, (FILE_T* f, const char* fmt, va_list ap)) \
-    /* --- stdio: FILE streams --- */ \
+    /* stdio: FILE streams */ \
     X(fopen, FILE_T*, (const char* path, const char* mode)) \
     X(freopen, FILE_T*, (const char* path, const char* mode, FILE_T* f)) \
     X(fdopen, FILE_T*, (int fd, const char* mode)) \
@@ -104,17 +103,17 @@ struct stat {
     X(fputs, int, (const char* s, FILE_T* f)) \
     X(ungetc, int, (int c, FILE_T* f)) \
     /* fgets returns char*: hand-declared in elf.c */ \
-    /* --- stdlib: memory --- */ \
+    /* stdlib: memory */ \
     X(malloc, void*, (size_t n)) \
     X(calloc, void*, (size_t nmemb, size_t size)) \
     X(realloc, void*, (void* p, size_t n)) \
     X(free, void, (void* p)) \
-    /* --- stdlib: process --- */ \
+    /* stdlib: process */ \
     X(exit, void, (int code)) \
     X(_exit, void, (int code)) \
     X(abort, void, (void)) \
     X(atexit, int, (void (*func)(void))) \
-    /* --- stdlib: conversion --- */ \
+    /* stdlib: conversion */ \
     X(strtol, long, (const char* nptr, char** endptr, int base)) \
     X(strtoul, unsigned long, (const char* nptr, char** endptr, int base)) \
     X(strtoll, long long, (const char* nptr, char** endptr, int base)) \
@@ -123,7 +122,7 @@ struct stat {
     X(strtof, float, (const char* nptr, char** endptr)) \
     X(strtold, long double, (const char* nptr, char** endptr)) \
     X(atof, double, (const char* s)) \
-    /* --- stdlib: sort/search/env --- */ \
+    /* stdlib: sort/search/env */ \
     X(qsort, void, (void* base, size_t nmemb, size_t size, int (*cmp)(const void*, const void*))) \
     X(bsearch, void*, (const void* key, const void* base, size_t nmemb, size_t size, int (*cmp)(const void*, const void*))) \
     X(labs, long, (long n)) \
@@ -132,9 +131,9 @@ struct stat {
     X(getenv, char*, (const char* name)) \
     X(setenv, int, (const char* name, const char* value, int overwrite)) \
     X(system, int, (const char* command)) \
-    /* --- ctype extra --- */ \
+    /* ctype extra */ \
     X(isblank, int, (int c)) \
-    /* --- fenv --- */ \
+    /* fenv */ \
     X(feclearexcept, int, (int excepts)) \
     X(feraiseexcept, int, (int excepts)) \
     X(fetestexcept, int, (int excepts)) \
@@ -144,15 +143,15 @@ struct stat {
     X(fesetenv, int, (const fenv_t* envp)) \
     X(feholdexcept, int, (fenv_t* envp)) \
     X(feupdateenv, int, (const fenv_t* envp)) \
-    /* --- locale --- */ \
+    /* locale */ \
     X(setlocale, char*, (int category, const char* locale)) \
-    /* --- new stdio --- */ \
+    /* new stdio */ \
     X(perror, void, (const char* s)) \
     X(rewind, void, (FILE_T* f)) \
     X(clearerr, void, (FILE_T* f)) \
     X(setvbuf, int, (FILE_T* f, char* buf, int mode, size_t size)) \
     X(setbuf, void, (FILE_T* f, char* buf)) \
-    /* --- string extras --- */ \
+    /* string extras */ \
     X(strpbrk, char*, (const char* s, const char* accept)) \
     X(strspn, size_t, (const char* s, const char* accept)) \
     X(strcspn, size_t, (const char* s, const char* reject)) \
@@ -162,7 +161,7 @@ struct stat {
     X(strtok_r, char*, (char* s, const char* delim, char** saveptr)) \
     X(memchr, void*, (const void* s, int c, size_t n)) \
     X(strerror, char*, (int errnum)) \
-    /* --- unistd / POSIX --- */ \
+    /* unistd / POSIX */ \
     X(open, int, (const char* path, int flags)) \
     X(close, int, (int fd)) \
     X(read, ssize_t, (int fd, void* buf, size_t count)) \
@@ -177,7 +176,7 @@ struct stat {
     X(realpath, char*, (const char* path, char* resolved)) \
     X(execv, int, (const char* path, char* const argv[])) \
     X(execvp, int, (const char* file, char* const argv[])) \
-    /* --- time --- */ \
+    /* time */ \
     X(time, time_t, (time_t* t)) \
     X(clock, clock_t, (void)) \
     X(difftime, double, (time_t a, time_t b)) \
@@ -187,7 +186,7 @@ struct stat {
     X(ctime, char*, (const time_t* t)) \
     X(strftime, size_t, (char* s, size_t max, const char* fmt, const struct tm* tm)) \
     /* localtime/gmtime return struct tm*: hand-declared in elf.c */ \
-    /* --- signals (stubs) --- */ \
+    /* signals (stubs) */ \
     X(signal, sighandler_t, (int signum, sighandler_t handler)) \
     X(sigaction, int, (int signum, const struct sigaction* act, struct sigaction* old)) \
     X(sigemptyset, int, (sigset_t* set)) \
@@ -195,10 +194,10 @@ struct stat {
     X(sigaddset, int, (sigset_t* set, int signum)) \
     X(sigprocmask, int, (int how, const sigset_t* set, sigset_t* oldset)) \
     X(raise, int, (int signum)) \
-    /* --- setjmp --- */ \
+    /* setjmp */ \
     X(setjmp, int, (jmp_buf env)) \
     X(longjmp, void, (jmp_buf env, int val)) \
-    /* --- math (double core; f/l variants in libc.c) --- */ \
+    /* math (double core; f/l variants in libc.c) */ \
     X(sqrt, double, (double)) X(sqrtf, float, (float)) X(sqrtl, long double, (long double)) \
     X(fabs, double, (double)) X(fabsf, float, (float)) X(fabsl, long double, (long double)) \
     X(sin, double, (double)) X(sinf, float, (float)) X(sinl, long double, (long double)) \
@@ -255,7 +254,7 @@ struct stat {
     X(fma, double, (double, double, double)) X(fmaf, float, (float, float, float)) X(fmal, long double, (long double, long double, long double)) \
     X(remquo, double, (double, double, int*)) X(remquof, float, (float, float, int*)) X(remquol, long double, (long double, long double, int*)) \
     X(nexttoward, double, (double, long double)) X(nexttowardf, float, (float, long double)) X(nexttowardl, long double, (long double, long double)) \
-    /* --- TanjaOS program args --- */ \
+    /* TanjaOS program args */ \
     X(tanja_setargs, void, (const char* path, const char* args))
 
 #endif /* TANJA_LIBC_H */

@@ -73,7 +73,7 @@ static int fused[MAX_F];
 static char dname[MAX_D][FS_PATH_CAP];
 static int dused[MAX_D];
 
-/* ---- ownership & permissions ---------------------------------
+/* Ownership & permissions
  * Every file and directory carries a UNIX-style owner uid and a
  * 9-bit mode (rwx for owner/group/other; TanjaOS has no groups
  * yet, so the group bits are stored but not enforced).  The
@@ -984,22 +984,7 @@ void fs_get_current_path(char* path) {
 int find_in_directory(int a, const char* b, fs_type_t c) { (void)a;(void)b;(void)c; return -1; }
 int parse_path(const char* a, char* b, char* c) { (void)a; if(b)b[0]=0; if(c)c[0]=0; return 0; }
 
-// ============================================================
 // STOREFILE SERIALIZATION
-//
-// Packs the static fname/fdata/fsize/fused/dname/dused/cwd tables into
-// a flat blob (and back). Layout, in order:
-//   4 bytes  magic "TJFS"
-//   1 byte   version
-//   3 bytes  reserved/padding
-//   MAX_D    bytes   dused[]
-//   MAX_D*64 bytes   dname[][64]
-//   MAX_F    bytes   fused[]
-//   MAX_F*4  bytes   fsize[]   (little-endian)
-//   MAX_F*64 bytes   fname[][64]
-//   an 8 MiB on-demand file-data pool
-//   256      bytes   cwd
-// ============================================================
 
 #define STORE_VERSION 4
 
@@ -1020,7 +1005,7 @@ int parse_path(const char* a, char* b, char* c) { (void)a; if(b)b[0]=0; if(c)c[0
  *   sum(fsize[i]) file data for used files, in slot order
  *   256     cwd
  */
-/* ---- ownership API ------------------------------------------
+/* Ownership API
  * chmod: owner or root.  chown: root only.  The kernel's user-
  * management builtins call these; they return 0 on success. */
 int fs_chmod(const char* path, int mode) {

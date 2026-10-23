@@ -76,7 +76,7 @@ static int ls_count_entries(const char* path, char* buf, int show_hidden) {
     return n;
 }
 
-/* ---- shared entry state --------------------------------------------
+/* Shared entry state
  * One set of arrays holds whichever entries are about to be printed:
  * a directory's children, or the plain file operands of a multi-arg
  * ls (what `ls *.c` expands to). */

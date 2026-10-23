@@ -18,7 +18,7 @@ void _exit(int code)
     exit(code);
 }
 
-/* --- kernel export-table introspection (kernel/elf.c) ---------- */
+/* Kernel export-table introspection (kernel/elf.c) */
 extern int tanja_export_count(void);
 extern const char* tanja_export_name(int i);
 

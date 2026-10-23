@@ -1,6 +1,4 @@
-/* libc.c - the TanjaOS kernel C library (part 1).
- *
- * This file: formatted output (printf family), formatted input
+/* This file: formatted output (printf family), formatted input
  * (scanf family), memory management (malloc family) and the
  * exit()/atexit() machinery.  FILE streams, POSIX fds, time, math
  * and the string extras live in libc2.c; the export list for both
@@ -31,9 +29,8 @@ extern int isdigit(int c);
 extern int toupper(int c);
 extern uint32_t get_uptime_ms(void);
 
-/* ============================================================
- * exit() support: elf_run hooks a __builtin_setjmp into these.
- * ============================================================ */
+// exit() support: elf_run hooks a __builtin_setjmp into these.
+
 int tanja_exit_jmp[5];
 int tanja_exit_active = 0;
 int tanja_exit_code = 0;
@@ -76,9 +73,8 @@ void abort(void) {
     exit(134);
 }
 
-/* ============================================================
- * malloc: first-fit free list over a static 4 MB arena
- * ============================================================ */
+// malloc: first-fit free list over a static 4 MB arena
+
 #define MALLOC_ARENA_SIZE (4u * 1024u * 1024u)
 #define MALLOC_ALIGN      16u
 #define MALLOC_MAGIC      0xB10CA0Fu
@@ -188,13 +184,12 @@ void* realloc(void* p, size_t n) {
     return np;
 }
 
-/* ============================================================
- * Formatted output: one engine, many sinks.
+/* Formatted output: one engine, many sinks.
  *
  * Supports flags - + 0 # space, width and precision (with *),
  * length modifiers h hh l ll L, and conversions
  * d i u o x X c s p n % f e E g G.
- * ============================================================ */
+ */
 
 typedef struct {
     int minus, plus, zero, hash, space;
@@ -735,9 +730,7 @@ int fprintf(struct tanja_fd* f, const char* fmt, ...) {
     return r;
 }
 
-/* ============================================================
- * scanf family
- * ============================================================ */
+// scanf family
 
 struct scanctx {
     int (*next)(void*);     /* returns next char, or -1 at end */

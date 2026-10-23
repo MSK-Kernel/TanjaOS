@@ -1,6 +1,4 @@
-/* libc.c - the TanjaOS kernel C library (part 2).
- *
- * fd table + FILE streams, POSIX file calls, string extras,
+/* fd table + FILE streams, POSIX file calls, string extras,
  * strtol family, qsort/bsearch, environment, time, signal stubs,
  * setjmp/longjmp, the x87 math library and program argv.
  *
@@ -38,9 +36,7 @@ extern void* malloc(size_t n);
 extern void free(void* p);
 extern void* realloc(void* p, size_t n);
 
-/* ============================================================
- * fd table: the one true file-stream state
- * ============================================================ */
+// fd table: the one true file-stream state
 
 #define TANJA_MAX_FDS 16
 #define FD_CONSOLE_IN  1
@@ -312,9 +308,7 @@ int execvp(const char* file, char* const argv[]) {
     return r;
 }
 
-/* ============================================================
- * FILE streams (thin wrappers over the fd table)
- * ============================================================ */
+// FILE streams (thin wrappers over the fd table)
 
 typedef struct tanja_fd FILE;
 
@@ -440,9 +434,7 @@ char* fgets(char* s, int size, FILE* f) {
     }
 }
 
-/* ============================================================
- * string extras
- * ============================================================ */
+// string extras
 
 char* strpbrk(const char* s, const char* accept) {
     for (; *s; s++)
@@ -525,9 +517,7 @@ char* strerror(int errnum) {
     }
 }
 
-/* ============================================================
- * strtol family
- * ============================================================ */
+// strtol family
 
 static unsigned long long strto_ull(const char* nptr, char** endptr,
                                    int base, int* neg_out) {
@@ -632,9 +622,7 @@ long double strtold(const char* nptr, char** endptr) {
 
 double atof(const char* s) { return strtod(s, 0); }
 
-/* ============================================================
- * qsort / bsearch
- * ============================================================ */
+// qsort / bsearch
 
 static void memswap(void* a, void* b, size_t n) {
     uint8_t* x = (uint8_t*)a;
@@ -686,9 +674,7 @@ void* bsearch(const void* key, const void* base, size_t nmemb, size_t size,
     return 0;
 }
 
-/* ============================================================
- * environment / system
- * ============================================================ */
+// environment / system
 
 char* getenv(const char* name) { return (char*)get_env(name); }
 
@@ -704,9 +690,7 @@ int system(const char* command) {
     return 0;
 }
 
-/* ============================================================
- * time (monotonic since boot; no RTC)
- * ============================================================ */
+// time (monotonic since boot; no RTC)
 
 time_t time(time_t* t) {
     time_t r = (time_t)(get_uptime_ms() / 1000u);
@@ -772,9 +756,7 @@ static struct tm* tm_fill(const time_t* t) {
 struct tm* localtime(const time_t* t) { return t ? tm_fill(t) : 0; }
 struct tm* gmtime(const time_t* t) { return t ? tm_fill(t) : 0; }
 
-/* ============================================================
- * signals (stubs: TanjaOS has no signal delivery)
- * ============================================================ */
+// signals (stubs: TanjaOS has no signal delivery)
 
 static sighandler_t sig_handlers[32];
 
@@ -811,16 +793,12 @@ int raise(int signum) {
     return 0;
 }
 
-/* ============================================================
- * setjmp / longjmp
- * ============================================================ */
+// setjmp / longjmp
 
 /* setjmp/longjmp live in kernel/setjmp_asm.asm (the GCC builtins are
  * too fragile across compilation units); exported via elf.c. */
 
-/* ============================================================
- * math library (x87 FPU)
- * ============================================================ */
+// math library (x87 FPU)
 
 double sqrt(double x) { double r; __asm__("fsqrt" : "=t"(r) : "0"(x)); return r; }
 double fabs(double x) { double r; __asm__("fabs" : "=t"(r) : "0"(x)); return r; }
@@ -1225,9 +1203,7 @@ float nexttowardf(float x, long double y) { return (float)nextafter((double)x, (
 long double nexttowardl(long double x, long double y) { return nextafter((double)x, (double)y); }
 long double fmal(long double x, long double y, long double z) { return fma((double)x, (double)y, (double)z); }
 
-/* ============================================================
- * program argv
- * ============================================================ */
+// program argv
 
 int tanja_argc = 1;
 static char* tanja_argv_store[64];
@@ -1265,9 +1241,7 @@ long double ldexpl(long double x, int e) { return ldexp((double)x, e); }
 int ilogbl(long double x) { return ilogb((double)x); }
 long double logbl(long double x) { return logb((double)x); }
 
-/* ============================================================
- * stat(2)
- * ============================================================ */
+// stat(2)
 
 int stat(const char* path, struct stat* st)
 {
@@ -1301,9 +1275,7 @@ int fstat(int fd, struct stat* st)
     return 0;
 }
 
-/* ============================================================
- * stdio extras
- * ============================================================ */
+// stdio extras
 
 void perror(const char* s)
 {
@@ -1342,9 +1314,7 @@ void setbuf(FILE_T* f, char* buf)
     setvbuf(f, buf, buf ? 0 : 1, 0);
 }
 
-/* ============================================================
- * locale (always the "C" locale)
- * ============================================================ */
+// locale (always the "C" locale)
 
 static const char tanja_loc_C[] = "C";
 
@@ -1357,9 +1327,7 @@ char* setlocale(int category, const char* locale)
     return 0;                                       /* unsupported locale */
 }
 
-/* ============================================================
- * time extras
- * ============================================================ */
+// time extras
 
 static const char wdays[7][4] = {
     "Sun","Mon","Tue","Wed","Thu","Fri","Sat"
@@ -1489,10 +1457,8 @@ size_t strftime(char* s, size_t max, const char* fmt, const struct tm* tm)
 #undef PUT2
 #undef PUTI
 }
-
-/* ============================================================
- * stdlib / string extras
- * ============================================================ */
+ 
+// stdlib / string extras
 
 long labs(long n) { return n < 0 ? -n : n; }
 long long llabs(long long n) { return n < 0 ? -n : n; }
@@ -1572,9 +1538,7 @@ struct lconv* localeconv(void)
     return &lc;
 }
 
-/* ============================================================
- * fenv (x87 environment; user programs start with a clean state)
- * ============================================================ */
+// fenv (x87 environment; user programs start with a clean state)
 
 /* read the live x87 control/status words */
 static void fenv_now(unsigned short* cw, unsigned short* sw)

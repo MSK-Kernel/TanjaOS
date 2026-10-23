@@ -3,16 +3,15 @@
 
 #include <stdint.h>
 
-/* ============================================================
- * SHARED UTF-8 SUPPORT
- * ------------------------------------------------------------
+/* SHARED UTF-8 SUPPORT
+
  * TanjaOS runs on the VGA text console, which is byte-oriented
  * (CP437 glyphs).  Real text files, however, contain UTF-8, so
  * punctuation like “ ” — ʼ used to render as two or three
  * jumbled CP437 characters (one per byte).  These helpers let
  * the kernel console and the editor decode UTF-8 sequences and
  * draw a single sensible ASCII cell instead.
- * ============================================================ */
+ */
 
 #define UTF8_INVALID 0xFFFFFFFFu
 

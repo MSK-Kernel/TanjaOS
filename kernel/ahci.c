@@ -12,10 +12,8 @@ static inline uint32_t inl(uint16_t port) {
     return ret;
 }
 
-// ------------------------------------------------------------
 // PCI config space access (legacy I/O-port mechanism, universally
 // supported since well before AHCI existed)
-// ------------------------------------------------------------
 
 #define PCI_CONFIG_ADDRESS 0xCF8
 #define PCI_CONFIG_DATA    0xCFC
@@ -27,9 +25,7 @@ static uint32_t pci_read32(uint8_t bus, uint8_t dev, uint8_t func, uint8_t offse
     return inl(PCI_CONFIG_DATA);
 }
 
-// ------------------------------------------------------------
 // AHCI register layout (AHCI 1.3.1 spec)
-// ------------------------------------------------------------
 
 typedef struct {
     volatile uint32_t cap;
@@ -110,9 +106,7 @@ static hba_port_t* port = 0;
 static int ahci_available = 0;
 static uint64_t drive_sectors = 0;
 
-// ------------------------------------------------------------
 // PCI enumeration
-// ------------------------------------------------------------
 
 static int find_ahci_pci_device(uint32_t* out_abar) {
     uint32_t bus, dev, func;
@@ -145,9 +139,7 @@ static int find_ahci_pci_device(uint32_t* out_abar) {
     return -1;
 }
 
-// ------------------------------------------------------------
 // Port control
-// ------------------------------------------------------------
 
 static int port_wait_idle(uint32_t timeout_ms) {
     uint32_t start = get_uptime_ms();
@@ -169,14 +161,12 @@ static void port_start(void) {
     port->cmd |= PORT_CMD_ST;
 }
 
-// ------------------------------------------------------------
 // Command issue - the core of the driver. Builds a Register H2D FIS
 // in the command table, points a single PRDT entry at the caller's
 // buffer (skipped entirely for non-data commands like FLUSH CACHE),
 // rings the doorbell for slot 0, and polls for completion with a
 // real-time-bounded timeout (never a raw iteration count - see the
 // legacy ATA driver's history for exactly why that matters).
-// ------------------------------------------------------------
 
 static int ahci_do_command(uint8_t ata_cmd, uint64_t lba, uint16_t count, void* buf, int is_write) {
     if (!port) return -1;
@@ -236,9 +226,7 @@ static int ahci_do_command(uint8_t ata_cmd, uint64_t lba, uint16_t count, void* 
     return 0;
 }
 
-// ------------------------------------------------------------
 // Public API
-// ------------------------------------------------------------
 
 int ahci_init(void) {
     ahci_available = 0;
