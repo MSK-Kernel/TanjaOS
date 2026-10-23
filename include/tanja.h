@@ -104,6 +104,8 @@ extern const char* get_env(const char* name);
 extern void tanja_get_home(char* out, int cap);
 /* file mode (UNIX bits) of a path, for ls-style executable coloring */
 extern int fs_get_mode(const char* path);
+/* owner uid of a path (-1 if missing) */
+extern int fs_get_owner(const char* path);
 /* 13 after a permission refusal on the last FS call; rc == -2 */
 extern int fs_errno;
 /* set to 1 by programs that read the PS/2 controller directly (Doom):

@@ -1592,6 +1592,25 @@ void expand_globs(const char* in, char* out, int outsize) {
     out[oi] = 0;
 }
 
+/* Linux-style execute gate: running a file requires an x bit for the
+ * current user. Root follows the real Linux rule: root may execute
+ * anything that has at least one x bit, but not a file with none.
+ * Returns 1 (allowed) or 0 after printing the denial. */
+static int exec_perm_ok(const char* path, const char* display) {
+    int mode = fs_get_mode(path);
+    if (mode < 0) return 1;               /* not a plain file: let exec_file report */
+    int ok;
+    if ((mode & 0111) == 0) ok = 0;       /* no x bit at all: nobody may run it */
+    else if (fs_cur_uid == 0) ok = 1;
+    else if (fs_cur_uid == fs_get_owner(path)) ok = (mode & 0100) != 0;
+    else ok = (mode & 0001) != 0;         /* other (group bits unenforced) */
+    if (!ok) {
+        print(display);
+        print(": Permission denied\n");
+    }
+    return ok;
+}
+
 void execute_command(const char* cmd_line) {
 
     while (*cmd_line == ' ')
@@ -1677,7 +1696,9 @@ void execute_command(const char* cmd_line) {
             prog_path[pl] = 0;
 
             if (fs_file_exists(prog_path)) {
-                exec_file(prog_path, final_args);
+                if (exec_perm_ok(prog_path, cmd_name)) {
+                    exec_file(prog_path, final_args);
+                }
                 return;
             }
         }
@@ -1693,7 +1714,9 @@ void execute_command(const char* cmd_line) {
         const char* fn = cmd_name;
         while (fn[0] == '.' && fn[1] == '/') fn += 2;
         if (fn[0] && fs_file_exists(fn)) {
-            exec_file(fn, final_args);
+            if (exec_perm_ok(fn, cmd_name)) {
+                exec_file(fn, final_args);
+            }
             return;
         }
     }
