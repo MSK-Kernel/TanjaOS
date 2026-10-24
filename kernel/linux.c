@@ -1398,9 +1398,13 @@ void linux_syscall(linux_regs_t* r)
         break;
 
     default:
-        print("linux: unimplemented syscall ");
-        print_dec(nr);
-        print("\n");
+        /* quiet, like real Linux: the caller just sees ENOSYS.
+         * (set LINUX_TRACE 1 to log unknown numbers) */
+        if (lx_trace) {
+            print("linux: unimplemented syscall ");
+            print_dec(nr);
+            print("\n");
+        }
         r->eax = (uint32_t)-ENOSYS_L;
         break;
     }
@@ -1663,15 +1667,19 @@ int linux_run(const uint8_t* image, uint32_t size, const char* path,
             memcpy(save_jmp, tanja_exit_jmp, sizeof save_jmp);
             tanja_exit_active = 1;
             if (__builtin_setjmp(tanja_exit_jmp)) {
-                /* fault / Ctrl+C: the kernel already printed why */
-                print("linux: unwind reason ");
-                print_dec(lx_unwind_reason);
-                print(", vec ");
-                print_dec(lx_fault_vec);
-                print(", eip ");
-                print_dec(lx_fault_eip);
-                print("\n");
-                lx_log_dump();
+                /* fault / Ctrl+C unwind.  Normal output stays quiet
+                 * (bash-style); the reason + syscall tail are debug
+                 * info, so only show them with LINUX_TRACE set. */
+                if (lx_trace) {
+                    print("linux: unwind reason ");
+                    print_dec(lx_unwind_reason);
+                    print(", vec ");
+                    print_dec(lx_fault_vec);
+                    print(", eip ");
+                    print_dec(lx_fault_eip);
+                    print("\n");
+                    lx_log_dump();
+                }
             } else {
                 linux_enter(entry, (uint32_t)(char*)sp);
                 /* exit()/exit_group(): asm resumed us right here */

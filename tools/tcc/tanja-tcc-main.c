@@ -19,6 +19,9 @@ void _exit(int code)
 }
 
 /* kernel export-table introspection (kernel/elf.c) */
+/* set a file's mode bits (fs/fs.c, kernel export) */
+extern int fs_chmod(const char* path, int mode);
+
 extern int tanja_export_count(void);
 extern const char* tanja_export_name(int i);
 
@@ -276,6 +279,20 @@ void main(char *args)
 
     if (__builtin_setjmp(g_exit_buf) == 0)
         tcc_main_real(argc, argv);
+
+    /* A successful link-mode compile produced a runnable program:
+     * give it x bits immediately (0755, like a real toolchain's
+     * linker does), so it shows green in ls and can be executed
+     * right away without a manual chmod. */
+    if (g_exit_code == 0 && link_mode) {
+        if (o_val)
+            fs_chmod(o_val, 0755);
+        else if (ninputs > 0) {
+            static char xname[256];
+            default_output(inputs[0], xname, sizeof(xname));
+            fs_chmod(xname, 0755);
+        }
+    }
 
     /* compile succeeded: verify the object(s) against the kernel
  * export table so a missing symbol is reported HERE, not when

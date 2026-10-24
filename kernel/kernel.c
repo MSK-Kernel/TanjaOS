@@ -506,9 +506,8 @@ void timer_handler()
     if (tanja_exit_active && !kb_raw_mode && ctrlc_poll()) {
         /* unwinds exactly like exit() / a program fault: back into
  * elf_run, which restores the program break, then the shell
- * prompt continues. */
-        print("\n[dbg] timer ctrlc path\n");
-        print("\nprogram interrupted (Ctrl+C) - program terminated\n");
+ * prompt continues.  Terminal output matches bash: just ^C. */
+        print("^C\n");
         asm volatile ("sti");
         __builtin_longjmp((void**)tanja_exit_jmp, 1);
     }
