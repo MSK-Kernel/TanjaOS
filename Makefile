@@ -2,10 +2,10 @@ CC=gcc
 LD=ld
 ASM=nasm
 
-CFLAGS=-ffreestanding -m32 -c -fno-stack-protector -fno-builtin -fno-pic -fno-pie -I.
+CFLAGS=-ffreestanding -m32 -c -fno-stack-protector -fno-builtin -fno-pic -fno-pie -I. $(if $(WIFI_DEMO),-DWIFI_DEMO)
 LDFLAGS=-m elf_i386 -T linker/linker.ld -nostdlib
 
-KERNEL_OBJ = kernel/kernel.o kernel/game.o kernel/ata.o kernel/ahci.o kernel/store.o kernel/idt.o kernel/elf.o kernel/atomic.o kernel/libc.o kernel/libc2.o kernel/exec.o kernel/setjmp_asm.o kernel/linux.o kernel/doom.o arch/x86/linux_asm.o
+KERNEL_OBJ = kernel/kernel.o kernel/game.o kernel/ata.o kernel/ahci.o kernel/store.o kernel/idt.o kernel/elf.o kernel/atomic.o kernel/libc.o kernel/libc2.o kernel/exec.o kernel/setjmp_asm.o kernel/linux.o kernel/doom.o kernel/nic.o kernel/net.o kernel/wifi.o kernel/tls.o arch/x86/linux_asm.o
 
 BIN_SRC = $(wildcard bin/*.c)
 BIN_OUT = $(BIN_SRC:bin/%.c=home/bin/%.o)
@@ -72,6 +72,33 @@ kernel/%.o: kernel/%.c
 	$(CC) $(CFLAGS) -o $@ $<
 
 
+# BearSSL (tools/bearssl, MIT licensed) gives the kernel TLS 1.2 for https.
+# Built freestanding: its tiny string.h shim replaces glibc's, so no 32-bit
+# libc headers are needed. OS clock/RNG hooks are disabled; kernel/tls.c
+# supplies time and entropy itself.
+BR_GCC_INC := $(shell $(CC) $(filter -m32,$(CFLAGS)) -print-file-name=include)
+BR_CFLAGS = $(filter -m32,$(CFLAGS)) -c -O2 -ffreestanding -fno-builtin -fno-pic -fno-pie \
+            -fno-stack-protector -nostdinc -isystem tools/bearssl/shim -isystem $(BR_GCC_INC) \
+            -Itools/bearssl/src -Itools/bearssl/inc \
+            -DBR_USE_UNIX_TIME=0 -DBR_USE_WIN32_TIME=0 -DBR_USE_URANDOM=0 -DBR_USE_GETENTROPY=0 -DBR_USE_WIN32_RAND=0
+include tools/bearssl/sources.mk
+BR_OBJ = $(BR_SRC:tools/bearssl/src/%.c=tools/bearssl/build/%.o)
+AR ?= ar
+
+tools/bearssl/build/%.o: tools/bearssl/src/%.c
+	@mkdir -p $(dir $@)
+	@echo "[CC] bearssl/$*.c"
+	@$(CC) $(BR_CFLAGS) -o $@ $<
+
+tools/bearssl/libbearssl.a: $(BR_OBJ)
+	@echo "[AR] libbearssl.a"
+	@rm -f $@
+	@$(AR) rcs $@ $^
+
+kernel/tls.o: kernel/tls.c kernel/tls_anchors.h include/build_id.h tools/bearssl/libbearssl.a
+	@echo "[CC] kernel/tls.c"
+	$(CC) $(CFLAGS) -Itools/bearssl/inc -o $@ kernel/tls.c
+
 kernel/store.o: kernel/store.c include/build_id.h
 	@echo "[CC] kernel/store.c"
 	$(CC) $(CFLAGS) -o kernel/store.o kernel/store.c
@@ -123,7 +150,7 @@ $(DOOM_OBJ): $(DOOM_DEPS)
 		$(if $(DOOM_IWAD_NAME),DOOM_IWAD_NAME="$(DOOM_IWAD_NAME)") \
 		build/doom_elf.o $(if $(DOOM_NOWAD),,$(if $(DOOM_WAD_PRESENT),build/doom_wad.o))
 
-arch/x86/boot/tanja-base: arch/x86/boot/boot.o arch/x86/idt_asm.o $(KERNEL_OBJ) fs/fs.o $(HOME_OBJ) $(DOOM_OBJ) | arch/x86/boot
+arch/x86/boot/tanja-base: arch/x86/boot/boot.o arch/x86/idt_asm.o $(KERNEL_OBJ) fs/fs.o $(HOME_OBJ) $(DOOM_OBJ) tools/bearssl/libbearssl.a | arch/x86/boot
 	@echo "[LD] Linking..."
 	$(LD) $(LDFLAGS) -o arch/x86/boot/tanja-base \
 		arch/x86/boot/boot.o \
@@ -132,6 +159,7 @@ arch/x86/boot/tanja-base: arch/x86/boot/boot.o arch/x86/idt_asm.o $(KERNEL_OBJ) 
 		fs/fs.o \
 		$(HOME_OBJ) \
 		$(DOOM_OBJ) \
+		tools/bearssl/libbearssl.a \
 		$(shell $(CC) -m32 -print-libgcc-file-name)
 
 	@echo
@@ -145,7 +173,7 @@ clean:
 	$(MAKE) -C ports/doom clean
 	rm -rf arch/x86/*.o home.tar home_tar.o *.o
 	rm -f home/bin/*.o
-	rm -rf .home-stage include/build_id.h
+	rm -rf .home-stage include/build_id.h tools/bearssl/build tools/bearssl/libbearssl.a
 
 .PHONY: all clean home_image doom
 

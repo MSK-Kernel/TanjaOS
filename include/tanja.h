@@ -5,6 +5,7 @@
 #include <stddef.h>
 
 #include "fs.h"
+#include "net.h"
 
 void main(char* args);
 
@@ -104,7 +105,6 @@ extern const char* get_env(const char* name);
 extern void tanja_get_home(char* out, int cap);
 /* file mode (UNIX bits) of a path, for ls-style executable coloring */
 extern int fs_get_mode(const char* path);
-extern int fs_chmod(const char* path, int mode);
 /* owner uid of a path (-1 if missing) */
 extern int fs_get_owner(const char* path);
 /* 13 after a permission refusal on the last FS call; rc == -2 */

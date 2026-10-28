@@ -75,9 +75,7 @@ static void collect_dir(const char* dir) {
 
         if (end > start) {
             int len = end - start;
-            /* Directories are not commands; fs_list_directory marks them
-             * with a trailing slash. */
-            if (buf[end - 1] == '/') continue;
+            if (buf[end - 1] == '/') len--;
             if (len > 2 && buf[start + len - 2] == '.' &&
                 buf[start + len - 1] == 'o')
                 len -= 2;

@@ -7,11 +7,10 @@ binary in home/bin/ (<name>.o), embedded in the boot image (via home.tar)
 as /bin/<name>.o. The kernel loads them at runtime through its in-kernel
 ELF32 driver (kernel/elf.c), which resolves each program's symbols against
 the kernel export table (include/tanja.h).
-The shell resolves built-ins first, then searches /bin and /usr/bin for
-standalone ELF32 programs or scripts. Put additional commands in /usr/bin,
-they are listed by `help` and can be invoked by name. The `Programs` folder
-inside a user's home directory is an ordinary folder and is not searched for
-commands. Explicit paths such as `./myprogram` always run that exact file.
+The shell runs a command by trying /bin/<name>.o first (so you can add or
+override a standard command by dropping a file with the same name in /bin
+at runtime), then /usr/bin/<name>.o (packages installed by pkg), then
+/Programs/<name>(.o) for user-added programs.
 
 2. Programming in TanjaOS
 
@@ -103,3 +102,41 @@ To use Makefile.bsd, use 'gmake <option> -f Makefile.bsd'.
 | 2) nasm                 |
 | 3) gcc                  |
 |_________________________|
+
+4. Networking, Wi-Fi and pkg
+
+Ethernet: kernel/nic.c drives Intel e1000/e1000e (PRO/1000) and Realtek
+RTL8139 NICs; kernel/net.c is the IPv4 stack (ARP, ICMP, UDP, DHCP, DNS,
+TCP client, plain-HTTP GET). The adapter is configured automatically at
+boot via DHCP (and again when a cable is plugged in later).
+
+    ifconfig            show address / link        ifconfig dhcp   re-run DHCP
+    ping <host|ip>
+
+Wi-Fi: 'wifi' opens a menu (arrows scroll long lists, Enter connect, h hidden
+network, r rescan, d disconnect, f forget, a next adapter, q quit). Also
+scriptable: wifi list | status | saved | connect <ssid> [password] |
+disconnect | forget <ssid> | adapter [N]. kernel/wifi.c is the framework radio
+drivers plug into: up to 4 adapters, open/WEP/WPA2/WPA3/802.1X reporting,
+password validation, scan lists sorted + de-duplicated, saved networks in
+/etc/wifi.conf (root-only) with autoconnect to the strongest saved one.
+There is no real radio driver yet. 'make WIFI_DEMO=1' adds two fake adapters
+(password for secured demo networks: demo1234) for trying all of this out.
+
+pkg:
+    pkg install <name>   GET <repo>/<name> and install the binary to /usr/bin/<name>.o
+    pkg remove <name>    delete /usr/bin/<name>.o (only for packages pkg installed)
+
+Set it with 'export PKG_REPO=http://host:port' or /etc/pkg.repo. Default source: https://github.com/MSK-Kernel/pkg_<name>/raw/main/<name>
+(fetched directly over https). With a PKG_REPO or /etc/pkg.repo override
+it fetches <repo>/<name> (no extension) instead, http or https.
+An install marker is kept in /var/pkg/<name> so pkg can tell its packages
+from system commands. The shell searches /bin, then /usr/bin, then /Programs.
+
+https: kernel/tls.c wraps BearSSL (tools/bearssl, MIT licence, see its
+LICENSE.txt) - TLS 1.2, certificate chain + host name verified against the
+Mozilla roots in kernel/tls_anchors.h (generated from certifi with brssl;
+regenerate it to refresh the roots). No TLS 1.3. The clock is the CMOS RTC
+(never earlier than the build date); entropy is RDRAND + timing jitter, so
+it is weaker on CPUs without RDRAND.
+Try it locally: 'python3 -m http.server 8000' in a dir of source files on the host.

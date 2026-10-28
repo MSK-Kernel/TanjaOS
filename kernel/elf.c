@@ -1,6 +1,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include "../include/fs.h"
+#include "../include/net.h"
 
 /* console (for error reporting) */
 extern void print(const char* s);
@@ -254,6 +255,26 @@ static const struct tanja_export tanja_exports[] = {
     { "tanja_wad_base", (void*)&tanja_wad_base },
     { "tanja_wad_size", (void*)&tanja_wad_size },
     { "errno", (void*)&errno },
+    /* networking (kernel/net.c, kernel/wifi.c) */
+    { "net_get_info", (void*)net_get_info },
+    { "net_dhcp", (void*)net_dhcp },
+    { "net_ping", (void*)net_ping },
+    { "net_resolve", (void*)net_resolve },
+    { "net_http_get", (void*)net_http_get },
+    { "net_tls_error", (void*)net_tls_error },
+    { "wifi_adapter_name", (void*)wifi_adapter_name },
+    { "wifi_adapter_count", (void*)wifi_adapter_count },
+    { "wifi_adapter_info", (void*)wifi_adapter_info },
+    { "wifi_select", (void*)wifi_select },
+    { "wifi_selected", (void*)wifi_selected },
+    { "wifi_saved_list", (void*)wifi_saved_list },
+    { "wifi_strerror", (void*)wifi_strerror },
+    { "wifi_scan", (void*)wifi_scan },
+    { "wifi_connect", (void*)wifi_connect },
+    { "wifi_disconnect", (void*)wifi_disconnect },
+    { "wifi_status", (void*)wifi_status },
+    { "wifi_saved_pass", (void*)wifi_saved_pass },
+    { "wifi_forget", (void*)wifi_forget },
     { "tanja_export_count", (void*)tanja_export_count },
     { "tanja_export_name", (void*)tanja_export_name },
     /* kernel C library */
