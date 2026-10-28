@@ -41,6 +41,9 @@ static const char* mv_basename(const char* path) {
 
 static int mv_copy_file(const char* src, const char* dst) {
 
+    /* A move is not a fresh copy: retain UNIX permission bits. */
+    int source_mode = fs_get_mode(src);
+
     /* Chunked copy (same rationale as cp.c): no whole-file buffer. */
     char buffer[MV_CHUNK];
     uint32_t total = fs_get_file_size(src);
@@ -54,11 +57,13 @@ static int mv_copy_file(const char* src, const char* dst) {
         if (fs_append_file(dst, buffer, n) != 0) return -1;
         off += n;
     }
+    if (source_mode >= 0 && fs_chmod(dst, source_mode) != 0) return -1;
     return 0;
 }
 
 static int mv_copy_dir(const char* src, const char* dst) {
 
+    int source_mode = fs_get_mode(src);
     if (!fs_directory_exists(dst)) {
         if (fs_create_directory(dst) != 0) return -1;
     }
@@ -90,6 +95,7 @@ static int mv_copy_dir(const char* src, const char* dst) {
             if (mv_copy_file(child_src, child_dst) != 0) return -1;
         }
     }
+    if (source_mode >= 0 && fs_chmod(dst, source_mode) != 0) return -1;
     return 0;
 }
 

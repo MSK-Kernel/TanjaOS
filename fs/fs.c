@@ -308,9 +308,15 @@ void fs_seed_home(void) {
                     /* Command binaries under /bin are executable
  * programs - seed them 0755 like a real system's
  * /bin, so ls colors them by their +x bit. */
-                    if (path[0] == '/' && path[1] == 'b' &&
-                        path[2] == 'i' && path[3] == 'n' &&
-                        (path[4] == '/' || path[4] == 0))
+                    /* Shipped command programs in both standard command
+                     * directories must be executable. */
+                    if ((path[0] == '/' && path[1] == 'b' &&
+                         path[2] == 'i' && path[3] == 'n' &&
+                         (path[4] == '/' || path[4] == 0)) ||
+                        (path[0] == '/' && path[1] == 'u' &&
+                         path[2] == 's' && path[3] == 'r' && path[4] == '/' &&
+                         path[5] == 'b' && path[6] == 'i' && path[7] == 'n' &&
+                         (path[8] == '/' || path[8] == 0)))
                         fs_chmod(path, 0755);
                 }
             }

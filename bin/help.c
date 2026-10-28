@@ -75,7 +75,9 @@ static void collect_dir(const char* dir) {
 
         if (end > start) {
             int len = end - start;
-            if (buf[end - 1] == '/') len--;
+            /* Directories are not commands; fs_list_directory marks them
+             * with a trailing slash. */
+            if (buf[end - 1] == '/') continue;
             if (len > 2 && buf[start + len - 2] == '.' &&
                 buf[start + len - 1] == 'o')
                 len -= 2;
@@ -90,6 +92,7 @@ void main(char* args) {
     /* Built-ins first so a same-named /bin file is de-duplicated away. */
     collect_builtins();
     collect_dir("/bin");
+    collect_dir("/usr/bin");
     sort_names();
 
     print("The TanjaOS Project\n");

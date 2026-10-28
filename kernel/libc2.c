@@ -255,6 +255,7 @@ int remove(const char* path) {
 
 int rename(const char* oldpath, const char* newpath) {
     if (!fs_file_exists(oldpath)) { errno = 2; return -1; }
+    int old_mode = fs_get_mode(oldpath);
     uint32_t sz = fs_get_file_size(oldpath);
     char* tmp = (char*)malloc(sz + 1);
     if (!tmp) { errno = 12; return -1; }
@@ -266,6 +267,7 @@ int rename(const char* oldpath, const char* newpath) {
     int w = fs_write_file(newpath, tmp, cap);
     free(tmp);
     if (w != 0) { errno = 13; return -1; }
+    if (old_mode >= 0 && fs_chmod(newpath, old_mode) != 0) { errno = 13; return -1; }
     return fs_delete_file(oldpath);
 }
 

@@ -7,9 +7,11 @@ binary in home/bin/ (<name>.o), embedded in the boot image (via home.tar)
 as /bin/<name>.o. The kernel loads them at runtime through its in-kernel
 ELF32 driver (kernel/elf.c), which resolves each program's symbols against
 the kernel export table (include/tanja.h).
-The shell runs a command by trying /bin/<name>.o first (so you can add or
-override a standard command by dropping a file with the same name in /bin
-at runtime), then /root/Programs or /home/<username/Programs for user-added programs.
+The shell resolves built-ins first, then searches /bin and /usr/bin for
+standalone ELF32 programs or scripts. Put additional commands in /usr/bin,
+they are listed by `help` and can be invoked by name. The `Programs` folder
+inside a user's home directory is an ordinary folder and is not searched for
+commands. Explicit paths such as `./myprogram` always run that exact file.
 
 2. Programming in TanjaOS
 

@@ -1644,6 +1644,28 @@ void execute_command(const char* cmd_line) {
         final_args = globbed_args;
     }
 
+    /* Explicit paths always refer to the user's requested file, never a
+     * built-in with the same basename (e.g. ./wget must run ./wget). */
+    {
+        int has_slash = 0;
+        for (int k = 0; cmd_name[k]; k++) {
+            if (cmd_name[k] == '/') { has_slash = 1; break; }
+        }
+        if (has_slash) {
+            const char* explicit_path = cmd_name;
+            while (explicit_path[0] == '.' && explicit_path[1] == '/')
+                explicit_path += 2;
+            if (explicit_path[0] && fs_file_exists(explicit_path)) {
+                if (exec_perm_ok(explicit_path, cmd_name))
+                    exec_file(explicit_path, final_args);
+                return;
+            }
+            print(cmd_name);
+            print(": No such file or directory\n");
+            return;
+        }
+    }
+
     Command* cmd = cmd_table;
 
     while (cmd) {
@@ -1671,16 +1693,14 @@ void execute_command(const char* cmd_line) {
         cmd = cmd->next;
     }
 
-    /* Not a built-in. Commands are standalone ELF32 binaries in
- * /bin (built by the Makefile from bin/*.c and embedded in the
- * kernel image). Then try /Programs - any file there (ELF32
- * object or shell script) is runnable, which lets the user add
- * or override commands by dropping files into bin/. */
-    static const char* dirs[] = { "/bin/", "/Programs/" };
+    /* Not a built-in. Search the standard system command directories.
+     * ~/Programs is an ordinary user folder, not part of command lookup.
+     * /usr/bin is the supported location for user-installed programs. */
+    static const char* dirs[] = { "/bin/", "/usr/bin/" };
     static const char* exts[] = { "", ".o" };
     char prog_path[320];
 
-    for (int d = 0; d < 2; d++) {
+    for (int d = 0; d < (int)(sizeof(dirs) / sizeof(dirs[0])); d++) {
         int pl = 0;
         const char* pd = dirs[d];
         while (pd[pl]) { prog_path[pl] = pd[pl]; pl++; }
@@ -1703,22 +1723,6 @@ void execute_command(const char* cmd_line) {
         }
     }
 
-    /* Direct file execution: if the token names an existing file,
- * run it - ELF32 objects through the program driver, text files
- * as line-per-command scripts (exactly what exec_file always
- * did for the old `exec` command). Leading './' is skipped, so
- * './test.o', 'test.o' and 'dir/test.o' all work: you just type
- * the file name. */
-    {
-        const char* fn = cmd_name;
-        while (fn[0] == '.' && fn[1] == '/') fn += 2;
-        if (fn[0] && fs_file_exists(fn)) {
-            if (exec_perm_ok(fn, cmd_name)) {
-                exec_file(fn, final_args);
-            }
-            return;
-        }
-    }
 
     print("error: Command not found: ");
     print(cmd_name);
