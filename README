@@ -9,7 +9,7 @@ ELF32 driver (kernel/elf.c), which resolves each program's symbols against
 the kernel export table (include/tanja.h).
 The shell runs a command by trying /bin/<name>.o first (so you can add or
 override a standard command by dropping a file with the same name in /bin
-at runtime), then /Programs/<name>(.o) for user-added programs.
+at runtime), then /root/Programs or /home/<username/Programs for user-added programs.
 
 2. Programming in TanjaOS
 
