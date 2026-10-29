@@ -14,6 +14,8 @@
 #define MAXN    32
 #define VISIBLE 12
 
+static void show_hardware(void);
+
 static wifi_net_t nets[MAXN];
 static int nn, sel, top;
 static char msg[100];
@@ -116,17 +118,25 @@ static void print_status(void) {
     if (ni.present && ni.configured)
         printf("%d.%d.%d.%d\n", (int)(ni.ip >> 24), (int)((ni.ip >> 16) & 255),
                (int)((ni.ip >> 8) & 255), (int)(ni.ip & 255));
-    if (!n) { print("wifi  : no Wi-Fi adapter found\n"); return; }
+    if (!n) { show_hardware(); return; }
     wifi_adapter_name(name, sizeof(name));
     if (wifi_status(cur, sizeof(cur))) printf("wifi  : %s - connected to %s\n", name, cur);
     else printf("wifi  : %s - not connected\n", name);
     if (n > 1) printf("        (%d adapters, using #%d; 'wifi adapter N' switches)\n", n, wifi_selected());
 }
 
+static void show_hardware(void) {
+    static char hw[4][56];
+    int i, n = wifi_hw_list(hw, 4);
+    if (!n) { print("wifi  : no Wi-Fi card found on the PCI bus\n"); return; }
+    print("wifi  : Wi-Fi card detected but there is no driver for it yet:\n");
+    for (i = 0; i < n; i++) printf("          %s\n", hw[i]);
+}
+
 static int need_adapter(void) {
     if (wifi_adapter_count()) return 1;
-    print("wifi: no Wi-Fi adapter found.\n"
-          "Wired Ethernet configures itself at boot (see: ifconfig).\n");
+    show_hardware();
+    print("Wired Ethernet configures itself at boot (see: ifconfig).\n");
     return 0;
 }
 

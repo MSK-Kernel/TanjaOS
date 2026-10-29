@@ -88,6 +88,11 @@ typedef struct {
     int (*status)(char* ssid_out, int cap);                /* 1 = associated */
 } wifi_driver_t;
 
+/* A Wi-Fi card found on the PCI bus (whether or not a driver exists for it) */
+typedef struct { uint16_t vendor, device; uint8_t bus, dev, fn; } wifi_hw_t;
+int  nic_wifi_scan(wifi_hw_t* out, int max);           /* kernel/nic.c: PCI class 02:80 */
+int  wifi_hw_list(char (*lines)[56], int max);         /* printable "Intel 8086:2723 at pci 02:00.0" */
+
 int  wifi_register(const wifi_driver_t* d);            /* kernel-side, up to 4 adapters */
 void wifi_init(void);                                  /* boot: autoconnect */
 

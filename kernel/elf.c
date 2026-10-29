@@ -269,6 +269,7 @@ static const struct tanja_export tanja_exports[] = {
     { "wifi_selected", (void*)wifi_selected },
     { "wifi_saved_list", (void*)wifi_saved_list },
     { "wifi_strerror", (void*)wifi_strerror },
+    { "wifi_hw_list", (void*)wifi_hw_list },
     { "wifi_scan", (void*)wifi_scan },
     { "wifi_connect", (void*)wifi_connect },
     { "wifi_disconnect", (void*)wifi_disconnect },

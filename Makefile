@@ -5,7 +5,7 @@ ASM=nasm
 CFLAGS=-ffreestanding -m32 -c -fno-stack-protector -fno-builtin -fno-pic -fno-pie -I. $(if $(WIFI_DEMO),-DWIFI_DEMO)
 LDFLAGS=-m elf_i386 -T linker/linker.ld -nostdlib
 
-KERNEL_OBJ = kernel/kernel.o kernel/game.o kernel/ata.o kernel/ahci.o kernel/store.o kernel/idt.o kernel/elf.o kernel/atomic.o kernel/libc.o kernel/libc2.o kernel/exec.o kernel/setjmp_asm.o kernel/linux.o kernel/doom.o kernel/nic.o kernel/net.o kernel/wifi.o kernel/tls.o arch/x86/linux_asm.o
+KERNEL_OBJ = kernel/kernel.o kernel/game.o kernel/ata.o kernel/ahci.o kernel/store.o kernel/idt.o kernel/elf.o kernel/atomic.o kernel/libc.o kernel/libc2.o kernel/exec.o kernel/setjmp_asm.o kernel/linux.o kernel/doom.o kernel/nic.o kernel/net.o kernel/wifi.o kernel/tls.o kernel/wpa.o arch/x86/linux_asm.o
 
 BIN_SRC = $(wildcard bin/*.c)
 BIN_OUT = $(BIN_SRC:bin/%.c=home/bin/%.o)
@@ -98,6 +98,10 @@ tools/bearssl/libbearssl.a: $(BR_OBJ)
 kernel/tls.o: kernel/tls.c kernel/tls_anchors.h include/build_id.h tools/bearssl/libbearssl.a
 	@echo "[CC] kernel/tls.c"
 	$(CC) $(CFLAGS) -Itools/bearssl/inc -o $@ kernel/tls.c
+
+kernel/wpa.o: kernel/wpa.c include/wpa.h tools/bearssl/libbearssl.a
+	@echo "[CC] kernel/wpa.c"
+	$(CC) $(CFLAGS) -Itools/bearssl/inc -o $@ kernel/wpa.c
 
 kernel/store.o: kernel/store.c include/build_id.h
 	@echo "[CC] kernel/store.c"

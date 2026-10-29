@@ -120,7 +120,9 @@ disconnect | forget <ssid> | adapter [N]. kernel/wifi.c is the framework radio
 drivers plug into: up to 4 adapters, open/WEP/WPA2/WPA3/802.1X reporting,
 password validation, scan lists sorted + de-duplicated, saved networks in
 /etc/wifi.conf (root-only) with autoconnect to the strongest saved one.
-There is no real radio driver yet. 'make WIFI_DEMO=1' adds two fake adapters
+kernel/wpa.c is the chip-independent WPA2-PSK core (passphrase->key, 4-way and
+group handshakes, key unwrap, AES-CCM). At boot and in 'wifi' / 'wifi status' it reports any Wi-Fi card it finds on the PCI
+bus (vendor:device ids) even without a driver. There is no real radio driver yet. 'make WIFI_DEMO=1' adds two fake adapters
 (password for secured demo networks: demo1234) for trying all of this out.
 
 pkg:

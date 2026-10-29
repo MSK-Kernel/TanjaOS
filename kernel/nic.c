@@ -292,3 +292,26 @@ int nic_probe_pci(nic_t* out) {
     }
     return -1;
 }
+
+/* Wi-Fi cards report PCI class 0x02 (network), subclass 0x80 (other). */
+int nic_wifi_scan(wifi_hw_t* out, int max) {
+    int bus, dev, fn, n = 0;
+    for (bus = 0; bus < 256; bus++) {
+        for (dev = 0; dev < 32; dev++) {
+            uint32_t id0 = pci_rd(bus, dev, 0, 0x00);
+            if ((id0 & 0xFFFF) == 0xFFFF) continue;
+            int nfn = (pci_rd(bus, dev, 0, 0x0C) & 0x00800000) ? 8 : 1;
+            for (fn = 0; fn < nfn; fn++) {
+                uint32_t id = pci_rd(bus, dev, fn, 0x00);
+                uint32_t cls = pci_rd(bus, dev, fn, 0x08);
+                if ((id & 0xFFFF) == 0xFFFF) continue;
+                if ((cls >> 24) == 0x02 && ((cls >> 16) & 0xFF) == 0x80 && n < max) {
+                    out[n].vendor = id & 0xFFFF; out[n].device = id >> 16;
+                    out[n].bus = bus; out[n].dev = dev; out[n].fn = fn;
+                    n++;
+                }
+            }
+        }
+    }
+    return n;
+}

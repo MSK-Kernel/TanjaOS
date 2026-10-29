@@ -70,6 +70,46 @@ const char* wifi_strerror(int rc) {
     return "connection failed";
 }
 
+/* ----------------------------------------------- detected hardware */
+
+static const char* vendor_name(uint16_t v) {
+    switch (v) {
+    case 0x8086: return "Intel";
+    case 0x14e4: return "Broadcom";
+    case 0x168c: case 0x1969: case 0x17cb: return "Qualcomm/Atheros";
+    case 0x10ec: return "Realtek";
+    case 0x14c3: case 0x1814: return "MediaTek/Ralink";
+    case 0x11ab: return "Marvell";
+    }
+    return "Unknown vendor";
+}
+
+static void hex(char* o, unsigned v, int digits) {
+    int i;
+    for (i = digits - 1; i >= 0; i--, v >>= 4) o[i] = "0123456789abcdef"[v & 15];
+}
+
+int wifi_hw_list(char (*lines)[56], int max) {
+    wifi_hw_t hw[8];
+    int i, n = nic_wifi_scan(hw, 8);
+    if (n > max) n = max;
+    for (i = 0; i < n; i++) {
+        char* o = lines[i];
+        const char* v = vendor_name(hw[i].vendor);
+        int k = 0;
+        while (*v && k < 24) o[k++] = *v++;
+        o[k++] = ' ';
+        hex(o + k, hw[i].vendor, 4); k += 4; o[k++] = ':';
+        hex(o + k, hw[i].device, 4); k += 4;
+        { const char* t = " at pci "; while (*t) o[k++] = *t++; }
+        hex(o + k, hw[i].bus, 2); k += 2; o[k++] = ':';
+        hex(o + k, hw[i].dev, 2); k += 2; o[k++] = '.';
+        o[k++] = '0' + hw[i].fn;
+        o[k] = 0;
+    }
+    return n;
+}
+
 /* ------------------------------------------------------ saved networks */
 
 #define CONF "/etc/wifi.conf"
@@ -246,7 +286,20 @@ void wifi_init(void) {
         wifi_demo_register();
     }
 #endif
-    if (!nad) { boot_log("Wi-Fi: no supported adapter (wired only)"); return; }
+    if (!nad) {
+        static char hwl[4][56];
+        int hn = wifi_hw_list(hwl, 4), hi;
+        if (!hn) { boot_log("Wi-Fi: no Wi-Fi card found (wired only)"); return; }
+        for (hi = 0; hi < hn; hi++) {
+            char msg[100] = "Wi-Fi card found: ";
+            int m = 18, k = 0;
+            while (hwl[hi][k] && m < 80) msg[m++] = hwl[hi][k++];
+            { const char* t = " - no driver yet"; while (*t) msg[m++] = *t++; }
+            msg[m] = 0;
+            boot_log(msg);
+        }
+        return;
+    }
     boot_log(nad == 1 ? "Wi-Fi: 1 adapter found" : "Wi-Fi: several adapters found");
     net_get_info(&ni);
     if (ni.present && ni.configured) return;       /* wired already works */
