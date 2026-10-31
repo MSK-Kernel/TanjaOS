@@ -397,6 +397,16 @@ void store_init(uint32_t mb_magic, uint32_t mb_addr) {
     store_disk_sectors = disk_sectors;
     if (backend == BACKEND_ATA) log_slot(store_channel, store_drive);
 
+    /* LiveCD / live USB: the stick the ISO was written to is a real disk,
+       but it is the boot medium, not an install target. Never persist. */
+    if (boot_is_livecd(mb_magic, mb_addr)) {
+        store_enabled = 0;
+        fs_init();
+        fs_seed_home();
+        boot_log("Storefile: LiveCD session, running from RAM");
+        return;
+    }
+
     /* Reserve enough room for the worst-case filesystem, but do NOT read
  * that whole region at boot. The first sector contains the exact
  * compact image length; only that many sectors are read below.
