@@ -129,8 +129,9 @@ static void show_hardware(void) {
     static char hw[4][56];
     int i, n = wifi_hw_list(hw, 4);
     if (!n) { print("wifi  : no Wi-Fi card found on the PCI bus\n"); return; }
-    print("wifi  : Wi-Fi card detected but there is no driver for it yet:\n");
+    print("wifi  : Wi-Fi card detected (driver not started):\n");
     for (i = 0; i < n; i++) printf("          %s\n", hw[i]);
+    print("        Intel Wireless-AC cards: try  wifi attach  (experimental)\n");
 }
 
 static int need_adapter(void) {
@@ -193,6 +194,7 @@ static void usage(void) {
           "       wifi list             scan and list networks\n"
           "       wifi status\n"
           "       wifi connect <ssid> [password]   (quote names with spaces)\n"
+          "       wifi attach           start the driver for the detected Intel card\n"
           "       wifi disconnect | saved | forget <ssid>\n"
           "       wifi adapter [N]      list / choose the adapter\n");
 }
@@ -315,6 +317,13 @@ void main(char* args) {
     else if (strcmp(sub, "list") == 0 || strcmp(sub, "scan") == 0) cmd_list();
     else if (strcmp(sub, "status") == 0) print_status();
     else if (strcmp(sub, "saved") == 0) cmd_saved();
+    else if (strcmp(sub, "attach") == 0) {
+        char m[120];
+        print("starting the Wi-Fi driver (Ctrl+C aborts)...\n");
+        if (wifi_attach_hw(m, sizeof(m)) == 0) printf("ok: %s\nnow use: wifi\n", m);
+        else printf("wifi: %s\n", m);
+    }
+    else if (strcmp(sub, "selftest") == 0) print(bsd_selftest_all() ? "selftest FAILED\n" : "selftest passed\n");
     else if (strcmp(sub, "connect") == 0) cmd_connect(rest);
     else if (strcmp(sub, "adapter") == 0) cmd_adapter(rest);
     else if (strcmp(sub, "disconnect") == 0) {

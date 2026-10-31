@@ -44,6 +44,7 @@ const char* net_tls_error(void);                       /* reason for the last NE
  * the server certificate checked against the built-in Mozilla roots.
  * Follows up to 3 redirects (http or https). */
 int  net_http_get(const char* url, uint8_t* buf, uint32_t cap, uint32_t* len);
+int  net_http_save(const char* url, const char* path, uint32_t* len);
 
 #define NET_E_NONET   (-1)   /* no NIC / not configured */
 #define NET_E_DNS     (-2)
@@ -93,6 +94,8 @@ typedef struct { uint16_t vendor, device; uint8_t bus, dev, fn; } wifi_hw_t;
 int  nic_wifi_scan(wifi_hw_t* out, int max);           /* kernel/nic.c: PCI class 02:80 */
 int  wifi_hw_list(char (*lines)[56], int max);         /* printable "Intel 8086:2723 at pci 02:00.0" */
 
+int  wifi_attach_hw(char* msg, int cap);                 /* start the OpenBSD driver on the detected card; 0 = ok */
+int  bsd_selftest_all(void);                          /* checks the OpenBSD compatibility layer; 0 = all passed */
 int  wifi_register(const wifi_driver_t* d);            /* kernel-side, up to 4 adapters */
 void wifi_init(void);                                  /* boot: autoconnect */
 

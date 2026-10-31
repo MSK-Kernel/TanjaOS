@@ -220,7 +220,7 @@ static void udp_in(uint32_t src, const uint8_t* p, uint32_t len) {
 #define T_ACK 0x10
 
 enum { TS_CLOSED, TS_SYN_SENT, TS_ESTAB, TS_CLOSE_WAIT };
-#define T_RING 16384
+#define T_RING (1024u * 1024u)
 
 static struct {
     int state;
@@ -240,7 +240,7 @@ static int tcp_tx(uint32_t seq, uint8_t flags, const uint8_t* data, uint32_t len
     wr32(seg + 4, seq);
     wr32(seg + 8, (flags & T_ACK) ? tc.rcv_nxt : 0);
     seg[12] = (hl / 4) << 4; seg[13] = flags;
-    wr16(seg + 14, T_RING - tc.rcount);
+    wr16(seg + 14, (T_RING - tc.rcount) > 65535u ? 65535u : (T_RING - tc.rcount));
     wr16(seg + 16, 0); wr16(seg + 18, 0);
     if (mss_opt) { seg[20] = 2; seg[21] = 4; wr16(seg + 22, 1460); }
     if (len) memcpy(seg + hl, data, len);
@@ -375,7 +375,7 @@ static int tcp_recv(uint8_t* buf, uint32_t cap, int timeout_ms) {
         }
         if (tc.fin) return 0;
         if (tc.rst) return -2;
-        if ((int)(get_uptime_ms() - t0) >= timeout_ms) return -1;
+        if (timeout_ms > 0 && (int)(get_uptime_ms() - t0) >= timeout_ms) return -1;
         asm volatile ("hlt");
     }
 }
@@ -430,7 +430,11 @@ static void net_poll_inner(void) {
     }
 }
 
+extern int  bsd_wifi_attached(void);
+extern void bsd_poll(void);
+
 void net_poll(void) {
+    if (bsd_wifi_attached()) bsd_poll();
     if (!nic_ok) return;
     net_poll_inner();
     uint32_t now = get_uptime_ms();
@@ -706,9 +710,11 @@ static int dechunk(uint8_t* b, uint32_t n) {
 
 /* One connection, plain or TLS: the HTTP code below doesn't care which. */
 static int conn_tls;
+static int conn_no_timeout;   /* package downloads: wait as long as it takes */
 
 static int tls_lo_read(unsigned char* d, size_t n) {
-    int r = tcp_recv(d, (uint32_t)n, 8000);
+    int to = conn_no_timeout ? 0 : 30000;
+    int r = tcp_recv(d, (uint32_t)n, to);
     return r > 0 ? r : -1;
 }
 static int tls_lo_write(const unsigned char* d, size_t n) {
@@ -720,6 +726,18 @@ static int conn_recv(uint8_t* b, uint32_t cap) {
     int r = tls_read(b, cap);
     return r < 0 ? -2 : r;
 }
+/* Longer timeout for big downloads. TLS low-level reads still use 8s,
+ * so we retry on a stall instead of failing the whole transfer. */
+/* No timeout: a large package may be slow, but it should not fail
+ * just because the link paused. Reset/EOF still end the read. */
+static int conn_recv_long(uint8_t* b, uint32_t cap) {
+    int r;
+    conn_no_timeout = 1;
+    if (!conn_tls) r = tcp_recv(b, cap, 0);
+    else           r = tls_read(b, cap);
+    conn_no_timeout = 0;
+    return r;
+}
 static int conn_send(const uint8_t* b, uint32_t n) {
     return conn_tls ? tls_write_all(b, n) : tcp_send(b, n);
 }
@@ -727,6 +745,7 @@ static void conn_close(void) {
     if (conn_tls) tls_end();
     tcp_close();
     conn_tls = 0;
+    conn_no_timeout = 0;
 }
 
 int net_http_get(const char* url0, uint8_t* buf, uint32_t cap, uint32_t* len) {
@@ -816,6 +835,224 @@ int net_http_get(const char* url0, uint8_t* buf, uint32_t cap, uint32_t* len) {
         return status;
     }
     return NET_E_URL;
+}
+
+
+/* Stream an HTTP(S) response body straight into a file.
+ * Only a small receive buffer is used, so multi-megabyte packages
+ * (e.g. Doom) do not require a huge contiguous malloc.
+ * Returns the HTTP status, or a negative NET_E_* code.
+ * *out_len receives the number of body bytes written. */
+extern int fs_create_file(const char* path);
+extern int fs_append_file(const char* path, const char* data, uint32_t len);
+extern int fs_prealloc_file(const char* path, uint32_t size);
+extern int fs_write_at(const char* path, uint32_t offset, const char* data, uint32_t len);
+extern int fs_delete_file(const char* path);
+extern int fs_file_exists(const char* path);
+extern void print(const char* s);
+extern void print_dec(uint32_t n);
+extern void print_dec_pad(uint32_t n, int width);
+
+int net_http_save(const char* url0, const char* outpath, uint32_t* out_len) {
+    static char url[512], host[128], path[384], loc[384];
+    static uint8_t chunk[32 * 1024];
+    int rc;
+    uint32_t total = 0;
+    uint32_t content_len = 0;
+    int last_pct = -1;
+    int attempt;
+
+    if (out_len) *out_len = 0;
+    if (!nic_ok || !cfg.ip) return NET_E_NONET;
+    if (!url0 || !outpath || !outpath[0]) return NET_E_URL;
+    if (strlen(url0) >= (int)sizeof(url)) return NET_E_URL;
+    strcpy(url, url0);
+
+    /* Up to 6 attempts. After the first, resume with Range. */
+    for (attempt = 0; attempt < 6; attempt++) {
+        uint16_t port; uint32_t ip;
+        char req[768];
+        int tls = 0;
+        uint32_t hdr_got = 0;
+        int he = -1;
+        uint8_t hdr[8192];
+        int redirects;
+
+        for (redirects = 0; redirects <= 3; redirects++) {
+            /* Must reset per redirect; otherwise a 302 leaves stale
+             * headers and the next request looks like a bad URL. */
+            hdr_got = 0;
+            he = -1;
+            if ((rc = parse_url(url, host, sizeof(host), &port, path, sizeof(path), &tls)) != 0) return rc;
+            if (net_resolve(host, &ip) != 0) return NET_E_DNS;
+            if (tcp_connect(ip, port) != 0) { rc = NET_E_CONNECT; goto retry; }
+            conn_tls = tls;
+            if (tls && tls_start(host, tls_lo_read, tls_lo_write) != 0) { conn_close(); rc = NET_E_TLS; goto retry; }
+
+            {   /* build the request, with Range if resuming */
+                int n = 0, k;
+                const char* parts[] = { "GET ", path, " HTTP/1.0\r\nHost: ", host,
+                    "\r\nUser-Agent: TanjaOS-pkg\r\nAccept: */*\r\nConnection: close\r\n" };
+                for (k = 0; k < 5; k++) {
+                    int l = strlen(parts[k]);
+                    if (n + l >= (int)sizeof(req)) { conn_close(); return NET_E_URL; }
+                    memcpy(req + n, parts[k], l); n += l;
+                }
+                if (total > 0) {
+                    char rng[48]; int rl = 0;
+                    const char* pre = "Range: bytes=";
+                    uint32_t v = total;
+                    char digs[12]; int nd = 0;
+                    for (k = 0; pre[k]; k++) rng[rl++] = pre[k];
+                    if (v == 0) digs[nd++] = '0';
+                    while (v) { digs[nd++] = '0' + (v % 10); v /= 10; }
+                    while (nd) rng[rl++] = digs[--nd];
+                    rng[rl++] = '-'; rng[rl++] = '\r'; rng[rl++] = '\n'; rng[rl] = 0;
+                    if (n + rl >= (int)sizeof(req)) { conn_close(); return NET_E_URL; }
+                    memcpy(req + n, rng, rl); n += rl;
+                }
+                if (n + 2 >= (int)sizeof(req)) { conn_close(); return NET_E_URL; }
+                req[n++] = '\r'; req[n++] = '\n';
+                if (conn_send((uint8_t*)req, n) != 0) { conn_close(); rc = tls ? NET_E_TLS : NET_E_IO; goto retry; }
+            }
+
+            while (he < 0 && hdr_got < sizeof(hdr) - 1) {
+                int r = conn_recv_long(hdr + hdr_got, (uint32_t)(sizeof(hdr) - 1 - hdr_got));
+                if (r > 0) { hdr_got += r; he = find_hdr_end(hdr, hdr_got); continue; }
+                if (r == 0) break;
+                conn_close(); rc = NET_E_IO; goto retry;
+            }
+            if (he < 0 || hdr_got < 12 || memcmp(hdr, "HTTP/", 5) != 0) { conn_close(); rc = NET_E_IO; goto retry; }
+
+            int status = 0, i = 9;
+            while (hdr[i] >= '0' && hdr[i] <= '9') status = status * 10 + (hdr[i++] - '0');
+
+            int have_loc = 0;
+            uint32_t hp = 0;
+            uint32_t this_len = 0;
+            while (hp < (uint32_t)he) {
+                uint32_t e = hp;
+                while (e < (uint32_t)he && hdr[e] != '\r') e++;
+                if (strncasecmp((char*)hdr + hp, "Location:", 9) == 0) {
+                    uint32_t q = hp + 9; int l = 0;
+                    while (q < e && hdr[q] == ' ') q++;
+                    while (q < e && l < (int)sizeof(loc) - 1) loc[l++] = hdr[q++];
+                    loc[l] = 0; have_loc = 1;
+                } else if (strncasecmp((char*)hdr + hp, "Content-Length:", 15) == 0) {
+                    uint32_t q = hp + 15;
+                    while (q < e && (hdr[q] == ' ' || hdr[q] == '\t')) q++;
+                    this_len = 0;
+                    while (q < e && hdr[q] >= '0' && hdr[q] <= '9')
+                        this_len = this_len * 10u + (uint32_t)(hdr[q++] - '0');
+                }
+                hp = e + 2;
+            }
+
+            if ((status == 301 || status == 302 || status == 303 || status == 307 || status == 308) && have_loc) {
+                conn_close();
+                if (loc[0] == '/') {
+                    char tmp[512]; int n = 0, k;
+                    const char* pre = tls ? "https://" : "http://";
+                    for (k = 0; pre[k]; k++) tmp[n++] = pre[k];
+                    for (k = 0; host[k] && n < 400; k++) tmp[n++] = host[k];
+                    if (port != (tls ? 443 : 80)) {
+                        tmp[n++] = ':';
+                        char d[8]; int dl = 0; uint32_t pv = port;
+                        while (pv) { d[dl++] = '0' + pv % 10; pv /= 10; }
+                        while (dl) tmp[n++] = d[--dl];
+                    }
+                    for (k = 0; loc[k] && n < 500; k++) tmp[n++] = loc[k];
+                    tmp[n] = 0;
+                    strcpy(url, tmp);
+                } else {
+                    if (strlen(loc) >= (int)sizeof(url)) return NET_E_URL;
+                    strcpy(url, loc);
+                }
+                continue;
+            }
+
+            /* 200 = full body, 206 = partial (resume). Anything else is final. */
+            if (status != 200 && status != 206) { conn_close(); return status; }
+            if (status == 200) {
+                /* Server ignored Range or this is the first try: start over. */
+                if (total && fs_file_exists(outpath)) fs_delete_file(outpath);
+                total = 0; last_pct = -1;
+                content_len = this_len;
+            } else {
+                /* 206: this_len is the remaining length */
+                if (!content_len) content_len = total + this_len;
+            }
+            if (content_len && last_pct < 0) { print_dec_pad(0, 3); print("%"); }
+            /* One allocation for the whole file. Repeated append reallocs
+             * fragment the pool and fail part-way through large packages. */
+            if (content_len && total == 0) {
+                if (fs_prealloc_file(outpath, content_len) != 0) {
+                    conn_close();
+                    if (fs_file_exists(outpath)) fs_delete_file(outpath);
+                    return NET_E_IO;
+                }
+            }
+
+            if (hdr_got > (uint32_t)he) {
+                uint32_t blen = hdr_got - (uint32_t)he;
+                if ((content_len ? fs_write_at(outpath, total, (const char*)(hdr + he), blen) : fs_append_file(outpath, (const char*)(hdr + he), blen)) != 0) {
+                    conn_close();
+                    if (fs_file_exists(outpath)) fs_delete_file(outpath);
+                    return NET_E_IO;
+                }
+                total += blen;
+            }
+
+            for (;;) {
+                int r = conn_recv_long(chunk, sizeof(chunk));
+                if (r > 0) {
+                    if ((content_len ? fs_write_at(outpath, total, (const char*)chunk, (uint32_t)r) : fs_append_file(outpath, (const char*)chunk, (uint32_t)r)) != 0) {
+                        conn_close();
+                        if (fs_file_exists(outpath)) fs_delete_file(outpath);
+                        return NET_E_IO;
+                    }
+                    total += (uint32_t)r;
+                    if (content_len) {
+                        int pct = (int)((total * 100ull) / content_len);
+                        if (pct > 100) pct = 100;
+                        if (pct != last_pct) {
+                            print("\b\b\b\b");
+                            print_dec_pad((uint32_t)pct, 3);
+                            print("%");
+                            last_pct = pct;
+                        }
+                    }
+                    continue;
+                }
+                if (r == 0) { /* clean EOF */
+                    conn_close();
+                    if (content_len && last_pct != 100) {
+                        print("\b\b\b\b"); print_dec_pad(100, 3); print("%");
+                    }
+                    print("\n");
+                    if (out_len) *out_len = total;
+                    return 200;
+                }
+                /* timeout / drop: keep what we have and resume */
+                conn_close();
+                rc = NET_E_IO;
+                goto retry;
+            }
+        }
+        return NET_E_URL;
+retry:
+        if (attempt + 1 >= 6) {
+            if (fs_file_exists(outpath)) fs_delete_file(outpath);
+            return rc;
+        }
+        /* brief pause before resume */
+        {
+            uint32_t t0 = get_uptime_ms();
+            while (get_uptime_ms() - t0 < 500) asm volatile("hlt");
+        }
+    }
+    if (fs_file_exists(outpath)) fs_delete_file(outpath);
+    return NET_E_IO;
 }
 
 const char* net_tls_error(void) { return tls_error_str(); }

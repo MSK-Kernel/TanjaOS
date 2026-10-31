@@ -51,7 +51,7 @@ static void collect_builtins(void) {
         while (i < n && buf[i] != '\n') i++;
         int len = i - start;
         if (!(len == 4 && strncmp(buf + start, "doom", 4) == 0 &&
-              !fs_file_exists("/bin/doom.o")))
+              !fs_file_exists("/bin/doom.o") && !fs_file_exists("/usr/bin/doom.o")))
             add_name(buf + start, len);
         if (i < n) i++;
     }

@@ -135,9 +135,16 @@ void linux_set_layout(uint32_t kernel_end, uint32_t ram_top)
  * image - so size it to what actually fits, keeping at least a
  * small exe/brk reserve above it. */
     avail = (lx_stack_top > lx_mmap_base) ? (lx_stack_top - lx_mmap_base) : 0;
+    /* Leave at least 4 MiB for brk/stack. Never force a window that
+     * would overlap the stack region (that previously caused hangs
+     * when the kernel BSS grew). */
     win = (avail > (4u << 20)) ? avail - (4u << 20) : 0;
-    if (win > (16u << 20)) win = (16u << 20);
-    if (win < (9u << 20)) win = (9u << 20);
+    /* Doom's embedded WAD makes the loaded image ~26 MiB. Allow up to
+     * 40 MiB when the machine has the room. */
+    if (win > (40u << 20)) win = (40u << 20);
+    if (win < (4u << 20)) win = (avail > (1u << 20)) ? (avail / 2) : 0;
+    if (lx_mmap_base + win > lx_brk_limit)
+        win = (lx_brk_limit > lx_mmap_base) ? (lx_brk_limit - lx_mmap_base) : 0;
     lx_mmap_limit = lx_mmap_base + win;
     lx_exe_base   = lx_mmap_limit;
 }

@@ -8,7 +8,7 @@
 #define MAX_FILENAME 256
 /* Public max file size, kept in sync with MAX_FILE_DATA in fs/fs.c
  * so echo/editor/c can fill a file to capacity. */
-#define MAX_FILE_SIZE (4u * 1048576)
+#define MAX_FILE_SIZE (32u * 1048576)
 
 typedef enum {
     FS_FILE,
@@ -28,6 +28,8 @@ int fs_read_file_prefix(const char* path, char* buffer, uint32_t capacity, uint3
 int fs_read_file_range(const char* path, uint32_t offset, char* buffer,
                        uint32_t capacity, uint32_t* size);
 int fs_append_file(const char* path, const char* data, uint32_t len);
+int fs_prealloc_file(const char* path, uint32_t size);
+int fs_write_at(const char* path, uint32_t offset, const char* data, uint32_t len);
 uint32_t fs_get_file_size(const char* path);
 int fs_file_exists(const char* path);
 int fs_directory_exists(const char* path);

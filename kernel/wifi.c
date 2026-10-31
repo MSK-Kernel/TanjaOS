@@ -319,6 +319,42 @@ void wifi_init(void) {
     sel = saved_sel;
 }
 
+/* ---------------------------- real hardware: OpenBSD iwm driver (bsd/) */
+
+extern int bsd_wifi_attach(char* msg, int cap);
+extern int bsd_wifi_scan(char (*ssid)[33], int* signal, int* sec, int* chan, int max);
+extern int bsd_wifi_connect(const char* ssid, const char* pass);
+extern int bsd_wifi_disconnect(void);
+extern int bsd_wifi_status(char* out, int cap);
+extern const char* bsd_wifi_name(void);
+
+static int bs_scan(wifi_net_t* out, int max) {
+    static char ss[32][33]; int sig[32], sec[32], ch[32], i, n;
+    n = bsd_wifi_scan(ss, sig, sec, ch, max < 32 ? max : 32);
+    for (i = 0; i < n; i++) {
+        strncpy(out[i].ssid, ss[i], 32); out[i].ssid[32] = 0;
+        out[i].signal = sig[i]; out[i].security = sec[i]; out[i].channel = ch[i];
+    }
+    return n;
+}
+static int bs_connect(const char* s, const char* p) { return bsd_wifi_connect(s, p); }
+static int bs_disconnect(void) { return bsd_wifi_disconnect(); }
+static int bs_status(char* s, int c) { return bsd_wifi_status(s, c); }
+static wifi_driver_t bsd_drv = { 0, bs_scan, bs_connect, bs_disconnect, bs_status };
+static int bsd_registered;
+
+/* `wifi attach`: bring up the detected card with the OpenBSD driver. 0 = ok */
+int wifi_attach_hw(char* msg, int cap) {
+    int rc = bsd_wifi_attach(msg, cap);
+    if (rc == 0 && !bsd_registered) {
+        bsd_drv.name = bsd_wifi_name();
+        wifi_register(&bsd_drv);
+        bsd_registered = 1;
+        wifi_select(wifi_adapter_count() - 1);
+    }
+    return rc;
+}
+
 #ifdef WIFI_DEMO
 /* ---- demo adapters: no radio, no data path, invented networks ---- */
 typedef struct { const char* s; int sig, sec, ch; } dnet;

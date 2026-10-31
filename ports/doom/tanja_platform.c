@@ -482,6 +482,12 @@ int DG_GetKey(int* pressed, unsigned char* key)
 #define DOOM_STACK_BYTES (256 * 1024)
 static uint8_t doom_stack[DOOM_STACK_BYTES] __attribute__((aligned(16)));
 
+/* The package carries its own IWAD, rather than relying on kernel globals. */
+extern const uint8_t _binary_doom_wad_start[];
+extern const uint8_t _binary_doom_wad_end[];
+uint8_t* tanja_wad_base;
+uint32_t tanja_wad_size;
+
 static void* exit_jb[5];
 static char* g_args;
 static int   g_exit_code;
@@ -545,6 +551,8 @@ void tanja_doom_run(void)
 
 void main(char* args)
 {
+    tanja_wad_base = (uint8_t*)_binary_doom_wad_start;
+    tanja_wad_size = (uint32_t)(_binary_doom_wad_end - _binary_doom_wad_start);
     g_args = args;
     kb_ext = kb_skip = kq_head = kq_tail = m_idx = 0;
     acc_dx = acc_dy = m_buttons = last_buttons = 0;

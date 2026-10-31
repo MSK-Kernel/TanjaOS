@@ -15,8 +15,11 @@
 
 extern void* malloc(unsigned int n);
 extern void  free(void* p);
+extern int net_http_save(const char* url, const char* path, unsigned int* len);
 
-#define PKG_MAX (1024u * 1024u)
+extern int fs_cur_uid;
+
+#define PKG_MAX (36u * 1024u * 1024u)
 #define GH_FMT_A "https://github.com/MSK-Kernel/pkg_"
 
 static int valid_name(const char* n) {
@@ -58,7 +61,6 @@ static void no_perm(void) { print("pkg: permission denied (are you root? try: su
 
 static void do_install(const char* name) {
     char repo[200], url[300], marker[96], bin[96];
-    uint8_t* buf;
     net_info_t ni;
     uint32_t len = 0;
     int st;
@@ -84,36 +86,36 @@ static void do_install(const char* name) {
     }
     printf("fetching %s\n", url);
 
-    buf = (uint8_t*)malloc(PKG_MAX + 1);
-    if (!buf) { print("pkg: out of memory\n"); return; }
-
-    st = net_http_get(url, buf, PKG_MAX, &len);
-    if (st < 0) {
-        switch (st) {
-        case NET_E_DNS:     print("pkg: cannot resolve the repo host (check DNS / the repo URL)\n"); break;
-        case NET_E_CONNECT: print("pkg: cannot connect to the repo\n"); break;
-        case NET_E_TLS:     printf("pkg: secure connection failed: %s\n", net_tls_error()); break;
-        case NET_E_TOOBIG:  print("pkg: package is larger than 1 MiB\n"); break;
-        case NET_E_URL:     print("pkg: bad repo URL (set PKG_REPO or /etc/pkg.repo)\n"); break;
-        default:            print("pkg: download failed (timeout / connection dropped)\n"); break;
-        }
-        free(buf); return;
-    }
-    if (st == 404) { printf("pkg: package '%s' not found in %s\n", name, repo); free(buf); return; }
-    if (st != 200) { printf("pkg: server answered HTTP %d\n", st); free(buf); return; }
-    if (len == 0)  { print("pkg: server sent an empty file\n"); free(buf); return; }
-
     if (!fs_directory_exists("/var")) fs_create_directory("/var");
     if (!fs_directory_exists("/var/pkg")) fs_create_directory("/var/pkg");
     if (!fs_directory_exists("/usr")) fs_create_directory("/usr");
     if (!fs_directory_exists("/usr/bin")) fs_create_directory("/usr/bin");
 
-    /* Write the binary straight to /usr/bin/<name>.o */
-    if (fs_write_file(bin, (const char*)buf, len) != 0) {
-        if (fs_errno == 13) no_perm(); else print("pkg: cannot write to /usr/bin\n");
-        free(buf); return;
+    /* Stream the package straight to disk. A small receive buffer is
+     * enough, so multi-megabyte packages (Doom) do not need a huge
+     * contiguous malloc. */
+    if (fs_file_exists(bin)) fs_delete_file(bin);
+    st = net_http_save(url, bin, &len);
+    if (st < 0) {
+        if (fs_file_exists(bin)) fs_delete_file(bin);
+        switch (st) {
+        case NET_E_DNS:     print("pkg: cannot resolve the repo host (check DNS / the repo URL)\n"); break;
+        case NET_E_CONNECT: print("pkg: cannot connect to the repo\n"); break;
+        case NET_E_TLS:     printf("pkg: secure connection failed: %s\n", net_tls_error()); break;
+        case NET_E_TOOBIG:  print("pkg: package is too large\n"); break;
+        case NET_E_URL:     print("pkg: bad repo URL (set PKG_REPO or /etc/pkg.repo)\n"); break;
+        default:            print("pkg: not enough storage or connection dropped\n"); break;
+        }
+        return;
     }
-    fs_chmod(bin, 0755);
+    if (st == 404) { printf("pkg: package '%s' not found in %s\n", name, repo); if (fs_file_exists(bin)) fs_delete_file(bin); return; }
+    if (st != 200) { printf("pkg: server answered HTTP %d\n", st); if (fs_file_exists(bin)) fs_delete_file(bin); return; }
+    if (len == 0)  { print("pkg: server sent an empty file\n"); if (fs_file_exists(bin)) fs_delete_file(bin); return; }
+    if (fs_chmod(bin, 0755) != 0) {
+        fs_delete_file(bin);
+        print("pkg: installed file but could not set executable permissions; removed it\n");
+        return;
+    }
 
     /* Marker so remove can tell pkg-installed packages from system commands.
        Content doesn't matter; existence is the flag. */
@@ -122,8 +124,7 @@ static void do_install(const char* name) {
         print("pkg: warning: could not write install marker in /var/pkg\n");
     }
 
-    free(buf);
-    printf("got %u bytes, installed %s\n", len, name, name);
+    printf("got %u bytes, installed %s\n", len, name);
 }
 
 static void do_remove(const char* name) {
@@ -145,6 +146,12 @@ static void do_remove(const char* name) {
 
 void main(char* args) {
     char sub[16], name[64];
+
+    /* Package installation/removal changes system-wide /usr/bin and /var/pkg. */
+    if (fs_cur_uid != 0) {
+        print("pkg: permission denied; use sudo pkg install <name> or sudo pkg remove <name>\n");
+        return;
+    }
     int i = 0, j = 0;
     while (*args == ' ') args++;
     while (*args && *args != ' ' && i < 15) sub[i++] = *args++;

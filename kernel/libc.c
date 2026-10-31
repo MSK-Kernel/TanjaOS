@@ -75,9 +75,9 @@ void abort(void) {
     exit(134);
 }
 
-/* malloc: first-fit free list over a static 4 MB arena
+/* malloc: first-fit free list over a static 16 MB arena
  */
-#define MALLOC_ARENA_SIZE (4u * 1024u * 1024u)
+#define MALLOC_ARENA_SIZE (16u * 1024u * 1024u)
 #define MALLOC_ALIGN      16u
 #define MALLOC_MAGIC      0xB10CA0Fu
 

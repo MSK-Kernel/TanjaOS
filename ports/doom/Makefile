@@ -1,13 +1,11 @@
 # ports/doom/Makefile - build Doom (doomgeneric) as a TanjaOS ELF32 program.
 #
-# Normally driven from the top-level Makefile ('make doom'), which passes
-# CC/LD/ARCH_FLAGS so the arm64 cross-build (Makefile.arm64) keeps working.
+# Built by the top-level default 'make' target; 'make clean' removes build outputs.
 #
 # Outputs (in build/):
 #   doom.elf   one ET_REL ELF32 object (all engine + platform code merged)
 #   doom.wad   the IWAD, stripped of sound/music lumps (TanjaOS has no audio)
-#   doom_elf.o / doom_wad.o   the two blobs wrapped as linkable objects; the
-#              kernel (kernel/doom.c) picks them up via _binary_doom_*_start.
+#   doom          standalone ET_REL package installed as /usr/bin/doom.o
 
 CC         ?= gcc
 LD         ?= ld
@@ -15,8 +13,6 @@ ARCH_FLAGS ?= -m32
 
 # Which IWAD to embed.  The default is Freedoom Phase 1 (BSD-licensed), stripped
 # of audio and xz-compressed in wad/ so a plain `make` needs no download.  For the
-# shareware/commercial game use e.g.
-#   make doom DOOM_WAD_SRC=/path/doom1.wad DOOM_IWAD_NAME=doom1.wad
 DOOM_WAD_SRC   ?= wad/freedoom1.stripped.wad.xz
 DOOM_IWAD_NAME ?= freedoom1.wad
 
@@ -32,7 +28,7 @@ CFLAGS_DOOM = $(ARCH_FLAGS) -Os -ffreestanding -nostdinc -isystem include -isyst
 ENGINE_SRC = $(wildcard engine/*.c)
 OBJS = $(ENGINE_SRC:engine/%.c=build/%.o) build/tanja_libc.o build/tanja_platform.o
 
-all: build/doom_elf.o build/doom_wad.o
+all: build/doom
 
 build:
 	mkdir -p build
@@ -59,6 +55,11 @@ build/doom_elf.o: build/doom.elf
 
 build/doom_wad.o: build/doom.wad
 	cd build && $(LD) -r -b binary -m elf_i386 -o doom_wad.o doom.wad
+
+# Combine the real relocatable program sections and IWAD into one ET_REL
+# applet. Do not wrap the engine object in a binary blob: elf_run needs main.
+build/doom: build/doom.elf build/doom_wad.o
+	$(LD) -r -m elf_i386 -o $@ build/doom.elf build/doom_wad.o
 
 
 clean:

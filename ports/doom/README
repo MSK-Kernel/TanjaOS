@@ -5,9 +5,11 @@ Platform layer: tanja_platform.c (VGA mode 13h, PS/2 scancodes, kernel timer)
 libc shim:      tanja_libc.c (malloc, stdio, printf/sscanf, 64-bit division)
 
 Build
-  make                       # Doom is part of tanja-base; nothing extra to do
+  make                       # builds TanjaOS and ports/doom/build/doom
+  # Upload ports/doom/build/doom as the file named "doom" in MSK-Kernel/pkg_doom
+  # Boot TanjaOS, then: sudo pkg install doom
+  # Start the installed package: doom
   qemu-system-i386 -m 1536 -kernel arch/x86/boot/tanja-base
-  (log in, then type: doom)
 
   Needs xz (xz-utils) at build time to unpack the bundled IWAD.
   The bundled IWAD is Freedoom Phase 1 (BSD), audio-stripped, xz-compressed:
@@ -18,7 +20,8 @@ Build
 Controls: arrows move/turn, Ctrl fire, Space use, Shift run, Alt strafe, Esc menu.
 
 Notes
-  - Program + IWAD are linked into the kernel image (fs files max 320 KiB).
+  - Doom and its IWAD are bundled into the standalone package, not the kernel.
+  - The package is large; TanjaOS filesystem and pkg limits were raised to accommodate it.
   - Sound/music lumps are stripped (no audio driver); no config/save persistence
     beyond what the TanjaOS filesystem gives fopen("w").
   - Text screen is saved/restored around graphics mode, so quitting returns to the shell.

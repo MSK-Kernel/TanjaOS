@@ -36,50 +36,62 @@ static int exec_file_at(const char* path, const char* args,
     }
 
     uint32_t size = exec_cap;
+    const uint8_t* image = exec_buffer;
 
-    if (fs_read_file(path, (char*)exec_buffer, &size) != 0) {
-        print("exec: file not found: ");
-        print(path);
-        print("\n");
-        return -1;
+    /* Prefer a zero-copy view of the file. Large packages (Doom is
+     * ~26 MiB) do not fit in the 4 MiB exec buffer; reading them
+     * truncated the ELF and failed with "section table out of bounds". */
+    {
+        uint32_t fsz = 0;
+        const char* ptr = fs_file_data_ptr(path, &fsz);
+        if (ptr && fsz > 0) {
+            image = (const uint8_t*)ptr;
+            size = fsz;
+        } else if (fs_read_file(path, (char*)exec_buffer, &size) != 0) {
+            print("exec: file not found: ");
+            print(path);
+            print("\n");
+            return -1;
+        }
     }
 
     /* Real ELF32: relocatable objects run through the TanjaOS program
  * driver; EXEC images are real Linux binaries - run them through
  * the Linux compat layer (kernel/linux.c). */
-    if (elf_is_elf32(exec_buffer, size)) {
-        uint16_t e_type = *(uint16_t*)(exec_buffer + 16);
-        uint16_t e_machine = *(uint16_t*)(exec_buffer + 18);
+    if (elf_is_elf32(image, size)) {
+        uint16_t e_type = *(uint16_t*)(image + 16);
+        uint16_t e_machine = *(uint16_t*)(image + 18);
         if (e_machine == 3 /* EM_386 */ &&
             (e_type == 2 /* ET_EXEC */ ||
              (e_type == 3 /* ET_DYN: runnable if it is an executable,
  * i.e. has an entry point or an interpreter */))) {
-            uint32_t phoff = *(uint32_t*)(exec_buffer + 28);
-            uint16_t phentsize = *(uint16_t*)(exec_buffer + 42);
-            uint16_t phnum = *(uint16_t*)(exec_buffer + 44);
-            uint32_t e_entry = *(uint32_t*)(exec_buffer + 24);
+            uint32_t phoff = *(uint32_t*)(image + 28);
+            uint16_t phentsize = *(uint16_t*)(image + 42);
+            uint16_t phnum = *(uint16_t*)(image + 44);
+            uint32_t e_entry = *(uint32_t*)(image + 24);
             int runnable = (e_type == 2) || (e_entry != 0);
             int pi;
             for (pi = 0; pi < phnum && !runnable; pi++) {
-                uint32_t p_type = *(uint32_t*)(exec_buffer + phoff
+                uint32_t p_type = *(uint32_t*)(image + phoff
                                               + pi * phentsize);
                 if (p_type == 3 /* PT_INTERP */) runnable = 1;
             }
             if (runnable)
-                return linux_run(exec_buffer, size, path, args);
+                return linux_run(image, size, path, args);
         }
-        return elf_run(exec_buffer, size, path, args);
+        return elf_run(image, size, path, args);
     }
 
-    /* Text files are shell scripts. Execute one command per line, just
- * as the old exec command did. (args is ignored for scripts.) */
-    exec_buffer[size] = 0;
+    /* Text files are shell scripts. Execute one command per line.
+     * Zero-copy images must not be mutated; use a local scan. */
+    if (image == exec_buffer)
+        exec_buffer[size] = 0;
 
     char line[256];
     int pos = 0;
 
     for (uint32_t i = 0; ; i++) {
-        if (exec_buffer[i] == '\n' || exec_buffer[i] == 0) {
+        if (image[i] == '\n' || image[i] == 0 || i >= size) {
             line[pos] = 0;
 
             /* Ignore blank lines and simple # comments. */
@@ -89,13 +101,13 @@ static int exec_file_at(const char* path, const char* args,
                 execute_command(line);
 
             pos = 0;
-            if (exec_buffer[i] == 0)
+            if (i >= size || image[i] == 0)
                 break;
             continue;
         }
 
         if (pos < 255)
-            line[pos++] = (char)exec_buffer[i];
+            line[pos++] = (char)image[i];
     }
 
     return 0;

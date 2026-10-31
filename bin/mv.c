@@ -41,6 +41,10 @@ static const char* mv_basename(const char* path) {
 
 static int mv_copy_file(const char* src, const char* dst) {
 
+    /* The filesystem copy API creates files with default permissions. Save
+       and restore the source mode so moving scripts/binaries keeps x bits. */
+    int source_mode = fs_get_mode(src);
+
     /* Chunked copy (same rationale as cp.c): no whole-file buffer. */
     char buffer[MV_CHUNK];
     uint32_t total = fs_get_file_size(src);
@@ -54,6 +58,7 @@ static int mv_copy_file(const char* src, const char* dst) {
         if (fs_append_file(dst, buffer, n) != 0) return -1;
         off += n;
     }
+    if (source_mode >= 0 && fs_chmod(dst, source_mode) != 0) return -1;
     return 0;
 }
 
@@ -61,6 +66,7 @@ static int mv_copy_dir(const char* src, const char* dst) {
 
     if (!fs_directory_exists(dst)) {
         if (fs_create_directory(dst) != 0) return -1;
+        { int mode = fs_get_mode(src); if (mode >= 0) fs_chmod(dst, mode); }
     }
 
     char buf[4096];

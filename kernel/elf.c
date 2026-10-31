@@ -77,10 +77,6 @@ extern int store_is_persistent(void);
 extern void config_reset(void);
 extern void setup_wizard(void);
 
-/* Embedded IWAD (see kernel/doom.c); read by ports/doom. */
-extern uint8_t* tanja_wad_base;
-extern uint32_t tanja_wad_size;
-
 /* The C errno: a real global exported to programs (errno.h declares
  * it extern). Kernel routines that report failures through return
  * codes are free to set it. */
@@ -234,6 +230,8 @@ static const struct tanja_export tanja_exports[] = {
     { "fs_read_file_prefix", (void*)fs_read_file_prefix },
     { "fs_read_file_range", (void*)fs_read_file_range },
     { "fs_append_file", (void*)fs_append_file },
+    { "fs_prealloc_file", (void*)fs_prealloc_file },
+    { "fs_write_at", (void*)fs_write_at },
     { "fs_get_file_size", (void*)fs_get_file_size },
     { "fs_file_exists", (void*)fs_file_exists },
     { "fs_directory_exists", (void*)fs_directory_exists },
@@ -252,8 +250,6 @@ static const struct tanja_export tanja_exports[] = {
     { "fs_seed_home", (void*)fs_seed_home },
     { "config_reset", (void*)config_reset },
     { "setup_wizard", (void*)setup_wizard },
-    { "tanja_wad_base", (void*)&tanja_wad_base },
-    { "tanja_wad_size", (void*)&tanja_wad_size },
     { "errno", (void*)&errno },
     /* networking (kernel/net.c, kernel/wifi.c) */
     { "net_get_info", (void*)net_get_info },
@@ -261,6 +257,7 @@ static const struct tanja_export tanja_exports[] = {
     { "net_ping", (void*)net_ping },
     { "net_resolve", (void*)net_resolve },
     { "net_http_get", (void*)net_http_get },
+    { "net_http_save", (void*)net_http_save },
     { "net_tls_error", (void*)net_tls_error },
     { "wifi_adapter_name", (void*)wifi_adapter_name },
     { "wifi_adapter_count", (void*)wifi_adapter_count },
@@ -270,6 +267,8 @@ static const struct tanja_export tanja_exports[] = {
     { "wifi_saved_list", (void*)wifi_saved_list },
     { "wifi_strerror", (void*)wifi_strerror },
     { "wifi_hw_list", (void*)wifi_hw_list },
+    { "bsd_selftest_all", (void*)bsd_selftest_all },
+    { "wifi_attach_hw", (void*)wifi_attach_hw },
     { "wifi_scan", (void*)wifi_scan },
     { "wifi_connect", (void*)wifi_connect },
     { "wifi_disconnect", (void*)wifi_disconnect },
@@ -403,7 +402,7 @@ extern uint8_t __kernel_end;
 uint32_t linux_applet_region_base(void);
 uint32_t linux_applet_region_limit(void);
 #define PROGRAM_GUARD  (1024u * 1024u)
-#define PROGRAM_LIMIT_SIZE (16u * 1024u * 1024u)
+#define PROGRAM_LIMIT_SIZE (48u * 1024u * 1024u)
 
 
 /* export table introspection */
@@ -541,15 +540,19 @@ int elf_run(const uint8_t* image, uint32_t size, const char* path, const char* a
  * guarantees it was ever zeroed for us). */
             uint32_t k;
             for (k = 0; k < sh[i].sh_size; k += 4) {
-                /* word-wise when possible, byte tail */
                 if (k + 4 <= sh[i].sh_size)
                     *(uint32_t*)(cur + k) = 0;
                 else
                     *(uint8_t*)(cur + k) = 0;
             }
+            sec_addr[i] = cur;
+            cur += sh[i].sh_size;
+        } else if (sh[i].sh_size >= (256u * 1024u) &&
+                   sh[i].sh_offset + sh[i].sh_size <= size) {
+            /* Large data (Doom's embedded WAD). Use the file image in
+             * place so we don't need another 26 MiB in the program region. */
+            sec_addr[i] = (uint32_t)(image + sh[i].sh_offset);
         } else {
-            /* Contents come from the file. Zero-size PROGBITS
- * sections (empty .data etc) are legal - skip them. */
             if (sh[i].sh_size > 0) {
                 if (sh[i].sh_offset + sh[i].sh_size > size) {
                     print("elf: section contents out of bounds\n");
@@ -558,10 +561,9 @@ int elf_run(const uint8_t* image, uint32_t size, const char* path, const char* a
                 }
                 memcpy((void*)cur, image + sh[i].sh_offset, sh[i].sh_size);
             }
+            sec_addr[i] = cur;
+            cur += sh[i].sh_size;
         }
-
-        sec_addr[i] = cur;
-        cur += sh[i].sh_size;
     }
 
     if (cur > (uint32_t)linux_applet_region_limit()) {

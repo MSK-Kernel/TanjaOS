@@ -535,7 +535,25 @@ void scroll() {
  * backspace, tab) plus one printable character, then scroll if
  * needed. This is the raw drawing primitive both the byte
  * interface and the UTF-8 decoder below funnel into. */
+/* Mirror console output to COM1 (115200 8N1) so a log can be captured, e.g. with
+ * qemu -serial stdio. Silently does nothing if the machine has no UART. */
+static int serial_state;                       /* 0 = untested, 1 = present, -1 = absent */
+static void serial_put(char c) {
+    int spins;
+    if (serial_state == 0) {
+        outb(0x3F9, 0x00); outb(0x3FB, 0x80); outb(0x3F8, 0x01); outb(0x3F9, 0x00);
+        outb(0x3FB, 0x03); outb(0x3FA, 0xC7); outb(0x3FC, 0x0B);
+        outb(0x3FF, 0xAA);
+        serial_state = (inb(0x3FF) == 0xAA && inb(0x3FD) != 0xFF) ? 1 : -1;
+    }
+    if (serial_state < 0) return;
+    if (c == '\n') serial_put('\r');
+    for (spins = 0; spins < 20000 && !(inb(0x3FD) & 0x20); spins++) ;
+    outb(0x3F8, (uint8_t)c);
+}
+
 static void putc_draw(char c, uint16_t color) {
+    serial_put(c);
     if (c == '\n') {
         cursor = ((cursor / VGA_WIDTH) + 1) * VGA_WIDTH;
     } else if (c == '\b') {
@@ -1852,7 +1870,6 @@ void login_prompt() {
 }
 
 void cmd_exit(char* args) { (void)args; shell_exit_flag = 1; }
-extern void cmd_doom(char* args);   /* kernel/doom.c */
 
 void cmd_hostname(char* args) {
     if (args && args[0]) {
@@ -2587,15 +2604,20 @@ void kernel_main(uint32_t mb_magic, uint32_t mb_addr)
 
     boot_log("Loading command binaries");
 
-    /* /bin is mandatory at boot. Do not recreate it and do not fall back
- * to kernel-provided command binaries: if it was deleted or emptied
- * and the machine is power-cycled/rebooted, deliberately panic here. */
+    /* /bin is mandatory. A previous boot (or a bad persistent image)
+     * may have saved an empty /bin; the embedded home.tar is the
+     * factory source of the command binaries, so re-seed from it
+     * before giving up. */
+    extern void fs_seed_home(void);
+    if (!fs_directory_exists("/bin") || fs_directory_is_empty("/bin")) {
+        boot_log("Restoring /bin from embedded home archive");
+        fs_seed_home();
+    }
     if (!fs_directory_exists("/bin") || fs_directory_is_empty("/bin"))
         kernel_panic_no_bin();
 
     register_cmd("exit", cmd_exit);
     register_cmd("hostname", cmd_hostname);
-    register_cmd("doom", cmd_doom);
     register_cmd("sudo", cmd_sudo);
     register_cmd("useradd", cmd_useradd);
     register_cmd("userdel", cmd_userdel);

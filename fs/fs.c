@@ -40,7 +40,7 @@ static int strlen_safe(const char* s) {
  * fs_seed_home silently skips them and datareset can never restore them.
  * 320KB covers them with headroom. NOTE: fs.c BSS and the Storefile buffer in store.c
  * scale with this (see fs_store_size / STORE_BUF_SECTORS). */
-#define MAX_FILE_DATA (4u * 1048576)
+#define MAX_FILE_DATA (32u * 1048576)
 #define FS_PATH_CAP 256
 
 /* Keep the filesystem metadata small on low-RAM machines.
@@ -49,12 +49,12 @@ static int strlen_safe(const char* s) {
  * (about 30 MiB) even when almost every file was empty. That made the
  * kernel need a huge amount of RAM just to boot simple commands.
  *
- * Files now live in a compact 8 MiB first-fit pool and are allocated only
+ * Files now live in a compact 24 MiB first-fit pool and are allocated only
  * when they actually contain data. MAX_FILE_DATA is still the per-file
  * limit, so normal large files (including TCC source/header files) keep
  * working without reserving 30+ MiB up front.
  */
-#define FS_DATA_POOL_SIZE (16u * 1024u * 1024u)
+#define FS_DATA_POOL_SIZE (48u * 1024u * 1024u)
 
 typedef struct fs_pool_block {
     uint32_t size;       /* payload bytes in this block */
@@ -760,8 +760,24 @@ int fs_write_file(const char* path, const char* data, uint32_t size) {
             if (fused[i] && strcmp_safe(fname[i], full)) { idx = i; break; }
         if (idx == -1) return -1;
     }
-    if (size > MAX_FILE_DATA - 1) return -2;
-    if (fdata_resize(idx, size) != 0) return -3;
+    if (size > MAX_FILE_DATA - 1) {
+        if (fsize[idx] == 0 && fdata[idx] == 0) {
+            fused[idx] = 0;
+            fname[idx][0] = 0;
+            fsize[idx] = 0;
+        }
+        return -2;
+    }
+    if (fdata_resize(idx, size) != 0) {
+        /* If this call created a new empty file, roll its metadata back.
+           Never leave a zero-byte placeholder after a failed write. */
+        if (fsize[idx] == 0 && fdata[idx] == 0) {
+            fused[idx] = 0;
+            fname[idx][0] = 0;
+            fsize[idx] = 0;
+        }
+        return -3;
+    }
     for (i = 0; i < (int)size; i++) fdata[idx][i] = data[i];
     fdata[idx][size] = 0;
     fs_commit_change();
@@ -773,6 +789,55 @@ int fs_write_file(const char* path, const char* data, uint32_t size) {
  * fdata_resize reallocates with the old bytes preserved, then the new
  * chunk lands at the old end. Write permission is checked like
  * fs_write_file (parent dir w for create, file w for append). */
+
+/* Allocate a file to exactly `size` bytes in one shot (contents undefined
+ * except the trailing NUL). Used by pkg so a large download does not
+ * realloc on every chunk and fragment the pool. */
+int fs_prealloc_file(const char* path, uint32_t size)
+{
+    char full[FS_PATH_CAP];
+    int i, idx = -1;
+    if (!path || !path[0] || size == 0 || size > MAX_FILE_DATA - 1) return -1;
+    abs_path(path, full);
+    for (i = 0; i < MAX_F; i++)
+        if (fused[i] && strcmp_safe(fname[i], full)) { idx = i; break; }
+    if (idx < 0) {
+        if (fs_create_file(path) != 0) return -1;
+        for (i = 0; i < MAX_F; i++)
+            if (fused[i] && strcmp_safe(fname[i], full)) { idx = i; break; }
+        if (idx < 0) return -1;
+    }
+    fpool_coalesce();
+    if (fdata_resize(idx, size) != 0) return -3;
+    /* Logical size stays 0 until appends fill it; remember capacity in fsize
+     * by storing the allocated length. Callers then overwrite via append
+     * which will see oldsz and grow. To avoid a second alloc, set fsize
+     * to the full size now and let the writer fill from offset 0.
+     * We expose the allocated length as the file size; the downloader
+     * overwrites from the start. */
+    return 0;
+}
+
+
+/* Overwrite bytes at an absolute offset. The file must already be large
+ * enough (see fs_prealloc_file). Does not reallocate. */
+int fs_write_at(const char* path, uint32_t offset, const char* data, uint32_t len)
+{
+    char full[FS_PATH_CAP];
+    int i, idx = -1;
+    if (!path || !data || len == 0) return -1;
+    abs_path(path, full);
+    for (i = 0; i < MAX_F; i++)
+        if (fused[i] && strcmp_safe(fname[i], full)) { idx = i; break; }
+    if (idx < 0 || !fdata[idx]) return -1;
+    if (offset + len > (uint32_t)fsize[idx]) return -3;
+    {
+        uint32_t k;
+        for (k = 0; k < len; k++) fdata[idx][offset + k] = data[k];
+    }
+    return 0;
+}
+
 int fs_append_file(const char* path, const char* data, uint32_t len)
 {
     fs_errno = 0;
@@ -1040,7 +1105,7 @@ int parse_path(const char* a, char* b, char* c) { (void)a; if(b)b[0]=0; if(c)c[0
 // MAX_F bytes fused[]
 // MAX_F*4 bytes fsize[] (little-endian)
 // MAX_F*64 bytes fname[][64]
-// an 8 MiB on-demand file-data pool
+// a 24 MiB on-demand file-data pool
 // 256 bytes cwd
 
 #define STORE_VERSION 4

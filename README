@@ -7,14 +7,14 @@ binary in home/bin/ (<name>.o), embedded in the boot image (via home.tar)
 as /bin/<name>.o. The kernel loads them at runtime through its in-kernel
 ELF32 driver (kernel/elf.c), which resolves each program's symbols against
 the kernel export table (include/tanja.h).
-The shell runs a command by trying /bin/<name>.o first (so you can add or
-override a standard command by dropping a file with the same name in /bin
-at runtime), then /usr/bin/<name>.o (packages installed by pkg), then
-/Programs/<name>(.o) for user-added programs.
+The shell runs a command by trying /bin/<name>.o first, then
+/usr/bin/<name>.o (packages installed by pkg), then /Programs/<name>(.o).
+Doom and TinyCC are not embedded in /bin by default; install them from the
+package repository with `sudo pkg install doom` or `sudo pkg install tcc`.
 
 2. Programming in TanjaOS
 
-TinyCC ships as /bin/tcc.o, so 'tcc' is just another command. It compiles
+TinyCC is installed from the package repository as /usr/bin/tcc.o, so 'tcc' is just another command. It compiles
 real C99/C11 (the full tcc frontend) into ELF32 objects the kernel ELF
 driver can run. The OS ships a real, standard C header set at /usr/include
 - stdio.h, stdlib.h, string.h, unistd.h, ctype.h, time.h, math.h, errno.h,
@@ -78,8 +78,9 @@ compile time by the wrapper's symbol check (see above).
 
 3. Building
 
-Use 'make' to compile (this compiles the source, all bin/ commands, and
-TinyCC - nothing else). Once compiling is finished, a bootable OS
+Use 'make' to compile the kernel and standard bin/ commands. TinyCC source/build
+files remain under tools/tcc, and Doom source remains under ports/doom; neither
+is embedded as /bin/tcc.o or /bin/doom.o by default. Once compiling is finished, a bootable OS
 image 'tanja-base' will be located at arch/x86/boot, boot it with:
 
     qemu-system-i386 -m 64 -kernel arch/x86/boot/tanja-base
@@ -125,9 +126,9 @@ group handshakes, key unwrap, AES-CCM). At boot and in 'wifi' / 'wifi status' it
 bus (vendor:device ids) even without a driver. There is no real radio driver yet. 'make WIFI_DEMO=1' adds two fake adapters
 (password for secured demo networks: demo1234) for trying all of this out.
 
-pkg:
-    pkg install <name>   GET <repo>/<name> and install the binary to /usr/bin/<name>.o
-    pkg remove <name>    delete /usr/bin/<name>.o (only for packages pkg installed)
+pkg (root required; use sudo from a user account):
+    sudo pkg install <name>   GET <repo>/<name> and install the binary to /usr/bin/<name>.o
+    sudo pkg remove <name>    delete /usr/bin/<name>.o (only for packages pkg installed)
 
 Set it with 'export PKG_REPO=http://host:port' or /etc/pkg.repo. Default source: https://github.com/MSK-Kernel/pkg_<name>/raw/main/<name>
 (fetched directly over https). With a PKG_REPO or /etc/pkg.repo override
@@ -142,3 +143,33 @@ regenerate it to refresh the roots). No TLS 1.3. The clock is the CMOS RTC
 (never earlier than the build date); entropy is RDRAND + timing jitter, so
 it is weaker on CPUs without RDRAND.
 Try it locally: 'python3 -m http.server 8000' in a dir of source files on the host.
+
+5. OpenBSD Wi-Fi code (bsd/)
+
+For broad Wi-Fi chip support TanjaOS reuses OpenBSD's drivers instead of writing its own.
+bsd/src holds OpenBSD's 802.11 stack (net80211), its Intel Wireless-AC driver (if_iwm.c:
+3160/3165/3168/7260/7265/8260/8265/9260/9560) and the crypto helpers they need, unmodified
+(licences are in each file). bsd/include has the OpenBSD kernel headers they include.
+bsd/compat is TanjaOS's own layer: the ~110 OpenBSD kernel services those files call
+(memory, mbufs, timers/tasks, sleeping, PCI, DMA, network interface), polled from the idle
+loop. 'wifi selftest' runs 50+ checks of that layer. Status: layer + build done and tested;
+the driver is in the kernel but is NOT started at boot. To try it on an Intel Wireless-AC card
+(experimental, untested on real hardware): copy the card's iwlwifi-*.ucode firmware into
+home/lib/firmware/ (see the README there), run make, boot, then run 'wifi attach' and read
+the iwm0 messages it prints. Only the Intel AC family (iwm) is attached; AX200/AX201 (iwx),
+Atheros, Realtek and Broadcom are not.
+
+6. Testing the Wi-Fi driver on a PC that can't boot TanjaOS (UEFI only, no Legacy BIOS/CSM)
+
+Run TanjaOS in QEMU on that PC and pass the real Wi-Fi card through to it (VFIO):
+    sudo apt install qemu-system-x86
+    make                          # copies the Intel firmware from /lib/firmware automatically
+    tools/vfio-wifi.sh check      # IOMMU on? what else is in the card's IOMMU group?
+    sudo tools/vfio-wifi.sh bind  # Debian loses that Wi-Fi card until 'unbind' or a reboot
+    sudo tools/vfio-wifi.sh run   # TanjaOS opens in QEMU; its output is also printed in this terminal
+    (inside TanjaOS)  wifi attach     then     wifi
+    sudo tools/vfio-wifi.sh unbind
+Everything TanjaOS prints is mirrored to COM1, so the terminal log can be copied as plain text.
+If 'check' says the IOMMU is off: enable VT-d (AMD-Vi) in the BIOS and add intel_iommu=on iommu=pt
+(amd_iommu=on) to the kernel command line. If the card shares its IOMMU group with other devices
+the passthrough may be refused. Untested on real hardware.
