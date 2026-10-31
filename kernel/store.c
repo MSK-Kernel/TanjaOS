@@ -293,38 +293,45 @@ static void log_slot(int channel, int drive) {
                       : "Storefile: using secondary slave"));
 }
 
+static int has_word(const char* s, const char* w) {
+    int n;
+    if (!s || !w) return 0;
+    n = 0; while (w[n]) n++;
+    while (*s) {
+        int i = 0;
+        while (i < n && (s[i] | 32) == (w[i] | 32)) i++;
+        if (i == n) return 1;
+        s++;
+    }
+    return 0;
+}
+
 static int boot_is_livecd(uint32_t mb_magic, uint32_t mb_addr) {
-    /* A normal LiveCD intentionally has no Storefile module: it is the
-       RAM-only boot mode. Install media carries a Storefile module, so a
-       missing/undersized target disk still fails instead of silently
-       continuing from RAM. If a bootloader explicitly labels the boot
-       command/module as live/livecd, honor that too. */
+    /* A LiveCD / live USB is RAM-only. Writing persistence onto the USB
+       stick the ISO was dd'd onto is not a live session.
+       Persistence is opt-in: only install media (cmdline/module says
+       "install" or "persist", or a module is named Storefile) enables it.
+       Optical BIOS drives (0xE0-0xFF) and an explicit "live" are always
+       RAM-only. */
     if (mb_magic != MULTIBOOT_BOOTLOADER_MAGIC || mb_addr == 0)
-        return 0;
+        return 1;   /* no bootloader info: do not guess a disk and write it */
 
     multiboot_info_t* mbi = (multiboot_info_t*)(uintptr_t)mb_addr;
 
-    /* Multiboot1 boot_device stores the BIOS drive number in its top byte.
-       0xE0-0xFF are optical/CD-ROM BIOS drives.  When GRUB boots the
-       kernel directly from a LiveCD ISO, this lets us identify the CD boot
-       even when GRUB did not pass a "live" command-line/module string. */
     if (mbi->flags & 0x00000002u) {
         uint8_t bios_drive = (uint8_t)(mbi->boot_device >> 24);
         if (bios_drive >= 0xE0u)
             return 1;
     }
 
-    if (mbi->cmdline) {
-        const char *s = (const char*)(uintptr_t)mbi->cmdline;
-        while (*s) {
-            if ((s[0] == 'l' || s[0] == 'L') &&
-                (s[1] == 'i' || s[1] == 'I') &&
-                (s[2] == 'v' || s[2] == 'V') &&
-                (s[3] == 'e' || s[3] == 'E'))
-                return 1;
-            s++;
-        }
-    }
+    if (mbi->cmdline && (has_word((const char*)(uintptr_t)mbi->cmdline, "live") ||
+                         has_word((const char*)(uintptr_t)mbi->cmdline, "livecd")))
+        return 1;
+
+    /* Explicit install / persist opts into disk persistence. */
+    if (mbi->cmdline && (has_word((const char*)(uintptr_t)mbi->cmdline, "install") ||
+                         has_word((const char*)(uintptr_t)mbi->cmdline, "persist")))
+        return 0;
 
     if ((mbi->flags & MULTIBOOT_FLAG_MODS) && mbi->mods_count > 0) {
         multiboot_module_t* mods =
@@ -333,19 +340,14 @@ static int boot_is_livecd(uint32_t mb_magic, uint32_t mb_addr) {
         for (i = 0; i < (int)mbi->mods_count; i++) {
             const char *s = (const char*)(uintptr_t)mods[i].string;
             if (!s) continue;
-            while (*s) {
-                if ((s[0] == 'l' || s[0] == 'L') &&
-                    (s[1] == 'i' || s[1] == 'I') &&
-                    (s[2] == 'v' || s[2] == 'V') &&
-                    (s[3] == 'e' || s[3] == 'E'))
-                    return 1;
-                s++;
-            }
+            if (has_word(s, "live")) return 1;
+            if (has_word(s, "storefile") || has_word(s, "install") ||
+                has_word(s, "persist"))
+                return 0;
         }
-        /* Storefile-bearing media are treated as install/persistent media. */
-        return 0;
     }
 
+    /* No install marker: this is a live image, even on a USB stick. */
     return 1;
 }
 
