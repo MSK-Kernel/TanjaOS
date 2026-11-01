@@ -109,7 +109,7 @@ int bsd_wifi_attach(char *msg, int cap) {
 
         ifp = bsd_net_ifp();
         if (!ifp) {
-            snprintf(msg, cap, "driver did not come up (is the firmware in /lib/firmware? see messages above)");
+            snprintf(msg, cap, "Intel card found but driver did not start — copy the matching iwlwifi-*.ucode into home/lib/firmware and rebuild");
             return -2;
         }
         ic = (struct ieee80211com *)ifp;
@@ -117,7 +117,7 @@ int bsd_wifi_attach(char *msg, int cap) {
         snprintf(msg, cap, "iwm0 attached, MAC %s", ether_sprintf(ic->ic_myaddr));
         return 0;
     }
-    snprintf(msg, cap, "no Intel Wireless-AC card found that this driver supports");
+    snprintf(msg, cap, "no supported Intel Wireless-AC card (3160-9560). AX200+ and Realtek need a different driver");
     return -3;
 }
 

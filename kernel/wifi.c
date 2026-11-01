@@ -286,6 +286,16 @@ void wifi_init(void) {
         wifi_demo_register();
     }
 #endif
+    /* Real Intel Wireless-AC: attach automatically so `wifi` works
+     * without a manual `wifi attach`. Firmware must be in /lib/firmware. */
+    if (!nad) {
+        char msg[120];
+        extern int wifi_attach_hw(char* msg, int cap);
+        if (wifi_attach_hw(msg, sizeof(msg)) == 0)
+            boot_log(msg);
+        else if (msg[0])
+            boot_log(msg);
+    }
     if (!nad) {
         static char hwl[4][56];
         int hn = wifi_hw_list(hwl, 4), hi;

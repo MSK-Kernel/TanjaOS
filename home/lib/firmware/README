@@ -1,5 +1,9 @@
-Wi-Fi firmware goes in this folder BEFORE you run make (it is packed into the OS image).
-Intel Wireless-AC 9260 (PCI 8086:2526): copy from your Debian PC
-    /lib/firmware/iwlwifi-9260-th-b0-jf-b0-46.ucode
-(Debian package firmware-iwlwifi). Other Intel AC cards: copy the matching iwlwifi-*.ucode file;
-the names the driver looks for are listed in bsd/compat/bsd_core.c.
+Intel Wireless-AC firmware is bundled here. You do not need to copy
+anything from the host machine.
+
+Included (linux-firmware, Intel redistribution license):
+  3160, 3168, 7260, 7265, 7265D, 8000C, 8265, 9000, 9260
+
+These are loaded automatically from /lib/firmware when an Intel
+Wireless-AC card (3160 through 9560) is found. AX200 and newer are
+not included; they need a different driver.

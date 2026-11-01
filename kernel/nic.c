@@ -1,7 +1,7 @@
 /* nic.c - PCI NIC drivers for TanjaOS (polled, no interrupts).
  *
- * Supported: Intel PRO/1000 family (e1000 / e1000e legacy descriptors,
- * the default NIC of QEMU) and Realtek RTL8139. Everything runs in
+ * Supported: Intel PRO/1000 and e1000e (legacy descriptors),
+ * Realtek RTL8139, and Realtek RTL8168/8169/8111 (most real hardware). Everything runs in
  * ring 0 with no paging, so a buffer's address IS its DMA address.
  */
 #include <stdint.h>
@@ -118,7 +118,11 @@ static int e1000_ids[] = {
     0x1000,0x1001,0x1004,0x1008,0x1009,0x100C,0x100D,0x100E,0x100F,0x1010,
     0x1011,0x1012,0x1013,0x1014,0x1015,0x1016,0x1017,0x1018,0x1019,0x101A,
     0x101D,0x101E,0x1026,0x1027,0x1028,0x1075,0x1076,0x1077,0x1078,0x1079,
-    0x107A,0x107B,0x107C,0x10B5,0x10B9,0x10D3,0x1502,0x1503, 0
+    0x107A,0x107B,0x107C,0x10B5,0x10B9,0x10D3,0x1502,0x1503,
+    /* common real-hardware e1000e: 82574, 82579, I217, I218, I219 */
+    0x10D3,0x1502,0x1503,0x153A,0x153B,0x1559,0x155A,0x15A0,0x15A1,
+    0x15A2,0x15A3,0x15B7,0x15B8,0x15BB,0x15BC,0x15D7,0x15D8,0x15E3,0x1570,
+    0x156F,0x15B9,0x5502,0x5503, 0
 };
 
 static int e1000_init(uint8_t b, uint8_t d, uint8_t f, nic_t* out) {
@@ -129,7 +133,12 @@ static int e1000_init(uint8_t b, uint8_t d, uint8_t f, nic_t* out) {
 
     ew(E_IMC, 0xFFFFFFFFu);
     ew(E_CTRL, er(E_CTRL) | (1u << 26));       /* RST */
-    timer_delay_ms(20);
+    {
+        uint32_t t0 = get_uptime_ms();
+        while (er(E_CTRL) & (1u << 26))
+            if (get_uptime_ms() - t0 > 50) break;   /* real silicon can be slow */
+    }
+    timer_delay_ms(10);
     ew(E_IMC, 0xFFFFFFFFu);
     (void)er(E_ICR);
     /* link up, auto speed detect; clear link-reset / PHY-reset / VLAN */
@@ -265,6 +274,143 @@ static int rtl8139_init(uint8_t b, uint8_t d, uint8_t f, nic_t* out) {
     return 0;
 }
 
+
+/* ---------------------------------------------------- rtl8168/8169/8111 */
+/* The NIC on most real motherboards and cheap PCI-E cards. Polled,
+ * legacy descriptors, no firmware. Covers 8169, 8168, 8111, 8101. */
+
+#define R8_MAC   0x00
+#define R8_MAR   0x08
+#define R8_TNPDS 0x20
+#define R8_CR    0x37
+#define R8_TPOLL 0x38
+#define R8_IMR   0x3C
+#define R8_ISR   0x3E
+#define R8_TCR   0x40
+#define R8_RCR   0x44
+#define R8_9346  0x50
+#define R8_CFG1  0x52
+#define R8_PHYST 0x6C
+#define R8_RMS   0xDA
+#define R8_CPCR  0xE0
+#define R8_RDSAR 0xE4
+#define R8_MTPS  0xEC
+
+#define R8_N 16
+struct r8_desc { uint32_t opts1, opts2; uint64_t addr; } __attribute__((packed, aligned(16)));
+static struct r8_desc r8_rx[R8_N] __attribute__((aligned(256)));
+static struct r8_desc r8_tx[R8_N] __attribute__((aligned(256)));
+static uint8_t r8_rxbuf[R8_N][2048] __attribute__((aligned(16)));
+static uint8_t r8_txbuf[R8_N][2048] __attribute__((aligned(16)));
+static volatile uint8_t* r8_mmio;
+static int r8_rx_cur, r8_tx_cur;
+
+static inline uint8_t  r8b(uint32_t o) { return r8_mmio[o]; }
+static inline uint16_t r8w(uint32_t o) { return *(volatile uint16_t*)(r8_mmio + o); }
+static inline uint32_t r8l(uint32_t o) { return *(volatile uint32_t*)(r8_mmio + o); }
+static inline void r8wb(uint32_t o, uint8_t v)  { r8_mmio[o] = v; }
+static inline void r8ww(uint32_t o, uint16_t v) { *(volatile uint16_t*)(r8_mmio + o) = v; }
+static inline void r8wl(uint32_t o, uint32_t v) { *(volatile uint32_t*)(r8_mmio + o) = v; }
+
+static int r8_link(void) { return (r8b(R8_PHYST) & 0x02) != 0; }
+
+static int r8_send(const void* frame, uint32_t len) {
+    if (len > 1514) return -1;
+    int i = r8_tx_cur;
+    uint32_t t0 = get_uptime_ms();
+    while (r8_tx[i].opts1 & 0x80000000u) {
+        if (get_uptime_ms() - t0 > 200) return -1;
+    }
+    if (len < 60) {
+        memcpy(r8_txbuf[i], frame, len);
+        memset(r8_txbuf[i] + len, 0, 60 - len);
+        len = 60;
+    } else {
+        memcpy(r8_txbuf[i], frame, len);
+    }
+    r8_tx[i].addr = (uint64_t)(uint32_t)r8_txbuf[i];
+    r8_tx[i].opts2 = 0;
+    asm volatile ("" ::: "memory");
+    r8_tx[i].opts1 = 0x80000000u | 0x20000000u | 0x10000000u | (len & 0x3FFFu); /* OWN|FS|LS */
+    asm volatile ("" ::: "memory");
+    r8wb(R8_TPOLL, 0x40);                 /* kick normal-priority TX */
+    r8_tx_cur = (i + 1) % R8_N;
+    return 0;
+}
+
+static int r8_recv(void* buf, uint32_t cap) {
+    int i = r8_rx_cur;
+    if (r8_rx[i].opts1 & 0x80000000u) return 0;   /* still owned by NIC */
+    uint32_t opts = r8_rx[i].opts1;
+    uint32_t len = opts & 0x3FFFu;
+    int good = !(opts & 0x00C00000u) && len >= 14 && len <= cap; /* no RES/RUNT/CRC */
+    if (good) memcpy(buf, r8_rxbuf[i], len);
+    r8_rx[i].addr = (uint64_t)(uint32_t)r8_rxbuf[i];
+    r8_rx[i].opts2 = 0;
+    asm volatile ("" ::: "memory");
+    r8_rx[i].opts1 = 0x80000000u | (i == R8_N - 1 ? 0x40000000u : 0) | 2048u;
+    asm volatile ("" ::: "memory");
+    r8_rx_cur = (i + 1) % R8_N;
+    return good ? (int)len : 0;
+}
+
+static int rtl8169_init(uint8_t b, uint8_t d, uint8_t f, nic_t* out) {
+    uint32_t bar0 = pci_rd(b, d, f, 0x10);
+    uint32_t bar2 = pci_rd(b, d, f, 0x18);
+    uint32_t mmio = 0;
+    if (bar2 && !(bar2 & 1)) mmio = bar2 & ~0xFu;          /* 8168: MMIO is often BAR2 */
+    else if (bar0 && !(bar0 & 1)) mmio = bar0 & ~0xFu;
+    if (!mmio) return -1;
+    pci_enable(b, d, f);
+    r8_mmio = (volatile uint8_t*)mmio;
+
+    r8wb(R8_CR, 0x10);                                     /* reset */
+    {
+        uint32_t t0 = get_uptime_ms();
+        while (r8b(R8_CR) & 0x10)
+            if (get_uptime_ms() - t0 > 100) return -1;
+    }
+    r8ww(R8_IMR, 0);                                       /* polled */
+    r8ww(R8_ISR, 0xFFFF);
+    r8wb(R8_9346, 0xC0);                                   /* unlock config */
+
+    int i;
+    for (i = 0; i < 6; i++) out->mac[i] = r8b(R8_MAC + i);
+    if ((out->mac[0] | out->mac[1] | out->mac[2] |
+         out->mac[3] | out->mac[4] | out->mac[5]) == 0) {
+        r8wb(R8_9346, 0);
+        return -1;
+    }
+
+    for (i = 0; i < R8_N; i++) {
+        r8_rx[i].addr = (uint64_t)(uint32_t)r8_rxbuf[i];
+        r8_rx[i].opts2 = 0;
+        r8_rx[i].opts1 = 0x80000000u | (i == R8_N - 1 ? 0x40000000u : 0) | 2048u;
+        r8_tx[i].opts1 = 0;
+        r8_tx[i].opts2 = 0;
+        r8_tx[i].addr = 0;
+    }
+    r8_rx_cur = r8_tx_cur = 0;
+    r8wl(R8_RDSAR, (uint32_t)r8_rx);
+    r8wl(R8_RDSAR + 4, 0);
+    r8wl(R8_TNPDS, (uint32_t)r8_tx);
+    r8wl(R8_TNPDS + 4, 0);
+    r8ww(R8_RMS, 2048);
+    r8wb(R8_MTPS, 0x3B);                                   /* max TX packet */
+    r8wl(R8_TCR, 0x03000700u);                             /* IFG, MXDMA unlimited */
+    r8wl(R8_RCR, 0x0000E70Fu);                             /* unlimited DMA, AB+AM+APM+AAP */
+    r8ww(R8_CPCR, (uint16_t)(r8w(R8_CPCR) | 1));           /* checksum offload off is fine */
+    r8wb(R8_CR, 0x0C);                                     /* TE | RE */
+    r8wb(R8_9346, 0x00);                                   /* lock */
+    r8wb(R8_TPOLL, 0xFF);
+
+    out->name = "rtl8169";
+    out->send = r8_send;
+    out->recv = r8_recv;
+    out->link = r8_link;
+    return 0;
+}
+
 /* ------------------------------------------------------------- probe */
 
 int nic_probe_pci(nic_t* out) {
@@ -284,8 +430,14 @@ int nic_probe_pci(nic_t* out) {
                     for (k = 0; e1000_ids[k]; k++)
                         if (e1000_ids[k] == devid && e1000_init(bus, dev, fn, out) == 0)
                             return 0;
-                } else if (ven == 0x10EC && devid == 0x8139) {
-                    if (rtl8139_init(bus, dev, fn, out) == 0) return 0;
+                } else if (ven == 0x10EC) {
+                    if (devid == 0x8139) {
+                        if (rtl8139_init(bus, dev, fn, out) == 0) return 0;
+                    } else if (devid == 0x8169 || devid == 0x8168 ||
+                               devid == 0x8167 || devid == 0x8136 ||
+                               devid == 0x8161) {
+                        if (rtl8169_init(bus, dev, fn, out) == 0) return 0;
+                    }
                 }
             }
         }
