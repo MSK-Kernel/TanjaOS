@@ -1095,6 +1095,8 @@ static void log_mac(const char* prefix, const uint8_t* m) {
 void net_init(void) {
     nic_t n;
     memset(&n, 0, sizeof(n));
+    extern void nic_log_net(void);
+    nic_log_net();
     if (nic_probe_pci(&n) != 0) {
         boot_log("Network: no supported Ethernet adapter found");
         return;

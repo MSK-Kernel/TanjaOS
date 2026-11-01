@@ -39,6 +39,48 @@ static void pci_enable(uint8_t b, uint8_t d, uint8_t f) {
     pci_wr(b, d, f, 0x04, (cmd & 0xFFFFu) | 0x07);
 }
 
+/* Walk up to the host bridge and enable memory + bus master on every
+ * bridge. Real machines hide the NIC behind a PCI-PCI bridge; without
+ * this, MMIO and DMA never reach the card. */
+static void pci_enable_path(uint8_t bus) {
+    int b, d, f;
+    for (b = 0; b < 256; b++) {
+        for (d = 0; d < 32; d++) {
+            uint32_t id0 = pci_rd(b, d, 0, 0x00);
+            if ((id0 & 0xFFFF) == 0xFFFF) continue;
+            int nfn = (pci_rd(b, d, 0, 0x0C) & 0x00800000) ? 8 : 1;
+            for (f = 0; f < nfn; f++) {
+                uint32_t cls = pci_rd(b, d, f, 0x08);
+                if ((cls >> 24) != 0x06 || ((cls >> 16) & 0xFF) != 0x04) continue;
+                uint32_t buses = pci_rd(b, d, f, 0x18);
+                uint8_t sec = (buses >> 8) & 0xFF, sub = (buses >> 16) & 0xFF;
+                if (bus >= sec && bus <= sub)
+                    pci_enable(b, d, f);
+            }
+        }
+    }
+}
+
+/* If the BIOS left a BAR at 0, assign a safe MMIO window. */
+static uint32_t pci_bar_mmio(uint8_t b, uint8_t d, uint8_t f, uint8_t off) {
+    uint32_t bar = pci_rd(b, d, f, off);
+    if (bar & 1) return 0;                 /* I/O BAR */
+    if ((bar & ~0xFu) != 0) return bar & ~0xFu;
+    pci_wr(b, d, f, off, 0xFFFFFFFFu);
+    uint32_t sz = pci_rd(b, d, f, off);
+    pci_wr(b, d, f, off, 0);
+    if (sz == 0 || sz == 0xFFFFFFFFu) return 0;
+    uint32_t size = (~(sz & ~0xFu)) + 1;
+    if (size < 4096) size = 4096;
+    /* 0xFE000000 is below the usual APIC/HPET area and above typical RAM. */
+    static uint32_t next = 0xFE000000u;
+    uint32_t addr = (next + size - 1) & ~(size - 1);
+    if (addr + size > 0xFE800000u) return 0;
+    pci_wr(b, d, f, off, addr);
+    next = addr + size;
+    return addr;
+}
+
 /* ------------------------------------------------------------- e1000 */
 
 #define E_CTRL   0x0000
@@ -126,10 +168,11 @@ static int e1000_ids[] = {
 };
 
 static int e1000_init(uint8_t b, uint8_t d, uint8_t f, nic_t* out) {
-    uint32_t bar0 = pci_rd(b, d, f, 0x10);
-    if (bar0 & 1) return -1;                   /* I/O BAR: not the MMIO layout */
+    pci_enable_path(b);
     pci_enable(b, d, f);
-    e_mmio = (volatile uint8_t*)(bar0 & ~0xFu);
+    uint32_t bar0 = pci_bar_mmio(b, d, f, 0x10);
+    if (!bar0) return -1;
+    e_mmio = (volatile uint8_t*)bar0;
 
     ew(E_IMC, 0xFFFFFFFFu);
     ew(E_CTRL, er(E_CTRL) | (1u << 26));       /* RST */
@@ -244,9 +287,10 @@ static int r_recv(void* buf, uint32_t cap) {
 }
 
 static int rtl8139_init(uint8_t b, uint8_t d, uint8_t f, nic_t* out) {
-    uint32_t bar0 = pci_rd(b, d, f, 0x10);
-    if (!(bar0 & 1)) return -1;
+    pci_enable_path(b);
     pci_enable(b, d, f);
+    uint32_t bar0 = pci_rd(b, d, f, 0x10);
+    if (!(bar0 & 1) || !(bar0 & ~3u)) return -1;
     r_io = (uint16_t)(bar0 & ~3u);
 
     io_outb(r_io + R_CONFIG1, 0x00);                          /* power on */
@@ -355,21 +399,21 @@ static int r8_recv(void* buf, uint32_t cap) {
 }
 
 static int rtl8169_init(uint8_t b, uint8_t d, uint8_t f, nic_t* out) {
-    uint32_t bar0 = pci_rd(b, d, f, 0x10);
-    uint32_t bar2 = pci_rd(b, d, f, 0x18);
-    uint32_t mmio = 0;
-    if (bar2 && !(bar2 & 1)) mmio = bar2 & ~0xFu;          /* 8168: MMIO is often BAR2 */
-    else if (bar0 && !(bar0 & 1)) mmio = bar0 & ~0xFu;
-    if (!mmio) return -1;
+    pci_enable_path(b);
     pci_enable(b, d, f);
+    uint32_t mmio = pci_bar_mmio(b, d, f, 0x18);   /* 8168: MMIO is often BAR2 */
+    if (!mmio) mmio = pci_bar_mmio(b, d, f, 0x10);
+    if (!mmio) return -1;
     r8_mmio = (volatile uint8_t*)mmio;
 
+    r8wb(R8_9346, 0xC0);
     r8wb(R8_CR, 0x10);                                     /* reset */
     {
         uint32_t t0 = get_uptime_ms();
         while (r8b(R8_CR) & 0x10)
-            if (get_uptime_ms() - t0 > 100) return -1;
+            if (get_uptime_ms() - t0 > 200) return -1;
     }
+    timer_delay_ms(10);
     r8ww(R8_IMR, 0);                                       /* polled */
     r8ww(R8_ISR, 0xFFFF);
     r8wb(R8_9346, 0xC0);                                   /* unlock config */
@@ -411,6 +455,185 @@ static int rtl8169_init(uint8_t b, uint8_t d, uint8_t f, nic_t* out) {
     return 0;
 }
 
+
+/* Log every PCI network function so a failed probe still says what the
+ * machine actually has. */
+extern void boot_log(const char* s);
+extern void print_hex(uint32_t n);
+void nic_log_net(void) {
+    int bus, dev, fn, any = 0;
+    for (bus = 0; bus < 256; bus++) {
+        for (dev = 0; dev < 32; dev++) {
+            if ((pci_rd(bus, dev, 0, 0x00) & 0xFFFF) == 0xFFFF) continue;
+            int nfn = (pci_rd(bus, dev, 0, 0x0C) & 0x00800000) ? 8 : 1;
+            for (fn = 0; fn < nfn; fn++) {
+                uint32_t id = pci_rd(bus, dev, fn, 0x00);
+                uint32_t cls = pci_rd(bus, dev, fn, 0x08);
+                if ((id & 0xFFFF) == 0xFFFF) continue;
+                if ((cls >> 24) != 0x02) continue;
+                any = 1;
+                char msg[80];
+                int n = 0;
+                const char* pre = "PCI net ";
+                while (*pre) msg[n++] = *pre++;
+                /* vendor:device class */
+                static const char* hexd = "0123456789abcdef";
+                uint32_t v;
+                msg[n++] = hexd[(id >> 12) & 0xF]; msg[n++] = hexd[(id >> 8) & 0xF];
+                msg[n++] = hexd[(id >> 4) & 0xF]; msg[n++] = hexd[id & 0xF];
+                msg[n++] = ':';
+                v = id >> 16;
+                msg[n++] = hexd[(v >> 12) & 0xF]; msg[n++] = hexd[(v >> 8) & 0xF];
+                msg[n++] = hexd[(v >> 4) & 0xF]; msg[n++] = hexd[v & 0xF];
+                msg[n++] = ' ';
+                msg[n++] = 'c'; msg[n++] = hexd[(cls >> 20) & 0xF]; msg[n++] = hexd[(cls >> 16) & 0xF];
+                msg[n] = 0;
+                boot_log(msg);
+            }
+        }
+    }
+    if (!any) boot_log("PCI net: no network device on the bus");
+}
+
+/* ------------------------------------------------------- atheros AR8132 */
+/* Attansic L2C / Atheros AR8132 (PCI 1969:1062). Common on ASUS Eee PC.
+ * Polled, one TX ring + one RX free ring + one RX return ring.
+ * RX buffers must be <= 1536 or the chip locks up. */
+
+#define A_MASTER   0x1400
+#define A_MDIO     0x1414
+#define A_PHYSTAT  0x1418
+#define A_MACCFG   0x1480
+#define A_PAR0     0x1488
+#define A_PAR1     0x148C
+#define A_RXHI     0x1540
+#define A_TXHI     0x1544
+#define A_RD0      0x1550
+#define A_RDCNT    0x1560
+#define A_RXBUFSZ  0x1564
+#define A_RRD0     0x1568
+#define A_RRDCNT   0x1578
+#define A_TDL      0x1580
+#define A_TDCNT    0x1584
+#define A_M_RDPROD 0x15E0
+#define A_M_TDPROD 0x15F0
+#define A_M_TDCONS 0x15F4
+
+#define A_N 16
+#define A_BUFSZ 1536
+
+struct a_rxd { uint64_t addr; } __attribute__((packed));
+struct a_rrd { uint32_t info, rss, vtag, status; } __attribute__((packed));
+struct a_txd { uint32_t len, flags; uint64_t addr; } __attribute__((packed));
+
+static struct a_rxd a_rx[A_N] __attribute__((aligned(16)));
+static struct a_rrd a_rr[A_N] __attribute__((aligned(16)));
+static struct a_txd a_tx[A_N] __attribute__((aligned(16)));
+static uint8_t a_rxbuf[A_N][A_BUFSZ] __attribute__((aligned(16)));
+static uint8_t a_txbuf[A_N][A_BUFSZ] __attribute__((aligned(16)));
+static volatile uint8_t* a_mmio;
+static int a_rx_cur, a_tx_cur;
+
+static inline uint32_t ar(uint32_t o) { return *(volatile uint32_t*)(a_mmio + o); }
+static inline void aw(uint32_t o, uint32_t v) { *(volatile uint32_t*)(a_mmio + o) = v; }
+
+static int a_link(void) { return (ar(A_PHYSTAT) & 1) != 0; }
+
+static int a_send(const void* frame, uint32_t len) {
+    if (len > 1514) return -1;
+    int i = a_tx_cur;
+    uint32_t t0 = get_uptime_ms();
+    /* wait until the consumer has passed this slot */
+    while (((ar(A_M_TDCONS) & 0xFFFF) % A_N) == (uint32_t)((i + 1) % A_N)) {
+        if (get_uptime_ms() - t0 > 200) return -1;
+    }
+    if (len < 60) {
+        memcpy(a_txbuf[i], frame, len);
+        memset(a_txbuf[i] + len, 0, 60 - len);
+        len = 60;
+    } else {
+        memcpy(a_txbuf[i], frame, len);
+    }
+    a_tx[i].addr = (uint64_t)(uint32_t)a_txbuf[i];
+    a_tx[i].len = len & 0x3FFF;
+    a_tx[i].flags = 0x80000000u;          /* EOP */
+    asm volatile ("" ::: "memory");
+    a_tx_cur = (i + 1) % A_N;
+    aw(A_M_TDPROD, (uint32_t)a_tx_cur);
+    return 0;
+}
+
+static int a_recv(void* buf, uint32_t cap) {
+    int i = a_rx_cur;
+    uint32_t st = a_rr[i].status;
+    if (!(st & 0x80000000u)) return 0;    /* not valid */
+    uint32_t len = st & 0x3FFF;
+    int good = !(st & 0x03F00000u) && len >= 14 && len <= cap;
+    if (good) memcpy(buf, a_rxbuf[i], len);
+    a_rr[i].status = 0;
+    a_rx[i].addr = (uint64_t)(uint32_t)a_rxbuf[i];
+    asm volatile ("" ::: "memory");
+    a_rx_cur = (i + 1) % A_N;
+    aw(A_M_RDPROD, (uint32_t)a_rx_cur);
+    return good ? (int)len : 0;
+}
+
+static int ar8132_init(uint8_t b, uint8_t d, uint8_t f, nic_t* out) {
+    pci_enable_path(b);
+    pci_enable(b, d, f);
+    uint32_t bar = pci_bar_mmio(b, d, f, 0x10);
+    if (!bar) return -1;
+    a_mmio = (volatile uint8_t*)bar;
+
+    aw(A_MASTER, ar(A_MASTER) | 1u);       /* soft reset */
+    {
+        uint32_t t0 = get_uptime_ms();
+        while (ar(A_MASTER) & 1u)
+            if (get_uptime_ms() - t0 > 100) break;
+    }
+    timer_delay_ms(10);
+
+    uint32_t lo = ar(A_PAR0), hi = ar(A_PAR1);
+    /* PAR0 is mac[2..5] big-endian-ish: low dword = mac2<<24|mac3<<16|mac4<<8|mac5 */
+    out->mac[2] = lo >> 24; out->mac[3] = lo >> 16;
+    out->mac[4] = lo >> 8;  out->mac[5] = lo;
+    out->mac[0] = hi >> 8;  out->mac[1] = hi;
+    if ((out->mac[0] | out->mac[1] | out->mac[2] |
+         out->mac[3] | out->mac[4] | out->mac[5]) == 0)
+        return -1;
+
+    int i;
+    for (i = 0; i < A_N; i++) {
+        a_rx[i].addr = (uint64_t)(uint32_t)a_rxbuf[i];
+        a_rr[i].status = 0;
+        a_tx[i].flags = 0;
+        a_tx[i].len = 0;
+    }
+    a_rx_cur = a_tx_cur = 0;
+
+    aw(A_RXHI, 0);
+    aw(A_TXHI, 0);
+    aw(A_RD0, (uint32_t)a_rx);
+    aw(A_RDCNT, A_N);
+    aw(A_RXBUFSZ, A_BUFSZ);
+    aw(A_RRD0, (uint32_t)a_rr);
+    aw(A_RRDCNT, A_N);
+    aw(A_TDL, (uint32_t)a_tx);
+    aw(A_TDCNT, A_N);
+    aw(A_M_RDPROD, 0);
+    aw(A_M_TDPROD, 0);
+
+    /* TX|RX enable, full duplex, add CRC, pad, broadcast */
+    aw(A_MACCFG, (1u << 0) | (1u << 1) | (1u << 5) | (1u << 6) |
+                 (1u << 7) | (1u << 26));
+    aw(A_M_RDPROD, A_N - 1);               /* hand RX buffers to the chip */
+    out->name = "ar8132";
+    out->send = a_send;
+    out->recv = a_recv;
+    out->link = a_link;
+    return 0;
+}
+
 /* ------------------------------------------------------------- probe */
 
 int nic_probe_pci(nic_t* out) {
@@ -430,6 +653,8 @@ int nic_probe_pci(nic_t* out) {
                     for (k = 0; e1000_ids[k]; k++)
                         if (e1000_ids[k] == devid && e1000_init(bus, dev, fn, out) == 0)
                             return 0;
+                } else if (ven == 0x1969 && (devid == 0x1062 || devid == 0x1063)) {
+                    if (ar8132_init(bus, dev, fn, out) == 0) return 0;
                 } else if (ven == 0x10EC) {
                     if (devid == 0x8139) {
                         if (rtl8139_init(bus, dev, fn, out) == 0) return 0;
