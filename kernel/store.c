@@ -307,28 +307,19 @@ static int has_word(const char* s, const char* w) {
 }
 
 static int boot_is_livecd(uint32_t mb_magic, uint32_t mb_addr) {
-    /* A LiveCD / live USB is RAM-only. Writing persistence onto the USB
-       stick the ISO was dd'd onto is not a live session.
-       Persistence is opt-in: only install media (cmdline/module says
-       "install" or "persist", or a module is named Storefile) enables it.
-       Optical BIOS drives (0xE0-0xFF) and an explicit "live" are always
-       RAM-only. */
+    /* Explicit live/livecd boot requests remain RAM-only. Otherwise,
+       persistence is automatic when store_init has found a usable disk.
+       Do not classify an optical boot device as LiveCD here: a VM can
+       boot its installer ISO while also having a writable disk.img attached. */
     if (mb_magic != MULTIBOOT_BOOTLOADER_MAGIC || mb_addr == 0)
-        return 1;   /* no bootloader info: do not guess a disk and write it */
+        return 1; /* without Multiboot metadata, avoid guessing */
 
     multiboot_info_t* mbi = (multiboot_info_t*)(uintptr_t)mb_addr;
-
-    if (mbi->flags & 0x00000002u) {
-        uint8_t bios_drive = (uint8_t)(mbi->boot_device >> 24);
-        if (bios_drive >= 0xE0u)
-            return 1;
-    }
 
     if (mbi->cmdline && (has_word((const char*)(uintptr_t)mbi->cmdline, "live") ||
                          has_word((const char*)(uintptr_t)mbi->cmdline, "livecd")))
         return 1;
 
-    /* Explicit install / persist opts into disk persistence. */
     if (mbi->cmdline && (has_word((const char*)(uintptr_t)mbi->cmdline, "install") ||
                          has_word((const char*)(uintptr_t)mbi->cmdline, "persist")))
         return 0;
@@ -347,8 +338,8 @@ static int boot_is_livecd(uint32_t mb_magic, uint32_t mb_addr) {
         }
     }
 
-    /* No install marker: this is a live image, even on a USB stick. */
-    return 1;
+    /* No explicit live marker: if a disk is found, use persistence. */
+    return 0;
 }
 
 void store_init(uint32_t mb_magic, uint32_t mb_addr) {
@@ -385,13 +376,14 @@ void store_init(uint32_t mb_magic, uint32_t mb_addr) {
     }
 
     if (!found) {
-        if (boot_is_livecd(mb_magic, mb_addr)) {
-            boot_log("Storefile: This LiveCD session will run from RAM");
-            fs_init();
-            fs_seed_home();
-            return;
-        }
-        kernel_panic_storage("No usable persistent disk was found.");
+        /* No writable ATA/AHCI disk exists. Keep the system usable as a
+           RAM session; persistence is enabled automatically only after a
+           disk is detected and its reserved region is validated. */
+        store_enabled = 0;
+        fs_init();
+        fs_seed_home();
+        boot_log("Storefile: no usable disk found, running from RAM");
+        return;
     }
 
     store_disk_sectors = disk_sectors;
