@@ -112,26 +112,26 @@ static void print_status(void) {
     char name[64], cur[40];
     int n = wifi_adapter_count();
     if (net_get_info(&ni) && ni.present)
-        printf("wired : %s, link %s%s", ni.driver, ni.link ? "up" : "down",
+        printf("wired: %s, link %s%s", ni.driver, ni.link ? "up" : "down",
                ni.configured ? ", " : "\n");
-    else print("wired : no adapter\n");
+    else print("wired: no adapter\n");
     if (ni.present && ni.configured)
         printf("%d.%d.%d.%d\n", (int)(ni.ip >> 24), (int)((ni.ip >> 16) & 255),
                (int)((ni.ip >> 8) & 255), (int)(ni.ip & 255));
     if (!n) { show_hardware(); return; }
     wifi_adapter_name(name, sizeof(name));
-    if (wifi_status(cur, sizeof(cur))) printf("wifi  : %s - connected to %s\n", name, cur);
-    else printf("wifi  : %s - not connected\n", name);
+    if (wifi_status(cur, sizeof(cur))) printf("wifi: %s - connected to %s\n", name, cur);
+    else printf("wifi: %s - not connected\n", name);
     if (n > 1) printf("        (%d adapters, using #%d; 'wifi adapter N' switches)\n", n, wifi_selected());
 }
 
 static void show_hardware(void) {
     static char hw[4][56];
     int i, n = wifi_hw_list(hw, 4);
-    if (!n) { print("wifi  : no Wi-Fi card found on the PCI bus\n"); return; }
-    print("wifi  : Wi-Fi card detected (driver not started):\n");
+    if (!n) { print("wifi: no Wi-Fi card found on the PCI bus\n"); return; }
+    print("wifi: Wi-Fi card detected (driver not started):\n");
     for (i = 0; i < n; i++) printf("          %s\n", hw[i]);
-    print("        Intel Wireless-AC cards: try  wifi attach  (experimental)\n");
+    print("        Intel Wireless-AC cards: try 'wifi attach'\n");
 }
 
 static int need_adapter(void) {

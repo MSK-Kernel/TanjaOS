@@ -403,7 +403,7 @@ void store_init(uint32_t mb_magic, uint32_t mb_addr) {
         store_enabled = 0;
         fs_init();
         fs_seed_home();
-        boot_log("Storefile: LiveCD session, running from RAM (USB is not a disk)");
+        boot_log("Storefile: LiveCD session, running from RAM");
         return;
     }
 

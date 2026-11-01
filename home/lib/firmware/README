@@ -1,5 +1,4 @@
-Intel Wireless-AC firmware is bundled here. You do not need to copy
-anything from the host machine.
+Intel Wireless-AC firmware is bundled here.
 
 Included (linux-firmware, Intel redistribution license):
   3160, 3168, 7260, 7265, 7265D, 8000C, 8265, 9000, 9260
