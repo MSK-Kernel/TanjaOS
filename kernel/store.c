@@ -347,6 +347,13 @@ static int has_word(const char* s, const char* w) {
 }
 
 static int boot_is_livecd(uint32_t mb_magic, uint32_t mb_addr) {
+#ifdef TANJA_LIVECD
+    /* A LiveCD image must never touch storage: the stick it was written to
+     * is the boot medium, and a machine running it may have any disk. This
+     * is compiled in, so no boot configuration can turn it back on. */
+    (void)mb_magic; (void)mb_addr;
+    return 1;
+#endif
     /* Explicit live/livecd boot requests remain RAM-only. Otherwise,
        persistence is automatic when store_init has found a usable disk.
        Do not classify an optical boot device as LiveCD here: a VM can
@@ -435,7 +442,11 @@ void store_init(uint32_t mb_magic, uint32_t mb_addr) {
         store_enabled = 0;
         fs_init();
         fs_seed_home();
-        boot_log("Storefile: LiveCD session, running from RAM");
+#ifdef TANJA_LIVECD
+        boot_log("Storefile: LiveCD build - running from RAM, no disk is ever written");
+#else
+        boot_log("Storefile: LiveCD session, running from RAM (nothing is written to disk)");
+#endif
         return;
     }
 

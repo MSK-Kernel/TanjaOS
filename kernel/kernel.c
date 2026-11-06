@@ -2653,7 +2653,7 @@ uint32_t kernel_boot_mem_free(void) {
 #define KB_BOOT_ARENA_MIN       (2u * 1024u * 1024u)
 #define KB_BOOT_POOL_MIN        (4u * 1024u * 1024u)
 
-static void boot_size_pools(uint32_t ram_top) {
+static void boot_size_pools(uint32_t ram_top, uint32_t ram_total_mib) {
     extern void fs_set_pool(void* base, uint32_t bytes);
     extern uint32_t fs_pool_max_bytes(void);
     extern void malloc_set_arena(void* base, uint32_t bytes);
@@ -2694,11 +2694,18 @@ static void boot_size_pools(uint32_t ram_top) {
     {
         extern uint32_t fs_pool_bytes(void);
         extern uint32_t malloc_arena_size(void);
-        char msg[96];
+        char msg[128];
         int n = 0;
+        uint32_t addr_mib = ram_top / (1024u * 1024u);
         sb_append(msg, (int)sizeof(msg), &n, "Memory: RAM ");
-        sb_append_dec(msg, (int)sizeof(msg), &n, ram_top / (1024u * 1024u));
-        sb_append(msg, (int)sizeof(msg), &n, " MiB, file pool ");
+        sb_append_dec(msg, (int)sizeof(msg), &n, ram_total_mib ? ram_total_mib : addr_mib);
+        sb_append(msg, (int)sizeof(msg), &n, " MiB");
+        if (ram_total_mib > addr_mib) {          /* RAM the 32-bit kernel cannot address */
+            sb_append(msg, (int)sizeof(msg), &n, " (");
+            sb_append_dec(msg, (int)sizeof(msg), &n, addr_mib);
+            sb_append(msg, (int)sizeof(msg), &n, " MiB usable in 32-bit mode)");
+        }
+        sb_append(msg, (int)sizeof(msg), &n, ", file pool ");
         sb_append_dec(msg, (int)sizeof(msg), &n, fs_pool_bytes() / (1024u * 1024u));
         sb_append(msg, (int)sizeof(msg), &n, " MiB, malloc arena ");
         sb_append_dec(msg, (int)sizeof(msg), &n, malloc_arena_size() / (1024u * 1024u));
@@ -2721,19 +2728,53 @@ void kernel_main(uint32_t mb_magic, uint32_t mb_addr)
 
     boot_log("Kernel starting");
 
-    /* Size the Linux compat regions (ld.so, mmap, PIE exe, stack) to
- * the actual RAM of this machine. mem_upper is in KiB above 1 MiB;
- * without usable multiboot memory info assume a 128 MiB machine. */
+    /* Size the Linux compat regions (ld.so, mmap, PIE exe, stack) to the
+     * actual RAM of this machine. mem_lower + mem_upper only describes the
+     * contiguous block above 1 MiB, so it stops at the chipset's PCI/MMIO
+     * hole (~3 GiB on a 4 GiB machine) and cannot see anything above 4 GiB.
+     * The memory map tells the whole truth: it gives the installed size, and
+     * the highest usable address below 4 GiB - all a 32-bit kernel can use. */
     {
-        uint32_t ram_top = 128u << 20;
+        uint32_t ram_top = 128u << 20;      /* fallback: no multiboot info */
+        uint32_t ram_total_mib = 0;
         if (mb_magic == MULTIBOOT_BOOTLOADER_MAGIC && mb_addr) {
             multiboot_info_t* mbi = (multiboot_info_t*)mb_addr;
-            if ((mbi->flags & 0x00000001u) && mbi->mem_upper > 0)
+            uint32_t map_top = 0;
+            uint64_t map_total = 0;
+            int have_map = 0;
+            if ((mbi->flags & MULTIBOOT_FLAG_MMAP) && mbi->mmap_addr && mbi->mmap_length) {
+                uint32_t p = mbi->mmap_addr;
+                uint32_t end = p + mbi->mmap_length;
+                while (p + sizeof(multiboot_mmap_entry_t) <= end) {
+                    multiboot_mmap_entry_t* e = (multiboot_mmap_entry_t*)(uintptr_t)p;
+                    uint32_t step = e->size + 4;
+                    if (e->type == 1) {                     /* available RAM */
+                        map_total += ((uint64_t)e->len_hi << 32) | e->len_lo;
+                        if (e->base_hi == 0) {              /* below 4 GiB */
+                            uint32_t lo = e->base_lo;
+                            uint32_t hi = (e->len_lo > 0xFFFFFFFFu - lo)
+                                          ? 0xFFFFFFFFu : lo + e->len_lo;
+                            if (e->len_hi) hi = 0xFFFFFFFFu;
+                            if (hi > 0xFFF00000u) hi = 0xFFF00000u;   /* keep off the BIOS area */
+                            if (hi > map_top) map_top = hi;
+                            have_map = 1;
+                        }
+                    }
+                    if (step < sizeof(multiboot_mmap_entry_t)) break;
+                    p += step;
+                }
+            }
+            if (have_map) {
+                ram_top = map_top;
+                ram_total_mib = (uint32_t)(map_total >> 20);
+            } else if ((mbi->flags & MULTIBOOT_FLAG_MEM) && mbi->mem_upper > 0) {
                 ram_top = (mbi->mem_lower + mbi->mem_upper) * 1024u;
+                ram_total_mib = ram_top >> 20;
+            }
         }
         /* RAM pools first (filesystem, malloc), then hand linux the rest. */
         kernel_boot_mem_init((uint32_t)__kernel_end, ram_top);
-        boot_size_pools(ram_top);
+        boot_size_pools(ram_top, ram_total_mib);
         linux_set_layout(kernel_boot_mem_used_end(), ram_top);
     }
 

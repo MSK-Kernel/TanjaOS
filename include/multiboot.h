@@ -4,7 +4,9 @@
 #include <stdint.h>
 
 #define MULTIBOOT_BOOTLOADER_MAGIC 0x2BADB002
+#define MULTIBOOT_FLAG_MEM         0x00000001   /* mem_lower/mem_upper valid */
 #define MULTIBOOT_FLAG_MODS        0x00000008
+#define MULTIBOOT_FLAG_MMAP        0x00000040   /* mmap_addr/mmap_length valid */
 
 // Only the fields we actually use are named; the rest are kept as
 // padding so the layout still matches the real multiboot1 info struct.
@@ -31,6 +33,15 @@ typedef struct multiboot_info {
     uint16_t vbe_interface_off;
     uint16_t vbe_interface_len;
 } __attribute__((packed)) multiboot_info_t;
+
+// One memory-map entry (MULTIBOOT_FLAG_MMAP). size counts the bytes after
+// itself, so the next entry starts at this one + size + 4. type 1 = RAM.
+typedef struct multiboot_mmap_entry {
+    uint32_t size;
+    uint32_t base_lo, base_hi;
+    uint32_t len_lo, len_hi;
+    uint32_t type;
+} __attribute__((packed)) multiboot_mmap_entry_t;
 
 // One entry per "module /boot/Storefile" line in the bootloader configuration file.
 typedef struct multiboot_module {

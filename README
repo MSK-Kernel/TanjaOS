@@ -12,6 +12,50 @@ The shell runs a command by trying /bin/<name>.o first, then
 Doom and TinyCC are not embedded in /bin by default; install them from the
 package repository with `sudo pkg install doom` or `sudo pkg install tcc`.
 
+1a. Memory
+
+The kernel is 32-bit with no PAE, so it can use RAM below 4 GiB only, and the
+chipset's PCI/MMIO hole sits in the way (on a 4 GiB machine the usable block
+ends at 3 GiB). Boot sizing therefore reports both numbers:
+
+    Memory: RAM 16383 MiB (3071 MiB usable in 32-bit mode), file pool 48 MiB, malloc arena 16 MiB
+
+The first figure is the installed RAM, summed from the multiboot memory map so
+it is right on machines with 4 GiB or more; the second is what the kernel can
+actually address. Sizes come from the memory map rather than mem_upper, which
+stops at the PCI hole and cannot see past 4 GiB. Pools still fit in the
+addressable part, so a 64 MiB box gets an 18 MiB file pool and a big machine
+the full 48 MiB plus a 16 MB malloc arena. Using the RAM above the hole would
+need PAE or a 64-bit build.
+
+1b. Persistence, and building a LiveCD
+
+A normal build persists to the first ATA/AHCI disk it finds: it reserves the
+region at the END of that disk and keeps the whole filesystem there, so files
+and accounts survive a reboot. That is what an installed system wants.
+
+It is NOT what a stick or CD you hand out wants - there the boot medium is a
+disk too, so the normal image happily makes a store on it and writes to your
+USB stick. Two ways to avoid that, both verified:
+
+  make LIVECD=1
+      Builds a live image that never persists. The check is compiled in, so no
+      boot configuration can turn persistence back on, and it ignores a store
+      that already exists on the medium. Boot log then says:
+          Storefile: LiveCD build - running from RAM, no disk is ever written
+      `sync` reports "no persistent disk found, running from RAM". Use this
+      binary for anything you dd to a stick or burn to a CD.
+
+  livecd on the kernel command line
+      A normal image booted with `livecd` (or `live`) in the GRUB cmdline - or
+      with a module whose name contains "live" - also runs from RAM and writes
+      nothing. `install` or `persist` forces persistence instead. Boot log:
+          Storefile: LiveCD session, running from RAM (nothing is written to disk)
+
+Measured with QEMU and a 64 MiB disk: a LiveCD boot writes 0 bytes to the disk
+(and 0 bytes even when that disk already holds a saved install), while a normal
+build writes the store as before.
+
 2. Programming in TanjaOS
 
 TinyCC is installed from the package repository as /usr/bin/tcc.o, so 'tcc' is just another command. It compiles
