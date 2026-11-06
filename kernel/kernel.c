@@ -2551,7 +2551,28 @@ void kernel_panic_storage(const char *reason) {
     for (;;) asm volatile("cli; hlt");
 }
 
+static uint32_t boot_ram_top_bytes;   /* RAM the machine reported */
+
 static void kernel_panic_no_bin(void) {
+    /* If the pools came out tiny, RAM - not a broken install - is why /bin
+       could not be restored. Say so instead of sending people to reinstall. */
+    {
+        extern uint32_t kernel_boot_mem_free(void);
+        extern uint32_t fs_pool_bytes(void);
+        if (fs_pool_bytes() < (4u * 1024u * 1024u)) {
+            clear_screen();
+            print("panic: due to: not enough RAM to build the TanjaOS filesystem\n");
+            print("This machine reports ");
+            print_dec(boot_ram_top_bytes / (1024u * 1024u));
+            print(" MiB of RAM, which left only ");
+            print_dec(fs_pool_bytes() / (1024u * 1024u));
+            print(" MiB for files after the kernel image.\n");
+            print("TanjaOS needs a few MiB more than that to restore /bin.\n");
+            print("Give the machine more RAM and boot again.\n");
+            print("panic: due to: not enough RAM to build the TanjaOS filesystem\n");
+            for (;;) asm volatile("cli; hlt");
+        }
+    }
     /* This is intentionally a hard boot failure, not a recovery path.
  * If /bin has been removed or emptied, TanjaOS refuses to start
  * another shell and leaves the panic message on screen. */
@@ -2566,6 +2587,125 @@ static void kernel_panic_no_bin(void) {
 extern void net_init(void);
 extern void linux_set_layout(uint32_t kernel_end, uint32_t ram_top);
 extern char __kernel_end[];
+
+/* ------------------------------------------------------------------ *
+ * Boot memory allocator
+ *
+ * The kernel used to keep every big RAM pool as a static .bss array:
+ * 48 MiB file pool + 16 MiB malloc arena + a 32 MiB rename buffer.
+ * Together with the kernel image and the embedded home archive that made
+ * the kernel's memory footprint ~118 MB, so a machine with less RAM could
+ * not even restore /bin - the "64 MB support" turned into a kernel panic
+ * on 117 MiB and below.
+ *
+ * They are now carved out of the RAM above the kernel image at boot, sized
+ * from mem_upper. Everything here is handed out once, in order, and never
+ * freed: the filesystem pool first, then the malloc arena, then whatever
+ * linux_set_layout() gets is the space that is left for programs.
+ * ------------------------------------------------------------------ */
+static uint32_t boot_mem_next;
+static uint32_t boot_mem_top;
+
+/* Tiny string builder so a boot_log line can carry numbers. */
+static void sb_append(char* buf, int cap, int* len, const char* text) {
+    while (text && *text && *len < cap - 1) buf[(*len)++] = *text++;
+    buf[*len] = 0;
+}
+
+static void sb_append_dec(char* buf, int cap, int* len, uint32_t v) {
+    char tmp[12];
+    int i = 11;
+    tmp[i] = 0;
+    if (!v) tmp[--i] = '0';
+    while (v && i > 0) { tmp[--i] = (char)('0' + (v % 10u)); v /= 10u; }
+    sb_append(buf, cap, len, &tmp[i]);
+}
+
+void kernel_boot_mem_init(uint32_t start, uint32_t top) {
+    boot_mem_next = (start + 0xFFFu) & ~0xFFFu;
+    boot_mem_top  = top & ~0xFFFu;
+}
+
+void* kernel_boot_alloc(uint32_t bytes) {
+    uint32_t p = (boot_mem_next + 15u) & ~15u;
+    if (bytes == 0) return 0;
+    if (p + bytes < p || p + bytes > boot_mem_top) return 0;
+    boot_mem_next = p + bytes;
+    return (void*)p;
+}
+
+uint32_t kernel_boot_mem_used_end(void) { return boot_mem_next; }
+uint32_t kernel_boot_mem_free(void) {
+    return (boot_mem_next < boot_mem_top) ? (boot_mem_top - boot_mem_next) : 0;
+}
+
+/* Decide how much of the free RAM each pool gets. Guarantees linux/program
+   space first, then the malloc arena, and gives the rest (up to 48 MiB) to
+   the filesystem. */
+/* Program space gets a third of the free RAM, but never less than 16 MiB:
+   the biggest applets need most of that (vi's image is ~7.7 MiB, doom's
+   ~26 MiB) and linux_set_layout() carves the mmap/applet window and the
+   exe/brk space out of exactly this. Starving it makes applets fail with
+   "program region exhausted" while the file pool sits on RAM it cannot
+   use. */
+#define KB_BOOT_LX_RESERVE_MIN  (16u * 1024u * 1024u)
+#define KB_BOOT_LX_RESERVE_MAX  (48u * 1024u * 1024u)
+#define KB_BOOT_ARENA_MIN       (2u * 1024u * 1024u)
+#define KB_BOOT_POOL_MIN        (4u * 1024u * 1024u)
+
+static void boot_size_pools(uint32_t ram_top) {
+    extern void fs_set_pool(void* base, uint32_t bytes);
+    extern uint32_t fs_pool_max_bytes(void);
+    extern void malloc_set_arena(void* base, uint32_t bytes);
+
+    boot_ram_top_bytes = ram_top;
+
+    uint32_t free_bytes = kernel_boot_mem_free();
+    /* keep a little slack below the top of RAM */
+    if (free_bytes > (1u << 20)) free_bytes -= (1u << 20);
+    else free_bytes = 0;
+
+    uint32_t lx_reserve = free_bytes / 3;
+    if (lx_reserve > KB_BOOT_LX_RESERVE_MAX) lx_reserve = KB_BOOT_LX_RESERVE_MAX;
+    if (lx_reserve < KB_BOOT_LX_RESERVE_MIN) {
+        /* Very small machine: give programs half of what is there rather
+           than nothing, so a 32 MiB box still has somewhere to load /bin
+           from. */
+        lx_reserve = free_bytes / 2;
+        if (lx_reserve > KB_BOOT_LX_RESERVE_MIN) lx_reserve = KB_BOOT_LX_RESERVE_MIN;
+    }
+
+    uint32_t rest = (free_bytes > lx_reserve) ? (free_bytes - lx_reserve) : 0;
+    uint32_t arena = rest / 4;
+    if (arena > (16u * 1024u * 1024u)) arena = 16u * 1024u * 1024u;
+    if (arena < KB_BOOT_ARENA_MIN) arena = (rest > KB_BOOT_ARENA_MIN) ? KB_BOOT_ARENA_MIN : rest;
+
+    uint32_t pool = (rest > arena) ? (rest - arena) : 0;
+    if (pool > fs_pool_max_bytes()) pool = fs_pool_max_bytes();
+
+    void* pool_base = kernel_boot_alloc(pool);
+    fs_set_pool(pool_base, pool_base ? pool : 0);
+
+    void* arena_base = kernel_boot_alloc(arena);
+    malloc_set_arena(arena_base, arena_base ? arena : 0);
+
+    /* Report what the machine actually got, so a 64 MiB box can see why its
+       file space is smaller than a 512 MiB box's. */
+    {
+        extern uint32_t fs_pool_bytes(void);
+        extern uint32_t malloc_arena_size(void);
+        char msg[96];
+        int n = 0;
+        sb_append(msg, (int)sizeof(msg), &n, "Memory: RAM ");
+        sb_append_dec(msg, (int)sizeof(msg), &n, ram_top / (1024u * 1024u));
+        sb_append(msg, (int)sizeof(msg), &n, " MiB, file pool ");
+        sb_append_dec(msg, (int)sizeof(msg), &n, fs_pool_bytes() / (1024u * 1024u));
+        sb_append(msg, (int)sizeof(msg), &n, " MiB, malloc arena ");
+        sb_append_dec(msg, (int)sizeof(msg), &n, malloc_arena_size() / (1024u * 1024u));
+        sb_append(msg, (int)sizeof(msg), &n, " MiB");
+        boot_log(msg);
+    }
+}
 
 void kernel_main(uint32_t mb_magic, uint32_t mb_addr)
 {
@@ -2591,7 +2731,10 @@ void kernel_main(uint32_t mb_magic, uint32_t mb_addr)
             if ((mbi->flags & 0x00000001u) && mbi->mem_upper > 0)
                 ram_top = (mbi->mem_lower + mbi->mem_upper) * 1024u;
         }
-        linux_set_layout((uint32_t)__kernel_end, ram_top);
+        /* RAM pools first (filesystem, malloc), then hand linux the rest. */
+        kernel_boot_mem_init((uint32_t)__kernel_end, ram_top);
+        boot_size_pools(ram_top);
+        linux_set_layout(kernel_boot_mem_used_end(), ram_top);
     }
 
     boot_log("Initializing filesystem");
@@ -2613,6 +2756,20 @@ void kernel_main(uint32_t mb_magic, uint32_t mb_addr)
     }
     if (!fs_directory_exists("/bin") || fs_directory_is_empty("/bin"))
         kernel_panic_no_bin();
+
+    /* A pool smaller than the factory archive silently drops files, which
+       looks like a broken install later. Say it now, with a number. */
+    if (fs_seed_skipped) {
+        extern uint32_t fs_pool_bytes(void);
+        char msg[128];
+        int n = 0;
+        sb_append(msg, (int)sizeof(msg), &n, "Memory: too low for the factory archive, ");
+        sb_append_dec(msg, (int)sizeof(msg), &n, fs_seed_skipped);
+        sb_append(msg, (int)sizeof(msg), &n, " files not restored (file pool ");
+        sb_append_dec(msg, (int)sizeof(msg), &n, fs_pool_bytes() / (1024u * 1024u));
+        sb_append(msg, (int)sizeof(msg), &n, " MiB)");
+        boot_log(msg);
+    }
 
     register_cmd("exit", cmd_exit);
     register_cmd("hostname", cmd_hostname);

@@ -75,7 +75,9 @@ void abort(void) {
     exit(134);
 }
 
-/* malloc: first-fit free list over a static 16 MB arena
+/* malloc: first-fit free list over an arena carved out of RAM at boot
+ * (kernel_boot_alloc in kernel.c). It used to be a static 16 MB array,
+ * which a low-RAM machine paid for whether or not anything malloc'd.
  */
 #define MALLOC_ARENA_SIZE (16u * 1024u * 1024u)
 #define MALLOC_ALIGN      16u
@@ -89,14 +91,27 @@ typedef struct malloc_block {
     int free_;
 } mblock_t;
 
-static uint8_t malloc_arena[MALLOC_ARENA_SIZE] __attribute__((aligned(16)));
+static uint8_t* malloc_arena = 0;
+static uint32_t malloc_arena_bytes = 0;
 static int malloc_ready = 0;
 static mblock_t* malloc_head = 0;
 
+/* Called once at boot with the arena RAM the kernel handed over. */
+void malloc_set_arena(void* base, uint32_t bytes) {
+    malloc_arena = (uint8_t*)base;
+    bytes &= ~(uint32_t)(MALLOC_ALIGN - 1);
+    malloc_arena_bytes = bytes;
+    malloc_ready = 0;
+    malloc_head = 0;
+}
+
+uint32_t malloc_arena_size(void) { return malloc_arena_bytes; }
+
 static void malloc_init(void) {
+    if (!malloc_arena || malloc_arena_bytes < 4096u) { malloc_ready = -1; return; }
     malloc_head = (mblock_t*)malloc_arena;
     malloc_head->magic = MALLOC_MAGIC;
-    malloc_head->size = sizeof(malloc_arena);
+    malloc_head->size = malloc_arena_bytes;
     malloc_head->next = 0;
     malloc_head->prev = 0;
     malloc_head->free_ = 1;

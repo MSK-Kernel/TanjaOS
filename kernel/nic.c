@@ -61,14 +61,27 @@ static void pci_enable_path(uint8_t bus) {
     }
 }
 
-/* If the BIOS left a BAR at 0, assign a safe MMIO window. */
+/* If the BIOS left a BAR at 0, assign a safe MMIO window.
+ * Handles 64-bit memory BARs (type 0b10 in bits 2:1): the upper half is
+ * honoured when the window is addressable, and ignored when the firmware
+ * parked it above 4 GiB (this kernel has no PAE, so it cannot reach it). */
 static uint32_t pci_bar_mmio(uint8_t b, uint8_t d, uint8_t f, uint8_t off) {
     uint32_t bar = pci_rd(b, d, f, off);
+    int is64 = ((bar & 0x6) == 0x4);
     if (bar & 1) return 0;                 /* I/O BAR */
+    if (is64) {
+        uint32_t hi = pci_rd(b, d, f, (uint8_t)(off + 4));
+        if (hi != 0) {
+            if ((bar & ~0xFu) != 0) return 0;      /* mapped above 4 GiB: unusable */
+            /* unassigned 64-bit BAR: fall through and assign below 4 GiB */
+        }
+    }
     if ((bar & ~0xFu) != 0) return bar & ~0xFu;
     pci_wr(b, d, f, off, 0xFFFFFFFFu);
+    if (is64) pci_wr(b, d, f, (uint8_t)(off + 4), 0xFFFFFFFFu);
     uint32_t sz = pci_rd(b, d, f, off);
     pci_wr(b, d, f, off, 0);
+    if (is64) pci_wr(b, d, f, (uint8_t)(off + 4), 0);
     if (sz == 0 || sz == 0xFFFFFFFFu) return 0;
     uint32_t size = (~(sz & ~0xFu)) + 1;
     if (size < 4096) size = 4096;
@@ -77,6 +90,7 @@ static uint32_t pci_bar_mmio(uint8_t b, uint8_t d, uint8_t f, uint8_t off) {
     uint32_t addr = (next + size - 1) & ~(size - 1);
     if (addr + size > 0xFE800000u) return 0;
     pci_wr(b, d, f, off, addr);
+    if (is64) pci_wr(b, d, f, (uint8_t)(off + 4), 0);
     next = addr + size;
     return addr;
 }
@@ -241,7 +255,9 @@ static int e1000_init(uint8_t b, uint8_t d, uint8_t f, nic_t* out) {
 #define R_BMSR  0x64
 
 #define R_RXLEN 8192
-static uint8_t r_rx[R_RXLEN + 16 + 2048] __attribute__((aligned(16)));
+/* Real RTL8139 silicon wants the Rx ring not to cross a 64 KiB boundary, so
+ * align it to 32 KiB (a multiple of the ring size that cannot straddle one). */
+static uint8_t r_rx[R_RXLEN + 16 + 2048] __attribute__((aligned(32768)));
 static uint8_t r_txbuf[4][2048] __attribute__((aligned(16)));
 static uint16_t r_io;
 static uint32_t r_rx_off, r_tx_cur;
@@ -293,7 +309,13 @@ static int rtl8139_init(uint8_t b, uint8_t d, uint8_t f, nic_t* out) {
     if (!(bar0 & 1) || !(bar0 & ~3u)) return -1;
     r_io = (uint16_t)(bar0 & ~3u);
 
-    io_outb(r_io + R_CONFIG1, 0x00);                          /* power on */
+    /* 0x50 = Cfg9346: on real chips the CONFIG registers below are
+     * write-protected until it is written with 0xC0. */
+    io_outb(r_io + 0x50, 0xC0);
+    io_outb(r_io + R_CONFIG1, 0x00);                          /* power on, no wake events */
+    io_outb(r_io + 0x59, 0x00);                               /* CONFIG3: no cardbus wake */
+    io_outb(r_io + 0x5A, 0x80);                               /* CONFIG4: dblfifo (8K ring safe) */
+    io_outb(r_io + 0x50, 0x00);                               /* lock */
     io_outb(r_io + R_CR, 0x10);                               /* reset */
     uint32_t t0 = get_uptime_ms();
     while (io_inb(r_io + R_CR) & 0x10)
@@ -460,6 +482,206 @@ static int rtl8169_init(uint8_t b, uint8_t d, uint8_t f, nic_t* out) {
  * machine actually has. */
 extern void boot_log(const char* s);
 extern void print_hex(uint32_t n);
+
+/* ------------------------------------------------- ne2000 / RTL8029AS */
+/* Novell NE2000 and its clones: Realtek RTL8029AS (10EC:8029), the card
+ * QEMU calls "ne2k_pci", and the ISA cards of 486 / Pentium class machines.
+ * dp8390 register set, 16 KiB of card RAM: TX page 0x40, Rx ring 0x46..0x7F.
+ * Polled, 16-bit remote DMA, no interrupts. The chip has no link register,
+ * so link() reports up and DHCP tells the truth about the cable. */
+
+#define N_CR      0x00
+#define N_PSTART  0x01
+#define N_PSTOP   0x02
+#define N_BNRY    0x03
+#define N_TPSR    0x04
+#define N_TSR     0x04      /* same offset, read side: transmit status */
+#define N_TBCR0   0x05
+#define N_TBCR1   0x06
+#define N_ISR     0x07
+#define N_RSAR0   0x08
+#define N_RSAR1   0x09
+#define N_RBCR0   0x0A
+#define N_RBCR1   0x0B
+#define N_RCR     0x0C
+#define N_TCR     0x0D
+#define N_DCR     0x0E
+#define N_IMR     0x0F
+#define N_DATA    0x10
+#define N_RESET   0x1F
+
+#define N_TX_PAGE  0x40
+#define N_RX_START 0x46
+#define N_RX_STOP  0x80
+
+static uint16_t n_io;
+static int n_tx_pending;
+
+/* start a remote DMA transfer; cr is STA|RDMA|RREAD (0x32) or ...|RWRITE (0x2A) */
+static void n_dma_setup(uint8_t cr, uint32_t addr, uint32_t len) {
+    io_outb(n_io + N_ISR, 0x40);                       /* clear the DMA counter */
+    io_outb(n_io + N_RBCR0, (uint8_t)(len & 0xFF));
+    io_outb(n_io + N_RBCR1, (uint8_t)((len >> 8) & 0xFF));
+    io_outb(n_io + N_RSAR0, (uint8_t)(addr & 0xFF));
+    io_outb(n_io + N_RSAR1, (uint8_t)((addr >> 8) & 0xFF));
+    io_outb(n_io + N_CR, cr);
+}
+
+static void n_dma_done(void) {
+    uint32_t t0 = get_uptime_ms();
+    while ((io_inb(n_io + N_RBCR0) || io_inb(n_io + N_RBCR1)) &&
+           get_uptime_ms() - t0 < 20) { }
+    io_outb(n_io + N_CR, 0x22);                        /* page 0, started, no DMA */
+}
+
+static void n_mem_read(uint32_t addr, uint8_t* dst, uint32_t len) {
+    uint32_t i;
+    n_dma_setup(0x32, addr, len);                      /* STA | RDMA | RREAD */
+    for (i = 0; i + 1 < len; i += 2) {
+        uint16_t w = io_inw(n_io + N_DATA);
+        dst[i] = (uint8_t)w;
+        dst[i + 1] = (uint8_t)(w >> 8);
+    }
+    if (len & 1) dst[len - 1] = io_inb(n_io + N_DATA);
+    n_dma_done();
+}
+
+static void n_mem_write(uint32_t addr, const uint8_t* src, uint32_t len) {
+    uint32_t i;
+    n_dma_setup(0x2A, addr, len);                      /* STA | RDMA | RWRITE */
+    for (i = 0; i + 1 < len; i += 2)
+        io_outw(n_io + N_DATA, (uint16_t)src[i] | ((uint16_t)src[i + 1] << 8));
+    if (len & 1) io_outb(n_io + N_DATA, src[len - 1]);
+    n_dma_done();
+}
+
+static int n_link(void) { return 1; }   /* no link register on this chip */
+
+static int n_send(const void* frame, uint32_t len) {
+    static uint8_t pad[64];
+    uint32_t t0;
+    if (len > 1514) return -1;
+    if (n_tx_pending) {                                /* previous frame still going */
+        /* TSR bit 0 = PTX. ISR cannot be used here: the receive path clears
+         * ISR to acknowledge packets, which would take PTX with it. */
+        t0 = get_uptime_ms();
+        while (!(io_inb(n_io + N_TSR) & 0x01)) {
+            if (get_uptime_ms() - t0 > 200) return -1;
+        }
+        io_outb(n_io + N_TSR, 0xFF);
+        n_tx_pending = 0;
+    }
+    if (len < 60) {
+        memcpy(pad, frame, len);
+        memset(pad + len, 0, 60 - len);
+        frame = pad;
+        len = 60;
+    }
+    n_mem_write((uint32_t)N_TX_PAGE << 8, (const uint8_t*)frame, len);
+    io_outb(n_io + N_TPSR, N_TX_PAGE);
+    io_outb(n_io + N_TBCR0, (uint8_t)(len & 0xFF));
+    io_outb(n_io + N_TBCR1, (uint8_t)((len >> 8) & 0xFF));
+    io_outb(n_io + N_CR, 0x26);                        /* STA | TXP */
+    n_tx_pending = 1;
+    return 0;
+}
+
+static int n_recv(void* buf, uint32_t cap) {
+    /* Keep pulling frames while they are queued, dropping any that do not fit
+     * in the caller's buffer: the 14 KiB card ring overflows if the stack
+     * spends time on disk I/O between polls. */
+    int guard;
+    for (guard = 0; guard < 8; guard++) {
+        uint8_t hdr[4], bnry, next, page;
+        uint16_t size;
+        uint32_t flen;
+        if (!(io_inb(n_io + N_ISR) & 0x01)) return 0;  /* nothing received */
+        bnry = io_inb(n_io + N_BNRY);
+        page = (bnry == N_RX_STOP - 1) ? N_RX_START : (uint8_t)(bnry + 1);
+        n_mem_read((uint32_t)page << 8, hdr, 4);       /* status, next page, length */
+        next = hdr[1];
+        size = (uint16_t)hdr[2] | ((uint16_t)hdr[3] << 8);
+        if (!(hdr[0] & 1) || size < 4 || size > 1526 ||
+            next < N_RX_START || next > N_RX_STOP || next == page) {
+            /* partial or oversize frame: the ring is out of step, rebuild it */
+            io_outb(n_io + N_BNRY, N_RX_START - 1);            /* boundary = last page consumed */
+            io_outb(n_io + N_ISR, 0xFF);
+            return 0;
+        }
+        flen = (uint32_t)size - 4;
+        if (flen <= cap) n_mem_read(((uint32_t)page << 8) + 4, (uint8_t*)buf, flen);
+        /* boundary = last page of this packet, wrapping back to PSTOP-1 */
+        io_outb(n_io + N_BNRY, (uint8_t)(next == N_RX_START ? N_RX_STOP - 1 : next - 1));
+        io_outb(n_io + N_ISR, 0xFF);
+        if (flen <= cap && flen >= 14) return (int)flen;
+    }
+    return 0;
+}
+
+static int ne2k_init(uint8_t b, uint8_t d, uint8_t f, nic_t* out) {
+    uint32_t bar0;
+    int i;
+    pci_enable_path(b);
+    pci_enable(b, d, f);
+    bar0 = pci_rd(b, d, f, 0x10);
+    if (!(bar0 & 1) || !(bar0 & ~3u)) return -1;
+    n_io = (uint16_t)(bar0 & ~3u);
+
+    io_outb(n_io + N_IMR, 0x00);                       /* polled: no interrupts */
+    io_outb(n_io + N_ISR, 0xFF);
+    (void)io_inb(n_io + N_RESET);                      /* the classic reset: */
+    io_outb(n_io + N_RESET, 0xFF);                     /* read, write, wait */
+    timer_delay_ms(5);
+    io_outb(n_io + N_CR, 0x21);                        /* page 0, stopped, no DMA */
+    io_outb(n_io + N_DCR, 0x49);                       /* 16-bit transfers */
+    io_outb(n_io + N_RBCR0, 0);
+    io_outb(n_io + N_RBCR1, 0);
+    io_outb(n_io + N_RCR, 0x20);                       /* monitor while setting up */
+    io_outb(n_io + N_TCR, 0x02);                       /* on-chip loopback */
+    io_outb(n_io + N_TPSR, N_TX_PAGE);
+    io_outb(n_io + N_PSTART, N_RX_START);
+    io_outb(n_io + N_PSTOP, N_RX_STOP);
+    io_outb(n_io + N_BNRY, N_RX_START - 1);            /* boundary = last page consumed */
+
+    /* MAC: real cards load PAR from their PROM at power-up; emulated ones
+     * leave it zero, so fall back to reading the PROM through remote DMA. */
+    io_outb(n_io + N_CR, 0x61);                        /* page 1 */
+    for (i = 0; i < 6; i++) out->mac[i] = io_inb(n_io + 0x01 + i);
+    if (!(out->mac[0] | out->mac[1] | out->mac[2] |
+          out->mac[3] | out->mac[4] | out->mac[5])) {
+        uint8_t prom[16];
+        n_mem_read(0, prom, 16);
+        if (prom[0] == 0x57 && prom[1] == 0x57) {
+            for (i = 0; i < 6; i++) out->mac[i] = prom[2 + i];   /* NE2000 PROM: 57 57 then the node id */
+        } else {
+            /* 16-bit PROM read through a byte-wide port repeats each byte */
+            for (i = 0; i < 6; i++) out->mac[i] = prom[i * 2];
+        }
+        io_outb(n_io + N_CR, 0x61);                    /* n_mem_read left page 0 */
+    }
+    for (i = 0; i < 6; i++) io_outb(n_io + 0x01 + i, out->mac[i]);   /* PAR */
+
+
+    io_outb(n_io + 0x07, N_RX_START);                  /* CURR = first free page */
+    io_outb(n_io + N_CR, 0x21);                        /* page 0 again */
+    io_outb(n_io + N_RCR, 0x0C);                       /* accept broadcast + multicast */
+    io_outb(n_io + N_TCR, 0x00);                       /* normal transmit */
+    io_outb(n_io + N_ISR, 0xFF);
+    io_outb(n_io + N_CR, 0x22);                        /* start */
+    n_tx_pending = 0;
+
+    if (!(out->mac[0] | out->mac[1] | out->mac[2] |
+          out->mac[3] | out->mac[4] | out->mac[5])) return -1;
+    out->name = "ne2000";
+    out->send = n_send;
+    out->recv = n_recv;
+    out->link = n_link;
+    return 0;
+}
+
+static int ne2k_match(uint16_t ven, uint16_t dev) {
+    return ven == 0x10EC && (dev == 0x8029 || dev == 0x8028);
+}
 
 /* ------------------------------------------------------- atheros AR8132 */
 /* Attansic L2C / Atheros AR8132 (PCI 1969:1062). Common on ASUS Eee PC.
@@ -954,6 +1176,7 @@ static nic_driver_t drivers[] = {
     { "rtl8139",    rtl8139_match, rtl8139_init, 0 },
     { "rtl8169",    rtl8169_match, rtl8169_init, 0 },
     { "ar8132",     ar8132_match,  ar8132_init,  0 },
+    { "ne2000",     ne2k_match,    ne2k_init,    0 },
 };
 
 int nic_scan_all(nic_found_t* out, int max) {

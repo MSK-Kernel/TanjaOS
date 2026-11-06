@@ -1125,10 +1125,14 @@ static uint32_t sys_unlink(const char* path)
 
 static uint32_t sys_rename(const char* oldp, const char* newp)
 {
-    static char data[MAX_FILE_SIZE];
+    /* Chunked copy: this used to stage the whole file through a static
+     * 32 MiB buffer, which on its own put the kernel's memory image past
+     * a 64 MiB machine. 64 KiB at a time keeps rename working on any file
+     * size without the RAM. */
+    static char chunk[65536];
     char obuf[MAX_PATH], nbuf[MAX_PATH];
     const char* p;
-    uint32_t size = MAX_FILE_SIZE;
+    uint32_t total, off, want, got;
     int i;
 
     if (!oldp || !newp) return (uint32_t)-ENOENT_L;
@@ -1143,9 +1147,25 @@ static uint32_t sys_rename(const char* oldp, const char* newp)
 
     if (!fs_file_exists(obuf)) return (uint32_t)-ENOENT_L;
     if (fs_file_exists(nbuf)) return (uint32_t)-EEXIST_L;
-    if (fs_read_file(obuf, data, &size) != 0) return (uint32_t)-1;
+
+    total = fs_get_file_size(obuf);
     if (fs_create_file(nbuf) != 0) return (uint32_t)-1;
-    if (size && fs_write_file(nbuf, data, size) != 0) return (uint32_t)-1;
+
+    for (off = 0; off < total; ) {
+        want = total - off;
+        if (want > sizeof(chunk)) want = sizeof(chunk);
+        got = 0;
+        if (fs_read_file_range(obuf, off, chunk, want, &got) != 0 || got == 0) {
+            fs_delete_file(nbuf);
+            return (uint32_t)-1;
+        }
+        if (fs_append_file(nbuf, chunk, got) != 0) {
+            fs_delete_file(nbuf);
+            return (uint32_t)-1;
+        }
+        off += got;
+    }
+
     fs_delete_file(obuf);
     return 0;
 }

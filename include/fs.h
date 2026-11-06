@@ -16,7 +16,14 @@ typedef enum {
 } fs_type_t;
 
 void fs_init(void);
+/* Hand the filesystem its file-data pool (runtime RAM, see kernel.c).
+   Must be called before fs_init(). max_bytes caps it at FS_DATA_POOL_SIZE. */
+void fs_set_pool(void* base, uint32_t bytes);
+uint32_t fs_pool_bytes(void);
+uint32_t fs_pool_max_bytes(void);
 void fs_seed_home(void);
+/* files from the embedded archive that did not fit in the file pool */
+extern uint32_t fs_seed_skipped;
 int fs_create_file(const char* path);
 int fs_create_directory(const char* path);
 int fs_delete_file(const char* path);

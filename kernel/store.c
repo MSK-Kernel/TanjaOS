@@ -7,7 +7,9 @@
 #include "../include/build_id.h"
 
 extern void print(const char* s);
+extern void print_dec(uint32_t n);
 extern void boot_log(const char* msg);
+extern void kernel_panic_storage(const char* reason);
 
 // From kernel.c - packs/unpacks the login+hostname config (see there
 // for details) so it survives reboots the same way the filesystem does.
@@ -20,13 +22,19 @@ extern int config_deserialize(const uint8_t* buf, uint32_t buf_size);
 #define STORE_FALLBACK_LBA          2048
 
 // Minimum LBA the persistent region is allowed to start at. The installer
-// dd's the boot image (GRUB + kernel + config) onto the front of the disk
-// with no partition table separating it from anything else, so store_lba
-// (computed backward from the end of the disk) must land safely past that
-// image or every autosave silently overwrites GRUB's own files. 32768
-// sectors = 16 MiB, comfortably past the ~6.3 MB livecd image with room
-// to grow.
-#define STORE_FRONT_RESERVE_SECTORS 32768
+// dd's the boot image (GRUB + kernel + tanja.cfg) onto the front of the
+// disk with no partition table separating it from anything else, so
+// store_lba (computed backward from the end of the disk) must land safely
+// past that image or every autosave silently overwrites GRUB's own files.
+//
+// The boot image is only ~6.4 MiB (tanja-base alone is ~6.3 MiB), so
+// 16384 sectors = 8 MiB still leaves ~1.5 MiB of headroom for it to grow.
+// This used to be 32768 sectors (16 MiB), which was pure waste: it pushed
+// the minimum disk for persistence to just over 64 MiB, so a round 64 MiB
+// disk - the size people actually pick - died in a kernel panic even
+// though the persistent region itself only needs ~48 MiB. If the image
+// ever grows past 8 MiB the Makefile warns at link time; raise this then.
+#define STORE_FRONT_RESERVE_SECTORS 16384
 
 static uint32_t store_lba = STORE_FALLBACK_LBA;
 
@@ -63,6 +71,38 @@ static store_backend_t backend = BACKEND_NONE;
 
 static uint32_t bytes_to_sectors(uint32_t bytes) {
     return (bytes + 511) / 512;
+}
+
+/* Smallest disk (in 512-byte sectors) that can hold the reserved
+   persistent region at the end plus the boot image guard at the front.
+   Both "too small" exits report this computed value instead of a
+   hardcoded number: the real requirement moved when the filesystem data
+   pool grew, and the old stale figure sent people to disks that then
+   panicked anyway. */
+static uint64_t store_min_disk_sectors(void) {
+    return (uint64_t)store_capacity_sectors
+         + STORE_RESERVED_TAIL_SECTORS
+         + STORE_FRONT_RESERVE_SECTORS;
+}
+
+static uint32_t store_mib_ceil(uint64_t sectors) {
+    uint64_t bytes = sectors * 512u;
+    return (uint32_t)((bytes + (1024u * 1024u) - 1) / (1024u * 1024u));
+}
+
+static uint32_t store_mib_floor(uint64_t sectors) {
+    return (uint32_t)((sectors * 512u) / (1024u * 1024u));
+}
+
+/* One accurate message for both "too small" exits, then the standard
+   storage panic screen. */
+static void store_panic_disk_too_small(void) {
+    print("TanjaOS needs a disk of at least ");
+    print_dec(store_mib_ceil(store_min_disk_sectors()));
+    print(" MiB to keep files across reboots (this disk is ");
+    print_dec(store_mib_floor(store_disk_sectors));
+    print(" MiB)\n");
+    kernel_panic_storage(0);
 }
 
 static int store_backend_read(uint32_t lba, uint32_t count, void* buf) {
@@ -415,7 +455,7 @@ void store_init(uint32_t mb_magic, uint32_t mb_addr) {
             boot_log("Storefile: This session will run from RAM");
             return;
         }
-        kernel_panic_storage("Minimum recommended disk size is 47 MiB");
+        store_panic_disk_too_small();
     }
 
     // store_lba is anchored to the END of the disk, but the installer put
@@ -434,7 +474,7 @@ void store_init(uint32_t mb_magic, uint32_t mb_addr) {
             boot_log("Storefile: disk too small for safe persistence, running from RAM");
             return;
         }
-        kernel_panic_storage("Disk too small, minimum recommended disk size is 47 MiB");
+        store_panic_disk_too_small();
     }
 
     /* Read only the tiny header first: one sector. If it validates,

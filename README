@@ -111,8 +111,14 @@ Ethernet controller, starts the ones it has a driver for (several at once) and r
 so an unsupported card still shows its vendor:device id. Drivers (polled, no interrupts, no
 firmware): Intel e1000/e1000e family, virtio-net (legacy and modern transport: KVM, QEMU,
 Proxmox, clouds, VirtualBox, UTM), AMD PCnet (VirtualBox default, old VMware), Realtek RTL8139,
-Realtek RTL8168/8169/8111 and Atheros AR8132. A driver handles one card; a second card of the same
-kind is listed but left unused. kernel/net.c is the IPv4 stack (ARP, ICMP, UDP, DHCP, DNS, TCP
+Realtek RTL8168/8169/8111, Atheros AR8132 and NE2000/RTL8029AS (the dp8390 card of 486/Pentium
+class machines; polled, 16 KiB card ring, so bulk TCP over it is slow - DHCP, ICMP and small
+downloads are fine). A driver handles one card; a second card of the same kind is listed but left
+unused. MMIO BARs are assigned when the BIOS leaves them empty, and 64-bit BARs are handled.
+
+Not supported yet (the boot log names the card by vendor:device so it can be reported): Intel
+i8255x/eepro100 (8086:1229, 8086:1209 ...), Broadcom tg3/b44, Atheros AR8151/AR8161, Intel
+82598/82599 10GbE, Realtek RTL8125, and Wi-Fi of any kind. kernel/net.c is the IPv4 stack (ARP, ICMP, UDP, DHCP, DNS, TCP
 client, http and https GET). The first card with a link that answers DHCP becomes the interface;
 a cable plugged in later is configured when it appears. /etc/net.conf (ip/mask/gw/dns lines)
 makes boot use a fixed address instead of DHCP.
@@ -125,6 +131,8 @@ makes boot use a fixed address instead of DHCP.
     ping <host|ip>
 
 Untested on real hardware: the RTL8168 and AR8132 drivers (no emulator exists for them).
+Verified in QEMU: e1000 (82540EM and 82545EM), e1000e (82574L), RTL8139, virtio-net (both legacy
+and strict-modern transport), PCnet and NE2000 - DHCP, ICMP and frame counters on each.
 
 pkg (root required; use sudo from a user account):
     sudo pkg install <name>   GET <repo>/<name> and install the binary to /usr/bin/<name>.o

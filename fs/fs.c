@@ -49,10 +49,15 @@ static int strlen_safe(const char* s) {
  * (about 30 MiB) even when almost every file was empty. That made the
  * kernel need a huge amount of RAM just to boot simple commands.
  *
- * Files now live in a compact 24 MiB first-fit pool and are allocated only
- * when they actually contain data. MAX_FILE_DATA is still the per-file
- * limit, so normal large files (including TCC source/header files) keep
- * working without reserving 30+ MiB up front.
+ * Files now live in a compact first-fit pool of FS_DATA_POOL_SIZE and are
+ * allocated only when they actually contain data. MAX_FILE_DATA is still
+ * the per-file limit, so normal large files (including TCC source/header
+ * files) keep working without reserving 30+ MiB up front.
+ *
+ * The pool size is also the worst-case Storefile image, so it sets the
+ * minimum disk TanjaOS can persist on (see store_min_disk_sectors() in
+ * store.c): 48 MiB pool + 8 MiB boot image guard + slack. Do not grow this
+ * without re-checking what the smallest supported disk becomes.
  */
 #define FS_DATA_POOL_SIZE (48u * 1024u * 1024u)
 
@@ -65,7 +70,25 @@ int fs_delete_directory_recursive(const char *path);
 
 static char fname[MAX_F][FS_PATH_CAP];
 static char* fdata[MAX_F];
-static uint8_t fpool[FS_DATA_POOL_SIZE];
+/* The file data pool lives in RAM the kernel hands us at boot (see
+ * kernel_boot_alloc in kernel.c) instead of a static .bss array: a static
+ * 48 MiB pool made the kernel's memory image ~118 MB, so machines with
+ * less RAM than that could not even restore /bin. The pool is sized from
+ * the RAM actually present, capped at FS_DATA_POOL_SIZE. FS_DATA_POOL_SIZE
+ * stays the compile-time worst case and is still what fs_store_size()
+ * reserves on disk, so the on-disk layout never depends on RAM. */
+static uint8_t* fpool_base;
+static uint32_t fpool_bytes;
+
+/* Called once at boot, before fs_init(). */
+void fs_set_pool(void* base, uint32_t bytes) {
+    fpool_base = (uint8_t*)base;
+    if (bytes > FS_DATA_POOL_SIZE) bytes = FS_DATA_POOL_SIZE;
+    fpool_bytes = bytes & ~15u;
+}
+
+uint32_t fs_pool_bytes(void) { return fpool_bytes; }
+uint32_t fs_pool_max_bytes(void) { return FS_DATA_POOL_SIZE; }
 static int fsize[MAX_F];
 static int fused[MAX_F];
 
@@ -149,47 +172,48 @@ static char cwd[256];
 /* Small private allocator for file contents. It never calls libc malloc,
  * so the filesystem remains usable before the program heap exists. */
 static void fpool_init(void) {
-    fs_pool_block_t* b = (fs_pool_block_t*)fpool;
-    b->size = FS_DATA_POOL_SIZE - sizeof(fs_pool_block_t);
+    if (!fpool_base || fpool_bytes <= sizeof(fs_pool_block_t)) return;
+    fs_pool_block_t* b = (fs_pool_block_t*)fpool_base;
+    b->size = fpool_bytes - sizeof(fs_pool_block_t);
     b->free = 1;
 }
 
 static void fpool_coalesce(void) {
     uint32_t off = 0;
-    while (off + sizeof(fs_pool_block_t) <= FS_DATA_POOL_SIZE) {
-        fs_pool_block_t* b = (fs_pool_block_t*)(fpool + off);
-        if (b->size > FS_DATA_POOL_SIZE - off - sizeof(fs_pool_block_t))
+    while (off + sizeof(fs_pool_block_t) <= fpool_bytes) {
+        fs_pool_block_t* b = (fs_pool_block_t*)(fpool_base + off);
+        if (b->size > fpool_bytes - off - sizeof(fs_pool_block_t))
             break;
 
         uint32_t next_off = off + sizeof(fs_pool_block_t) + b->size;
-        if (b->free && next_off + sizeof(fs_pool_block_t) <= FS_DATA_POOL_SIZE) {
-            fs_pool_block_t* n = (fs_pool_block_t*)(fpool + next_off);
-            if (n->size <= FS_DATA_POOL_SIZE - next_off - sizeof(fs_pool_block_t) &&
+        if (b->free && next_off + sizeof(fs_pool_block_t) <= fpool_bytes) {
+            fs_pool_block_t* n = (fs_pool_block_t*)(fpool_base + next_off);
+            if (n->size <= fpool_bytes - next_off - sizeof(fs_pool_block_t) &&
                 n->free) {
                 b->size += sizeof(fs_pool_block_t) + n->size;
                 continue;
             }
         }
-        if (next_off >= FS_DATA_POOL_SIZE) break;
+        if (next_off >= fpool_bytes) break;
         off = next_off;
     }
 }
 
 static void* fpool_alloc(uint32_t bytes) {
-    if (bytes == 0) return 0;
+    if (bytes == 0 || !fpool_base) return 0;
     bytes = (bytes + 3u) & ~3u;
 
     uint32_t off = 0;
-    while (off + sizeof(fs_pool_block_t) <= FS_DATA_POOL_SIZE) {
-        fs_pool_block_t* b = (fs_pool_block_t*)(fpool + off);
-        if (b->size > FS_DATA_POOL_SIZE - off - sizeof(fs_pool_block_t))
+    while (off + sizeof(fs_pool_block_t) <= fpool_bytes) {
+        fs_pool_block_t* b = (fs_pool_block_t*)(fpool_base + off);
+        if (b->size > fpool_bytes - off - sizeof(fs_pool_block_t))
             return 0;
 
         if (b->free && b->size >= bytes) {
             uint32_t extra = b->size - bytes;
             if (extra >= sizeof(fs_pool_block_t) + 16u) {
                 uint32_t next_off = off + sizeof(fs_pool_block_t) + bytes;
-                fs_pool_block_t* n = (fs_pool_block_t*)(fpool + next_off);
+                fs_pool_block_t* n = (fs_pool_block_t*)(fpool_base + next_off);
                 n->size = extra - sizeof(fs_pool_block_t);
                 n->free = 1;
                 b->size = bytes;
@@ -198,7 +222,7 @@ static void* fpool_alloc(uint32_t bytes) {
             return (void*)(b + 1);
         }
 
-        if (off + sizeof(fs_pool_block_t) + b->size >= FS_DATA_POOL_SIZE)
+        if (off + sizeof(fs_pool_block_t) + b->size >= fpool_bytes)
             break;
         off += sizeof(fs_pool_block_t) + b->size;
     }
@@ -207,8 +231,8 @@ static void* fpool_alloc(uint32_t bytes) {
 
 static void fpool_free(void* ptr) {
     if (!ptr) return;
-    if ((uint8_t*)ptr < fpool + sizeof(fs_pool_block_t) ||
-        (uint8_t*)ptr >= fpool + FS_DATA_POOL_SIZE)
+    if ((uint8_t*)ptr < fpool_base + sizeof(fs_pool_block_t) ||
+        (uint8_t*)ptr >= fpool_base + fpool_bytes)
         return;
 
     fs_pool_block_t* b = ((fs_pool_block_t*)ptr) - 1;
@@ -275,9 +299,16 @@ static void home_copy_path(char* out, const unsigned char* name, int n) {
     out[j] = 0;
 }
 
+/* Files from the factory archive that did not fit in the file pool. A
+ * non-zero value means this machine has less RAM than the archive needs -
+ * the caller reports it instead of leaving a silently incomplete /bin. */
+uint32_t fs_seed_skipped;
+
 void fs_seed_home(void) {
     const unsigned char* p = _binary_home_tar_start;
     const unsigned char* end = _binary_home_tar_end;
+
+    fs_seed_skipped = 0;
 
     /* The source-tree home/ directory is the contents of TanjaOS's
        starting home directory, not a runtime /home directory.  Thus: 
@@ -303,8 +334,11 @@ void fs_seed_home(void) {
                     /* be explicit instead of silently vanishing at boot */
                     boot_log("home: file too large, skipped: ");
                     boot_log(path);
-                } else if (fs_create_file(path) == 0) {
-                    fs_write_file(path, (const char*)(p + 512), size);
+                } else if (fs_create_file(path) != 0) {
+                    fs_seed_skipped++;
+                } else {
+                    if (fs_write_file(path, (const char*)(p + 512), size) != 0)
+                        fs_seed_skipped++;
                     /* Command binaries under /bin are executable
  * programs - seed them 0755 like a real system's
  * /bin, so ls colors them by their +x bit. */
