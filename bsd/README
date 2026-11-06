@@ -1,9 +1,0 @@
-Wi-Fi code from OpenBSD
-
-src/      net80211 (802.11 stack), dev/pci/if_iwm.c (Intel Wireless-AC driver,
-          3160..9560) and the crypto helpers they need, copied UNMODIFIED from
-          OpenBSD src (git c595b86, 2026-10-28). Licences: see the header of each file
-          (ISC / BSD).
-include/  the OpenBSD kernel headers those files include (also unmodified).
-compat/   TanjaOS's own layer: stub config headers and the implementations of the
-          kernel services the OpenBSD code expects (mbufs, timeouts, PCI, DMA, ...).

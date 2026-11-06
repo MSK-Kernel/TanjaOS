@@ -104,27 +104,27 @@ To use Makefile.bsd, use 'gmake <option> -f Makefile.bsd'.
 | 3) gcc                  |
 |_________________________|
 
-4. Networking, Wi-Fi and pkg
+4. Networking and pkg
 
-Ethernet: kernel/nic.c drives Intel e1000/e1000e (PRO/1000) and Realtek
-RTL8139 NICs; kernel/net.c is the IPv4 stack (ARP, ICMP, UDP, DHCP, DNS,
-TCP client, plain-HTTP GET). The adapter is configured automatically at
-boot via DHCP (and again when a cable is plugged in later).
+Ethernet: kernel/nic.c is a small driver registry. At boot it scans the PCI bus for every
+Ethernet controller, starts the ones it has a driver for (several at once) and reports the rest,
+so an unsupported card still shows its vendor:device id. Drivers (polled, no interrupts, no
+firmware): Intel e1000/e1000e family, virtio-net (legacy and modern transport: KVM, QEMU,
+Proxmox, clouds, VirtualBox, UTM), AMD PCnet (VirtualBox default, old VMware), Realtek RTL8139,
+Realtek RTL8168/8169/8111 and Atheros AR8132. A driver handles one card; a second card of the same
+kind is listed but left unused. kernel/net.c is the IPv4 stack (ARP, ICMP, UDP, DHCP, DNS, TCP
+client, http and https GET). The first card with a link that answers DHCP becomes the interface;
+a cable plugged in later is configured when it appears. /etc/net.conf (ip/mask/gw/dns lines)
+makes boot use a fixed address instead of DHCP.
 
-    ifconfig            show address / link        ifconfig dhcp   re-run DHCP
+    ifconfig                 active interface, address, frame counters
+    ifconfig list            every Ethernet card found, usable or not
+    ifconfig use <N>         switch to card N and run DHCP on it
+    ifconfig dhcp            ask DHCP again (and forget a saved static setup)
+    ifconfig static <ip>[/bits] [gw <ip>] [dns <ip>]    fixed address, saved for next boot (root)
     ping <host|ip>
 
-Wi-Fi: 'wifi' opens a menu (arrows scroll long lists, Enter connect, h hidden
-network, r rescan, d disconnect, f forget, a next adapter, q quit). Also
-scriptable: wifi list | status | saved | connect <ssid> [password] |
-disconnect | forget <ssid> | adapter [N]. kernel/wifi.c is the framework radio
-drivers plug into: up to 4 adapters, open/WEP/WPA2/WPA3/802.1X reporting,
-password validation, scan lists sorted + de-duplicated, saved networks in
-/etc/wifi.conf (root-only) with autoconnect to the strongest saved one.
-kernel/wpa.c is the chip-independent WPA2-PSK core (passphrase->key, 4-way and
-group handshakes, key unwrap, AES-CCM). At boot and in 'wifi' / 'wifi status' it reports any Wi-Fi card it finds on the PCI
-bus (vendor:device ids) even without a driver. There is no real radio driver yet. 'make WIFI_DEMO=1' adds two fake adapters
-(password for secured demo networks: demo1234) for trying all of this out.
+Untested on real hardware: the RTL8168 and AR8132 drivers (no emulator exists for them).
 
 pkg (root required; use sudo from a user account):
     sudo pkg install <name>   GET <repo>/<name> and install the binary to /usr/bin/<name>.o
@@ -143,33 +143,3 @@ regenerate it to refresh the roots). No TLS 1.3. The clock is the CMOS RTC
 (never earlier than the build date); entropy is RDRAND + timing jitter, so
 it is weaker on CPUs without RDRAND.
 Try it locally: 'python3 -m http.server 8000' in a dir of source files on the host.
-
-5. OpenBSD Wi-Fi code (bsd/)
-
-For broad Wi-Fi chip support TanjaOS reuses OpenBSD's drivers instead of writing its own.
-bsd/src holds OpenBSD's 802.11 stack (net80211), its Intel Wireless-AC driver (if_iwm.c:
-3160/3165/3168/7260/7265/8260/8265/9260/9560) and the crypto helpers they need, unmodified
-(licences are in each file). bsd/include has the OpenBSD kernel headers they include.
-bsd/compat is TanjaOS's own layer: the ~110 OpenBSD kernel services those files call
-(memory, mbufs, timers/tasks, sleeping, PCI, DMA, network interface), polled from the idle
-loop. 'wifi selftest' runs 50+ checks of that layer. Status: layer + build done and tested;
-the driver is in the kernel but is NOT started at boot. To try it on an Intel Wireless-AC card
-(experimental, untested on real hardware): copy the card's iwlwifi-*.ucode firmware into
-home/lib/firmware/ (see the README there), run make, boot, then run 'wifi attach' and read
-the iwm0 messages it prints. Only the Intel AC family (iwm) is attached; AX200/AX201 (iwx),
-Atheros, Realtek and Broadcom are not.
-
-6. Testing the Wi-Fi driver on a PC that can't boot TanjaOS (UEFI only, no Legacy BIOS/CSM)
-
-Run TanjaOS in QEMU on that PC and pass the real Wi-Fi card through to it (VFIO):
-    sudo apt install qemu-system-x86
-    make                          # copies the Intel firmware from /lib/firmware automatically
-    tools/vfio-wifi.sh check      # IOMMU on? what else is in the card's IOMMU group?
-    sudo tools/vfio-wifi.sh bind  # Debian loses that Wi-Fi card until 'unbind' or a reboot
-    sudo tools/vfio-wifi.sh run   # TanjaOS opens in QEMU; its output is also printed in this terminal
-    (inside TanjaOS)  wifi attach     then     wifi
-    sudo tools/vfio-wifi.sh unbind
-Everything TanjaOS prints is mirrored to COM1, so the terminal log can be copied as plain text.
-If 'check' says the IOMMU is off: enable VT-d (AMD-Vi) in the BIOS and add intel_iommu=on iommu=pt
-(amd_iommu=on) to the kernel command line. If the card shares its IOMMU group with other devices
-the passthrough may be refused. Untested on real hardware.

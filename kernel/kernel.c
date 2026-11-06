@@ -2564,7 +2564,6 @@ static void kernel_panic_no_bin(void) {
 }
 
 extern void net_init(void);
-extern void wifi_init(void);
 extern void linux_set_layout(uint32_t kernel_end, uint32_t ram_top);
 extern char __kernel_end[];
 
@@ -2600,7 +2599,6 @@ void kernel_main(uint32_t mb_magic, uint32_t mb_addr)
 
     boot_log("Starting network");
     net_init();
-    wifi_init();
 
     boot_log("Loading command binaries");
 

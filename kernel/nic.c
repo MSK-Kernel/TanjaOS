@@ -460,40 +460,6 @@ static int rtl8169_init(uint8_t b, uint8_t d, uint8_t f, nic_t* out) {
  * machine actually has. */
 extern void boot_log(const char* s);
 extern void print_hex(uint32_t n);
-void nic_log_net(void) {
-    int bus, dev, fn, any = 0;
-    for (bus = 0; bus < 256; bus++) {
-        for (dev = 0; dev < 32; dev++) {
-            if ((pci_rd(bus, dev, 0, 0x00) & 0xFFFF) == 0xFFFF) continue;
-            int nfn = (pci_rd(bus, dev, 0, 0x0C) & 0x00800000) ? 8 : 1;
-            for (fn = 0; fn < nfn; fn++) {
-                uint32_t id = pci_rd(bus, dev, fn, 0x00);
-                uint32_t cls = pci_rd(bus, dev, fn, 0x08);
-                if ((id & 0xFFFF) == 0xFFFF) continue;
-                if ((cls >> 24) != 0x02) continue;
-                any = 1;
-                char msg[80];
-                int n = 0;
-                const char* pre = "PCI net ";
-                while (*pre) msg[n++] = *pre++;
-                /* vendor:device class */
-                static const char* hexd = "0123456789abcdef";
-                uint32_t v;
-                msg[n++] = hexd[(id >> 12) & 0xF]; msg[n++] = hexd[(id >> 8) & 0xF];
-                msg[n++] = hexd[(id >> 4) & 0xF]; msg[n++] = hexd[id & 0xF];
-                msg[n++] = ':';
-                v = id >> 16;
-                msg[n++] = hexd[(v >> 12) & 0xF]; msg[n++] = hexd[(v >> 8) & 0xF];
-                msg[n++] = hexd[(v >> 4) & 0xF]; msg[n++] = hexd[v & 0xF];
-                msg[n++] = ' ';
-                msg[n++] = 'c'; msg[n++] = hexd[(cls >> 20) & 0xF]; msg[n++] = hexd[(cls >> 16) & 0xF];
-                msg[n] = 0;
-                boot_log(msg);
-            }
-        }
-    }
-    if (!any) boot_log("PCI net: no network device on the bus");
-}
 
 /* ------------------------------------------------------- atheros AR8132 */
 /* Attansic L2C / Atheros AR8132 (PCI 1969:1062). Common on ASUS Eee PC.
@@ -634,59 +600,390 @@ static int ar8132_init(uint8_t b, uint8_t d, uint8_t f, nic_t* out) {
     return 0;
 }
 
-/* ------------------------------------------------------------- probe */
 
-int nic_probe_pci(nic_t* out) {
-    int bus, dev, fn;
-    for (bus = 0; bus < 256; bus++) {
-        for (dev = 0; dev < 32; dev++) {
-            uint32_t id0 = pci_rd(bus, dev, 0, 0x00);
-            if ((id0 & 0xFFFF) == 0xFFFF) continue;
-            uint32_t hdr = pci_rd(bus, dev, 0, 0x0C);
-            int nfn = (hdr & 0x00800000) ? 8 : 1;
-            for (fn = 0; fn < nfn; fn++) {
-                uint32_t id = pci_rd(bus, dev, fn, 0x00);
-                uint16_t ven = id & 0xFFFF, devid = id >> 16;
-                if (ven == 0xFFFF) continue;
-                if (ven == 0x8086) {
-                    int k;
-                    for (k = 0; e1000_ids[k]; k++)
-                        if (e1000_ids[k] == devid && e1000_init(bus, dev, fn, out) == 0)
-                            return 0;
-                } else if (ven == 0x1969 && (devid == 0x1062 || devid == 0x1063)) {
-                    if (ar8132_init(bus, dev, fn, out) == 0) return 0;
-                } else if (ven == 0x10EC) {
-                    if (devid == 0x8139) {
-                        if (rtl8139_init(bus, dev, fn, out) == 0) return 0;
-                    } else if (devid == 0x8169 || devid == 0x8168 ||
-                               devid == 0x8167 || devid == 0x8136 ||
-                               devid == 0x8161) {
-                        if (rtl8169_init(bus, dev, fn, out) == 0) return 0;
-                    }
-                }
-            }
-        }
-    }
-    return -1;
+/* ------------------------------------------------------------ virtio-net */
+/* The NIC of KVM/QEMU, Proxmox, most clouds, VirtualBox and UTM. Both the
+ * legacy (I/O port) and the modern (PCI capability / MMIO) transport. Polled. */
+
+#define VQ_N     256                 /* modern queues are shrunk to this; legacy keeps the device size (<=1024) */
+#define V_RXBUFS 32
+#define V_TXBUFS 16
+struct vdesc { uint64_t addr; uint32_t len; uint16_t flags, next; } __attribute__((packed));
+struct vq {
+    struct vdesc* desc; volatile uint16_t* avail; volatile uint8_t* used;
+    uint16_t qs, avail_idx, last_used;
+};
+static uint8_t v_legacy_mem[2][32768] __attribute__((aligned(4096)));
+static struct vdesc v_m_desc[2][VQ_N]       __attribute__((aligned(16)));
+static uint16_t     v_m_avail[2][VQ_N + 4]  __attribute__((aligned(4)));
+static uint8_t      v_m_used[2][8 + 8 * VQ_N] __attribute__((aligned(4)));
+static uint8_t v_rxbuf[V_RXBUFS][2048] __attribute__((aligned(16)));
+static uint8_t v_txbuf[V_TXBUFS][2048] __attribute__((aligned(16)));
+static struct vq v_rx, v_tx;
+static int v_modern, v_hdr, v_has_status;
+static uint16_t v_io;                       /* legacy: I/O base */
+static volatile uint8_t *v_common, *v_notify, *v_devcfg;
+static uint32_t v_notify_mult;
+static volatile uint16_t* v_rx_notify; static volatile uint16_t* v_tx_notify;
+static uint8_t v_txbusy[V_TXBUFS];
+
+static void v_kick(int q) {
+    asm volatile ("mfence" ::: "memory");
+    if (v_modern) *(q ? v_tx_notify : v_rx_notify) = q;
+    else io_outw(v_io + 0x10, q);
 }
 
-/* Wi-Fi cards report PCI class 0x02 (network), subclass 0x80 (other). */
-int nic_wifi_scan(wifi_hw_t* out, int max) {
-    int bus, dev, fn, n = 0;
+static void vq_attach_legacy(struct vq* q, uint8_t* mem, uint16_t qs) {
+    q->qs = qs;
+    q->desc = (struct vdesc*)mem;
+    q->avail = (volatile uint16_t*)(mem + 16u * qs);
+    q->used = (volatile uint8_t*)(((uint32_t)(mem + 16u * qs + 6 + 2u * qs) + 4095) & ~4095u);
+    q->avail_idx = q->last_used = 0;
+}
+
+static void v_post_rx(int i) {
+    v_rx.desc[i].addr = (uint64_t)(uint32_t)v_rxbuf[i];
+    v_rx.desc[i].len = 2048; v_rx.desc[i].flags = 2; v_rx.desc[i].next = 0;     /* device writes */
+    v_rx.avail[2 + (v_rx.avail_idx % v_rx.qs)] = i;
+    asm volatile ("" ::: "memory");
+    v_rx.avail_idx++;
+    v_rx.avail[1] = v_rx.avail_idx;
+}
+
+static int v_link(void) {
+    if (!v_has_status) return 1;
+    return (v_modern ? *(volatile uint16_t*)(v_devcfg + 6) : io_inw(v_io + 0x14 + 6)) & 1;
+}
+
+static void v_reclaim(void) {
+    while (v_tx.last_used != *(volatile uint16_t*)(v_tx.used + 2)) {
+        uint32_t id = *(volatile uint32_t*)(v_tx.used + 4 + 8 * (v_tx.last_used % v_tx.qs));
+        if (id < V_TXBUFS) v_txbusy[id] = 0;
+        v_tx.last_used++;
+    }
+}
+
+static int v_send(const void* frame, uint32_t len) {
+    int i, slot = -1;
+    uint32_t t0 = get_uptime_ms();
+    if (len > 1514) return -1;
+    for (;;) {
+        v_reclaim();
+        for (i = 0; i < V_TXBUFS; i++) if (!v_txbusy[i]) { slot = i; break; }
+        if (slot >= 0) break;
+        if (get_uptime_ms() - t0 > 200) return -1;
+    }
+    memset(v_txbuf[slot], 0, v_hdr);                       /* virtio_net_hdr: no offloads */
+    memcpy(v_txbuf[slot] + v_hdr, frame, len);
+    v_tx.desc[slot].addr = (uint64_t)(uint32_t)v_txbuf[slot];
+    v_tx.desc[slot].len = v_hdr + len; v_tx.desc[slot].flags = 0; v_tx.desc[slot].next = 0;
+    v_txbusy[slot] = 1;
+    v_tx.avail[2 + (v_tx.avail_idx % v_tx.qs)] = slot;
+    asm volatile ("" ::: "memory");
+    v_tx.avail_idx++;
+    v_tx.avail[1] = v_tx.avail_idx;
+    v_kick(1);
+    return 0;
+}
+
+static int v_recv(void* buf, uint32_t cap) {
+    while (v_rx.last_used != *(volatile uint16_t*)(v_rx.used + 2)) {
+        uint32_t k = v_rx.last_used % v_rx.qs;
+        uint32_t id = *(volatile uint32_t*)(v_rx.used + 4 + 8 * k);
+        uint32_t len = *(volatile uint32_t*)(v_rx.used + 8 + 8 * k);
+        int good = id < V_RXBUFS && len > v_hdr + 14 && len - v_hdr <= cap;
+        if (good) memcpy(buf, v_rxbuf[id] + v_hdr, len - v_hdr);
+        v_rx.last_used++;
+        if (id < V_RXBUFS) { v_post_rx(id); v_kick(0); }
+        if (good) return (int)(len - v_hdr);
+    }
+    return 0;
+}
+
+static void v_status(uint8_t st) {
+    if (v_modern) *(volatile uint8_t*)(v_common + 20) = st; else io_outb(v_io + 0x12, st);
+}
+
+static int virtio_legacy_init(uint8_t b, uint8_t d, uint8_t f, nic_t* out) {
+    uint32_t bar0 = pci_rd(b, d, f, 0x10);
+    int q, i;
+    if (!(bar0 & 1)) return -1;
+    pci_enable_path(b); pci_enable(b, d, f);
+    v_io = (uint16_t)(bar0 & ~3u);
+    v_modern = 0; v_hdr = 10;
+    io_outb(v_io + 0x12, 0);                                /* reset */
+    io_outb(v_io + 0x12, 1);                                /* ACKNOWLEDGE */
+    io_outb(v_io + 0x12, 1 | 2);                            /* DRIVER */
+    {
+        uint32_t feat = io_inl(v_io + 0);
+        v_has_status = (feat >> 16) & 1;
+        io_outl(v_io + 4, feat & ((1u << 5) | (1u << 16)));    /* MAC, STATUS - nothing else */
+    }
+    for (q = 0; q < 2; q++) {
+        uint16_t qs;
+        io_outw(v_io + 0x0E, q);
+        qs = io_inw(v_io + 0x0C);
+        if (qs == 0 || qs > 1024 || (qs & (qs - 1))) return -1;
+        memset(v_legacy_mem[q], 0, sizeof(v_legacy_mem[q]));
+        vq_attach_legacy(q ? &v_tx : &v_rx, v_legacy_mem[q], qs);
+        io_outl(v_io + 0x08, (uint32_t)v_legacy_mem[q] >> 12);
+    }
+    for (i = 0; i < 6; i++) out->mac[i] = io_inb(v_io + 0x14 + i);
+    for (i = 0; i < V_RXBUFS && i < v_rx.qs; i++) v_post_rx(i);
+    memset(v_txbusy, 0, sizeof(v_txbusy));
+    io_outb(v_io + 0x12, 1 | 2 | 4);                        /* DRIVER_OK */
+    v_kick(0);
+    out->name = "virtio-net"; out->send = v_send; out->recv = v_recv; out->link = v_link;
+    return 0;
+}
+
+static int virtio_modern_init(uint8_t b, uint8_t d, uint8_t f, nic_t* out) {
+    uint32_t stat = pci_rd(b, d, f, 0x04) >> 16;
+    uint8_t cap;
+    int i, q;
+    volatile uint8_t *common = 0, *notify = 0, *devcfg = 0;
+    uint32_t mult = 0;
+    if (!(stat & 0x10)) return -1;                          /* no capability list */
+    pci_enable_path(b); pci_enable(b, d, f);
+    for (cap = pci_rd(b, d, f, 0x34) & 0xFC; cap; cap = (pci_rd(b, d, f, cap) >> 8) & 0xFC) {
+        uint32_t w0 = pci_rd(b, d, f, cap);
+        uint8_t type, bar;
+        uint32_t off, bar_lo, base;
+        if ((w0 & 0xFF) != 0x09) continue;                  /* vendor-specific capability */
+        type = (w0 >> 24) & 0xFF;
+        bar = pci_rd(b, d, f, cap + 4) & 0xFF;
+        off = pci_rd(b, d, f, cap + 8);
+        if (bar > 5) continue;
+        bar_lo = pci_rd(b, d, f, 0x10 + 4 * bar);
+        if (bar_lo & 1) continue;
+        if (((bar_lo >> 1) & 3) == 2 && pci_rd(b, d, f, 0x14 + 4 * bar) != 0) continue;   /* 64-bit BAR above 4 GB */
+        base = pci_bar_mmio(b, d, f, 0x10 + 4 * bar);
+        if (!base) continue;
+        if (type == 1) common = (volatile uint8_t*)(base + off);
+        else if (type == 2) { notify = (volatile uint8_t*)(base + off); mult = pci_rd(b, d, f, cap + 16); }
+        else if (type == 4) devcfg = (volatile uint8_t*)(base + off);
+    }
+    if (!common || !notify || !devcfg) return -1;
+    v_modern = 1; v_hdr = 12; v_common = common; v_notify = notify; v_devcfg = devcfg; v_notify_mult = mult;
+
+    v_status(0);
+    { uint32_t t0 = get_uptime_ms(); while (*(volatile uint8_t*)(common + 20) && get_uptime_ms() - t0 < 200) ; }
+    v_status(1); v_status(1 | 2);
+    *(volatile uint32_t*)(common + 0) = 1;                  /* device features, high word: VERSION_1 is bit 32 */
+    if (!(*(volatile uint32_t*)(common + 4) & 1)) return -1;
+    *(volatile uint32_t*)(common + 0) = 0;
+    v_has_status = (*(volatile uint32_t*)(common + 4) >> 16) & 1;
+    *(volatile uint32_t*)(common + 8) = 0;                  /* driver features low: MAC, STATUS */
+    *(volatile uint32_t*)(common + 12) = (1u << 5) | (v_has_status ? (1u << 16) : 0);
+    *(volatile uint32_t*)(common + 8) = 1;
+    *(volatile uint32_t*)(common + 12) = 1;                 /* VERSION_1 */
+    v_status(1 | 2 | 8);                                    /* FEATURES_OK */
+    if (!(*(volatile uint8_t*)(common + 20) & 8)) return -1;
+
+    for (q = 0; q < 2; q++) {
+        struct vq* v = q ? &v_tx : &v_rx;
+        uint16_t qs;
+        *(volatile uint16_t*)(common + 22) = q;
+        qs = *(volatile uint16_t*)(common + 24);
+        if (qs == 0) return -1;
+        if (qs > VQ_N) qs = VQ_N;
+        *(volatile uint16_t*)(common + 24) = qs;
+        memset(v_m_desc[q], 0, sizeof(v_m_desc[q])); memset(v_m_avail[q], 0, sizeof(v_m_avail[q])); memset(v_m_used[q], 0, sizeof(v_m_used[q]));
+        v->qs = qs; v->desc = v_m_desc[q]; v->avail = v_m_avail[q]; v->used = v_m_used[q]; v->avail_idx = v->last_used = 0;
+        *(volatile uint32_t*)(common + 32) = (uint32_t)v_m_desc[q];  *(volatile uint32_t*)(common + 36) = 0;
+        *(volatile uint32_t*)(common + 40) = (uint32_t)v_m_avail[q]; *(volatile uint32_t*)(common + 44) = 0;
+        *(volatile uint32_t*)(common + 48) = (uint32_t)v_m_used[q];  *(volatile uint32_t*)(common + 52) = 0;
+        {
+            uint16_t noff = *(volatile uint16_t*)(common + 30);
+            volatile uint16_t* n = (volatile uint16_t*)(notify + (uint32_t)noff * mult);
+            if (q) v_tx_notify = n; else v_rx_notify = n;
+        }
+        *(volatile uint16_t*)(common + 28) = 1;             /* queue_enable */
+    }
+    for (i = 0; i < 6; i++) out->mac[i] = devcfg[i];
+    for (i = 0; i < V_RXBUFS && i < v_rx.qs; i++) v_post_rx(i);
+    memset(v_txbusy, 0, sizeof(v_txbusy));
+    v_status(1 | 2 | 8 | 4);                                /* DRIVER_OK */
+    v_kick(0);
+    out->name = "virtio-net"; out->send = v_send; out->recv = v_recv; out->link = v_link;
+    return 0;
+}
+
+static int virtio_init(uint8_t b, uint8_t d, uint8_t f, nic_t* out) {
+    uint32_t id = pci_rd(b, d, f, 0x00);
+    uint16_t dev = id >> 16;
+    if (dev == 0x1000) {                                    /* transitional: prefer legacy I/O unless the BAR isn't I/O */
+        if (virtio_legacy_init(b, d, f, out) == 0) return 0;
+        return virtio_modern_init(b, d, f, out);
+    }
+    return virtio_modern_init(b, d, f, out);               /* 0x1041 */
+}
+static int virtio_match(uint16_t ven, uint16_t dev) { return ven == 0x1AF4 && (dev == 0x1000 || dev == 0x1041); }
+
+/* ------------------------------------------------------------ AMD PCnet */
+/* PCnet-PCI II / FAST III: VirtualBox's default NIC, old VMware, QEMU "pcnet". */
+
+#define P_N 16
+struct p_desc { uint32_t addr; uint32_t w1; uint32_t w2; uint32_t w3; } __attribute__((packed));
+struct p_init { uint16_t mode; uint8_t rlen, tlen; uint8_t padr[6]; uint16_t res; uint8_t ladrf[8]; uint32_t rdra, tdra; } __attribute__((packed));
+static struct p_desc p_rx[P_N] __attribute__((aligned(16)));
+static struct p_desc p_tx[P_N] __attribute__((aligned(16)));
+static struct p_init p_blk __attribute__((aligned(4)));
+static uint8_t p_rxbuf[P_N][1536] __attribute__((aligned(16)));
+static uint8_t p_txbuf[P_N][1536] __attribute__((aligned(16)));
+static uint16_t p_io;
+static int p_rx_cur, p_tx_cur;
+
+static uint32_t p_rcsr(int r) { io_outl(p_io + 0x14, r); return io_inl(p_io + 0x10); }
+static void     p_wcsr(int r, uint32_t v) { io_outl(p_io + 0x14, r); io_outl(p_io + 0x10, v); }
+static void     p_wbcr(int r, uint32_t v) { io_outl(p_io + 0x14, r); io_outl(p_io + 0x1C, v); }
+
+static int p_link(void) { return 1; }                      /* virtual NIC: the cable is always in */
+
+static int p_send(const void* frame, uint32_t len) {
+    int i = p_tx_cur;
+    uint32_t t0 = get_uptime_ms();
+    if (len > 1514) return -1;
+    while (p_tx[i].w1 & 0x80000000u) if (get_uptime_ms() - t0 > 200) return -1;
+    memcpy(p_txbuf[i], frame, len);
+    if (len < 60) { memset(p_txbuf[i] + len, 0, 60 - len); len = 60; }
+    p_tx[i].addr = (uint32_t)p_txbuf[i];
+    p_tx[i].w2 = 0;
+    asm volatile ("" ::: "memory");
+    p_tx[i].w1 = 0x80000000u | 0x02000000u | 0x01000000u | 0x0000F000u | ((-len) & 0xFFF);   /* OWN | STP | ENP | -len */
+    asm volatile ("" ::: "memory");
+    p_wcsr(0, 0x0008);                                      /* TDMD: transmit now */
+    p_tx_cur = (i + 1) % P_N;
+    return 0;
+}
+
+static int p_recv(void* buf, uint32_t cap) {
+    int i = p_rx_cur;
+    uint32_t w1, len;
+    if (p_rx[i].w1 & 0x80000000u) return 0;
+    w1 = p_rx[i].w1;
+    len = p_rx[i].w2 & 0xFFF;                               /* includes the CRC */
+    int good = !(w1 & 0x40000000u) && (w1 & 0x03000000u) == 0x03000000u && len > 4 + 14 && len - 4 <= cap;
+    if (good) memcpy(buf, p_rxbuf[i], len - 4);
+    p_rx[i].w2 = 0;
+    asm volatile ("" ::: "memory");
+    p_rx[i].w1 = 0x80000000u | 0x0000F000u | ((-1536) & 0xFFF);
+    p_rx_cur = (i + 1) % P_N;
+    return good ? (int)(len - 4) : 0;
+}
+
+static int pcnet_init(uint8_t b, uint8_t d, uint8_t f, nic_t* out) {
+    uint32_t bar0 = pci_rd(b, d, f, 0x10);
+    int i;
+    if (!(bar0 & 1)) return -1;
+    pci_enable_path(b); pci_enable(b, d, f);
+    p_io = (uint16_t)(bar0 & ~3u);
+    (void)io_inl(p_io + 0x18); (void)io_inw(p_io + 0x14);   /* reset (32-bit and 16-bit mode ports) */
+    timer_delay_ms(5);
+    for (i = 0; i < 6; i++) out->mac[i] = io_inb(p_io + i); /* address PROM, readable in 16-bit mode */
+    io_outl(p_io + 0x10, 0);                                /* a dword write switches the chip to 32-bit I/O */
+    p_wbcr(20, 2);                                          /* software style 2: 32-bit descriptors */
+    {
+        int all0 = 1, allf = 1;
+        for (i = 0; i < 6; i++) { if (out->mac[i]) all0 = 0; if (out->mac[i] != 0xFF) allf = 0; }
+        if (all0 || allf) {                                  /* PROM unreadable: use the physical address registers */
+            uint32_t c12 = p_rcsr(12), c13 = p_rcsr(13), c14 = p_rcsr(14);
+            out->mac[0] = c12; out->mac[1] = c12 >> 8; out->mac[2] = c13; out->mac[3] = c13 >> 8;
+            out->mac[4] = c14; out->mac[5] = c14 >> 8;
+        }
+        if ((out->mac[0] | out->mac[1] | out->mac[2] | out->mac[3] | out->mac[4] | out->mac[5]) == 0 ||
+            (out->mac[0] & out->mac[1] & out->mac[2] & out->mac[3] & out->mac[4] & out->mac[5]) == 0xFF) return -1;
+    }
+
+    for (i = 0; i < P_N; i++) {
+        p_rx[i].addr = (uint32_t)p_rxbuf[i]; p_rx[i].w2 = 0; p_rx[i].w3 = 0;
+        p_rx[i].w1 = 0x80000000u | 0x0000F000u | ((-1536) & 0xFFF);
+        p_tx[i].addr = (uint32_t)p_txbuf[i]; p_tx[i].w1 = 0; p_tx[i].w2 = 0; p_tx[i].w3 = 0;
+    }
+    p_rx_cur = p_tx_cur = 0;
+    memset(&p_blk, 0, sizeof(p_blk));
+    p_blk.mode = 0;
+    p_blk.rlen = 4 << 4; p_blk.tlen = 4 << 4;               /* 2^4 = 16 descriptors each */
+    memcpy(p_blk.padr, out->mac, 6);
+    p_blk.rdra = (uint32_t)p_rx; p_blk.tdra = (uint32_t)p_tx;
+    memset(p_blk.ladrf, 0xFF, 8);                           /* accept all multicast */
+    p_wcsr(1, (uint32_t)&p_blk & 0xFFFF);
+    p_wcsr(2, (uint32_t)&p_blk >> 16);
+    p_wcsr(3, 0x5F00);                                      /* mask interrupts (polled) */
+    p_wcsr(4, 0x0915);                                      /* auto-pad TX, strip RX pad, no TX poll interrupts */
+    p_wcsr(0, 0x0001);                                      /* INIT */
+    {
+        uint32_t t0 = get_uptime_ms();
+        while (!(p_rcsr(0) & 0x0100)) if (get_uptime_ms() - t0 > 500) return -1;   /* IDON */
+    }
+    p_wcsr(0, 0x0002);                                      /* STRT (interrupts stay off) */
+    out->name = "pcnet"; out->send = p_send; out->recv = p_recv; out->link = p_link;
+    return 0;
+}
+static int pcnet_match(uint16_t ven, uint16_t dev) { return ven == 0x1022 && (dev == 0x2000 || dev == 0x2001); }
+
+/* ------------------------------------------------------------- probe */
+
+/* ------------------------------------------------------------ registry */
+/* Every driver here keeps its state in static variables, so each one can drive ONE card;
+ * a second card of the same kind is reported but left alone. */
+
+static int e1000_match(uint16_t ven, uint16_t dev) {
+    int k;
+    if (ven != 0x8086) return 0;
+    for (k = 0; e1000_ids[k]; k++) if (e1000_ids[k] == dev) return 1;
+    return 0;
+}
+static int rtl8139_match(uint16_t ven, uint16_t dev) { return ven == 0x10EC && dev == 0x8139; }
+static int rtl8169_match(uint16_t ven, uint16_t dev) {
+    return ven == 0x10EC && (dev == 0x8169 || dev == 0x8168 || dev == 0x8167 || dev == 0x8136 || dev == 0x8161);
+}
+static int ar8132_match(uint16_t ven, uint16_t dev) { return ven == 0x1969 && (dev == 0x1062 || dev == 0x1063); }
+
+typedef struct {
+    const char* name;
+    int (*match)(uint16_t ven, uint16_t dev);
+    int (*init)(uint8_t b, uint8_t d, uint8_t f, nic_t* out);
+    int used;
+} nic_driver_t;
+
+static nic_driver_t drivers[] = {
+    { "e1000",      e1000_match,   e1000_init,   0 },
+    { "virtio-net", virtio_match,  virtio_init,  0 },
+    { "pcnet",      pcnet_match,   pcnet_init,   0 },
+    { "rtl8139",    rtl8139_match, rtl8139_init, 0 },
+    { "rtl8169",    rtl8169_match, rtl8169_init, 0 },
+    { "ar8132",     ar8132_match,  ar8132_init,  0 },
+};
+
+int nic_scan_all(nic_found_t* out, int max) {
+    int bus, dev, fn, n = 0, k;
+    for (k = 0; k < (int)(sizeof(drivers) / sizeof(drivers[0])); k++) drivers[k].used = 0;
     for (bus = 0; bus < 256; bus++) {
         for (dev = 0; dev < 32; dev++) {
-            uint32_t id0 = pci_rd(bus, dev, 0, 0x00);
-            if ((id0 & 0xFFFF) == 0xFFFF) continue;
-            int nfn = (pci_rd(bus, dev, 0, 0x0C) & 0x00800000) ? 8 : 1;
+            int nfn;
+            if ((pci_rd(bus, dev, 0, 0x00) & 0xFFFF) == 0xFFFF) continue;
+            nfn = (pci_rd(bus, dev, 0, 0x0C) & 0x00800000) ? 8 : 1;
             for (fn = 0; fn < nfn; fn++) {
-                uint32_t id = pci_rd(bus, dev, fn, 0x00);
-                uint32_t cls = pci_rd(bus, dev, fn, 0x08);
+                uint32_t id = pci_rd(bus, dev, fn, 0x00), cls = pci_rd(bus, dev, fn, 0x08);
+                nic_found_t* o;
                 if ((id & 0xFFFF) == 0xFFFF) continue;
-                if ((cls >> 24) == 0x02 && ((cls >> 16) & 0xFF) == 0x80 && n < max) {
-                    out[n].vendor = id & 0xFFFF; out[n].device = id >> 16;
-                    out[n].bus = bus; out[n].dev = dev; out[n].fn = fn;
-                    n++;
+                if ((cls >> 24) != 0x02 || ((cls >> 16) & 0xFF) != 0x00) continue;   /* Ethernet controllers */
+                if (n >= max) return n;
+                o = &out[n];
+                memset(o, 0, sizeof(*o));
+                o->vendor = id & 0xFFFF; o->device = id >> 16;
+                o->bus = bus; o->dev = dev; o->fn = fn;
+                o->state = NIC_ST_NODRIVER;
+                for (k = 0; k < (int)(sizeof(drivers) / sizeof(drivers[0])); k++) {
+                    if (!drivers[k].match(o->vendor, o->device)) continue;
+                    if (drivers[k].used) o->state = NIC_ST_SECOND;
+                    else if (drivers[k].init(bus, dev, fn, &o->nic) == 0) { o->state = NIC_ST_READY; drivers[k].used = 1; }
+                    else o->state = NIC_ST_FAILED;
+                    o->driver = drivers[k].name;
+                    break;
                 }
+                n++;
             }
         }
     }

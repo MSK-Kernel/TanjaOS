@@ -2,10 +2,10 @@ CC=gcc
 LD=ld
 ASM=nasm
 
-CFLAGS=-ffreestanding -m32 -c -fno-stack-protector -fno-builtin -fno-pic -fno-pie -I. $(if $(WIFI_DEMO),-DWIFI_DEMO)
-LDFLAGS=-m elf_i386 -T linker/linker.ld -nostdlib
+CFLAGS=-ffreestanding -m32 -c -fno-stack-protector -fno-builtin -fno-pic -fno-pie -I.
+LDFLAGS=-m elf_i386 -T linker/bsdlinker.ld -nostdlib
 
-KERNEL_OBJ = kernel/kernel.o kernel/game.o kernel/ata.o kernel/ahci.o kernel/store.o kernel/idt.o kernel/elf.o kernel/atomic.o kernel/libc.o kernel/libc2.o kernel/exec.o kernel/setjmp_asm.o kernel/linux.o kernel/nic.o kernel/net.o kernel/wifi.o kernel/tls.o kernel/wpa.o arch/x86/linux_asm.o
+KERNEL_OBJ = kernel/kernel.o kernel/game.o kernel/ata.o kernel/ahci.o kernel/store.o kernel/idt.o kernel/elf.o kernel/atomic.o kernel/libc.o kernel/libc2.o kernel/exec.o kernel/setjmp_asm.o kernel/linux.o kernel/nic.o kernel/net.o kernel/tls.o arch/x86/linux_asm.o
 
 # Doom is a separately installable ELF32 package, never a kernel built-in.
 BIN_SRC = $(filter-out bin/doom.c,$(wildcard bin/*.c))
@@ -20,6 +20,9 @@ HOME_OBJ = home_tar.o
 
 
 all: arch/x86/boot/tanja-base ports/doom/build/doom
+	@echo
+	@echo "[INFO] TanjaOS image ready at arch/x86/boot/tanja-base"
+	@echo
 
 BUILD_TS := $(shell date +%s)
 
@@ -37,7 +40,8 @@ BIN_CFLAGS = -m32 -ffreestanding -fno-stack-protector -fno-builtin \
              -fno-asynchronous-unwind-tables \
              -Wno-builtin-declaration-mismatch -I include -I .
 
-home/bin/%.o: bin/%.c include/tanja.h include/fs.h include/utf8.h | home/bin
+HDRS = $(filter-out include/build_id.h,$(wildcard include/*.h))
+home/bin/%.o: bin/%.c $(HDRS) | home/bin
 	@echo "[CC] bin/$*.c (ELF32)"
 	$(CC) $(BIN_CFLAGS) -c $< -o $@
 
@@ -51,15 +55,8 @@ tools/tcc/tcc.o: $(TCC_SRC)
 		test -f tools/tcc/tcc.o; \
 	fi
 
-home.tar: Makefile.bsd $(shell find home -type f -o -type d 2>/dev/null | grep -v '^home/bin/') $(BIN_OUT) $(wildcard home/bin/*)
+home.tar: Makefile $(shell find home -type f -o -type d 2>/dev/null | grep -v '^home/bin/') $(BIN_OUT) $(wildcard home/bin/*)
 	@rm -f home/bin/doom.o home/bin/tcc.o
-	@for f in iwlwifi-9260-th-b0-jf-b0-46.ucode iwlwifi-9000-pu-b0-jf-b0-46.ucode iwlwifi-8265-36.ucode \
-	         iwlwifi-8000C-36.ucode iwlwifi-7265D-29.ucode iwlwifi-7265-17.ucode iwlwifi-7260-17.ucode \
-	         iwlwifi-3168-29.ucode iwlwifi-3160-17.ucode; do \
-	    if [ -f /lib/firmware/$$f ] && [ ! -f home/lib/firmware/$$f ]; then \
-	        mkdir -p home/usr/bin
-	        mkdir -p home/lib/firmware; cp /lib/firmware/$$f home/lib/firmware/$$f; echo "[FW] $$f (from /lib/firmware)"; \
-	    fi; done
 	@echo "[TAR] Packing home/ (binaries as /bin, headers as /usr/include)"
 	rm -rf .home-stage
 	tar --format=ustar -cf $@ -C home .
@@ -68,7 +65,7 @@ home_tar.o: home.tar
 	@echo "[OBJ] Embedding home/"
 	$(LD) -r -b binary -m elf_i386 -o $@ $<
 
-kernel/%.o: kernel/%.c
+kernel/%.o: kernel/%.c $(HDRS)
 	@echo "[CC] kernel/$(notdir $<)"
 	$(CC) $(CFLAGS) -o $@ $<
 
@@ -81,23 +78,6 @@ BR_CFLAGS = $(filter -m32,$(CFLAGS)) -c -O2 -ffreestanding -fno-builtin -fno-pic
 include tools/bearssl/sources.mk
 BR_OBJ = $(BR_SRC:tools/bearssl/src/%.c=tools/bearssl/build/%.o)
 AR ?= ar
-
-include bsd/sources.mk
-BSD_OBJ = $(BSD_SRC:bsd/src/%.c=bsd/build/src/%.o) $(BSD_COMPAT_SRC:bsd/compat/%.c=bsd/build/compat/%.o)
-BSD_CFLAGS = $(filter -m32,$(CFLAGS)) -c -O2 -std=gnu99 -D_KERNEL -D__i386__ -DMULTIPROCESSOR=0 \
-             -ffreestanding -fno-builtin -fno-pic -fno-pie -fno-stack-protector -nostdinc \
-             -include bsd/compat/rename.h -Ibsd -Ibsd/compat -Ibsd/include -Ibsd/include/crypto \
-             -isystem $(BR_GCC_INC) -w
-
-bsd/build/%.o: bsd/%.c bsd/compat/rename.h
-	@mkdir -p $(dir $@)
-	@echo "[CC] $<"
-	@$(CC) $(BSD_CFLAGS) -o $@ $<
-
-bsd/libbsdwifi.a: $(BSD_OBJ)
-	@echo "[AR] libbsdwifi.a"
-	@rm -f $@
-	@$(AR) rcs $@ $^
 
 tools/bearssl/build/%.o: tools/bearssl/src/%.c
 	@mkdir -p $(dir $@)
@@ -112,10 +92,6 @@ tools/bearssl/libbearssl.a: $(BR_OBJ)
 kernel/tls.o: kernel/tls.c kernel/tls_anchors.h include/build_id.h tools/bearssl/libbearssl.a
 	@echo "[CC] kernel/tls.c"
 	$(CC) $(CFLAGS) -Itools/bearssl/inc -o $@ kernel/tls.c
-
-kernel/wpa.o: kernel/wpa.c include/wpa.h tools/bearssl/libbearssl.a
-	@echo "[CC] kernel/wpa.c"
-	$(CC) $(CFLAGS) -Itools/bearssl/inc -o $@ kernel/wpa.c
 
 kernel/store.o: kernel/store.c include/build_id.h
 	@echo "[CC] kernel/store.c"
@@ -152,7 +128,7 @@ ports/doom/build/doom: $(wildcard ports/doom/*.c ports/doom/Makefile ports/doom/
 	@$(MAKE) --no-print-directory -C ports/doom CC="$(CC)" LD="$(LD)" ARCH_FLAGS="$(filter -m32,$(CFLAGS))"
 
 
-arch/x86/boot/tanja-base: arch/x86/boot/boot.o arch/x86/idt_asm.o $(KERNEL_OBJ) fs/fs.o $(HOME_OBJ) tools/bearssl/libbearssl.a bsd/libbsdwifi.a | arch/x86/boot
+arch/x86/boot/tanja-base: arch/x86/boot/boot.o arch/x86/idt_asm.o $(KERNEL_OBJ) fs/fs.o $(HOME_OBJ) tools/bearssl/libbearssl.a | arch/x86/boot
 	@echo "[LD] Linking..."
 	$(LD) $(LDFLAGS) -o arch/x86/boot/tanja-base \
 		arch/x86/boot/boot.o \
@@ -160,12 +136,9 @@ arch/x86/boot/tanja-base: arch/x86/boot/boot.o arch/x86/idt_asm.o $(KERNEL_OBJ) 
 		$(KERNEL_OBJ) \
 		fs/fs.o \
 		$(HOME_OBJ) \
-		tools/bearssl/libbearssl.a bsd/libbsdwifi.a \
+		tools/bearssl/libbearssl.a \
 		$(shell $(CC) -m32 -print-libgcc-file-name)
 
-	@echo
-	@echo "[INFO] TanjaOS image ready at arch/x86/boot/tanja-base"
-	@echo
 
 
 clean:
@@ -174,7 +147,6 @@ clean:
 	$(MAKE) -C ports/doom clean
 	rm -rf arch/x86/*.o home.tar home_tar.o *.o
 	rm -f home/bin/*.o
-	rm -rf .home-stage include/build_id.h tools/bearssl/build tools/bearssl/libbearssl.a bsd/build bsd/libbsdwifi.a
-	rm -f home/lib/firmware/iwlwifi-*.ucode
+	rm -rf .home-stage include/build_id.h tools/bearssl/build tools/bearssl/libbearssl.a
 
 .PHONY: all clean

@@ -8,9 +8,11 @@
 #include <stdint.h>
 #include <stddef.h>
 #include "../include/net.h"
+#include "../include/fs.h"
 
 extern void  print(const char* s);
 extern int   printf(const char* fmt, ...);
+extern int   snprintf(char* s, unsigned int n, const char* fmt, ...);
 extern void  boot_log(const char* msg);
 extern void  timer_delay_ms(uint32_t ms);
 extern uint32_t get_uptime_ms(void);
@@ -66,6 +68,7 @@ static void ip_str(uint32_t ip, char* o) {
 
 static nic_t nic;
 static int   nic_ok;
+static uint32_t st_rx, st_tx, st_txerr;
 static struct { uint32_t ip, mask, gw, dns; } cfg;
 static uint8_t BCAST[6] = { 0xFF,0xFF,0xFF,0xFF,0xFF,0xFF };
 
@@ -100,7 +103,7 @@ static int eth_send(const uint8_t* dst, uint16_t type, const uint8_t* payload, u
     memcpy(txf + 6, nic.mac, 6);
     wr16(txf + 12, type);
     memcpy(txf + 14, payload, len);
-    return nic.send(txf, 14 + len);
+    { int r = nic.send(txf, 14 + len); if (r == 0) st_tx++; else st_txerr++; return r; }
 }
 
 static void arp_send(uint16_t op, const uint8_t* tmac, uint32_t tip) {
@@ -424,17 +427,14 @@ static void net_poll_inner(void) {
     if (!nic_ok) return;
     while (budget-- && (n = nic.recv(rxf, sizeof(rxf))) > 0) {
         if (n < 14) continue;
+        st_rx++;
         uint16_t type = rd16(rxf + 12);
         if (type == 0x0806) arp_in(rxf + 14, n - 14);
         else if (type == 0x0800) ip_in(rxf + 14, n - 14);
     }
 }
 
-extern int  bsd_wifi_attached(void);
-extern void bsd_poll(void);
-
 void net_poll(void) {
-    if (bsd_wifi_attached()) bsd_poll();
     if (!nic_ok) return;
     net_poll_inner();
     uint32_t now = get_uptime_ms();
@@ -1059,14 +1059,21 @@ const char* net_tls_error(void) { return tls_error_str(); }
 
 /* ------------------------------------------------------- init / info */
 
-int net_attach(const nic_t* n) {
+#define MAX_NICS 8
+static nic_found_t nics[MAX_NICS];
+static int nnics, cur_nic = -1;
+
+static void select_nic(const nic_t* n, int idx) {
     nic = *n;
     nic_ok = 1;
+    cur_nic = idx;
     cfg.ip = cfg.mask = cfg.gw = cfg.dns = 0;
     memset(arp_tab, 0, sizeof(arp_tab));
+    st_rx = st_tx = st_txerr = 0;
     last_link = nic.link();
-    return 0;
 }
+
+int net_attach(const nic_t* n) { select_nic(n, -1); return 0; }
 
 int net_get_info(net_info_t* o) {
     memset(o, 0, sizeof(*o));
@@ -1077,60 +1084,125 @@ int net_get_info(net_info_t* o) {
     strncpy(o->driver, nic.name, sizeof(o->driver) - 1);
     memcpy(o->mac, nic.mac, 6);
     o->ip = cfg.ip; o->mask = cfg.mask; o->gw = cfg.gw; o->dns = cfg.dns;
+    o->rx_frames = st_rx; o->tx_frames = st_tx; o->tx_errors = st_txerr;
     return 1;
 }
 
-static void log_mac(const char* prefix, const uint8_t* m) {
-    static const char hx[] = "0123456789abcdef";
-    char b[64]; int n = 0, i;
-    while (*prefix) b[n++] = *prefix++;
-    for (i = 0; i < 6; i++) {
-        b[n++] = hx[m[i] >> 4]; b[n++] = hx[m[i] & 15];
-        if (i < 5) b[n++] = ':';
+int net_nic_count(void) { return nnics; }
+
+int net_nic_info(int idx, net_nic_info_t* o) {
+    nic_found_t* f;
+    if (idx < 0 || idx >= nnics) return -1;
+    f = &nics[idx];
+    memset(o, 0, sizeof(*o));
+    if (f->driver) strncpy(o->name, f->driver, sizeof(o->name) - 1);
+    o->vendor = f->vendor; o->device = f->device;
+    o->bus = f->bus; o->dev = f->dev; o->fn = f->fn;
+    o->state = f->state;
+    if (f->state == NIC_ST_READY) { memcpy(o->mac, f->nic.mac, 6); o->link = f->nic.link(); }
+    o->active = (idx == cur_nic);
+    return 0;
+}
+
+int net_nic_use(int idx) {
+    if (idx < 0 || idx >= nnics || nics[idx].state != NIC_ST_READY) return -1;
+    select_nic(&nics[idx].nic, idx);
+    return 0;
+}
+
+int net_set_static(uint32_t ip, uint32_t mask, uint32_t gw, uint32_t dns) {
+    if (!nic_ok) return -1;
+    memset(arp_tab, 0, sizeof(arp_tab));
+    cfg.ip = ip; cfg.mask = mask; cfg.gw = gw; cfg.dns = dns;
+    return 0;
+}
+
+/* /etc/net.conf: "ip A.B.C.D", "mask A.B.C.D", "gw A.B.C.D", "dns A.B.C.D" (one per line) */
+static int load_static_conf(void) {
+    static char buf[512];
+    uint32_t sz = sizeof(buf) - 1, ip = 0, mask = 0xFFFFFF00u, gw = 0, dns = 0;
+    int i = 0, have_ip = 0;
+    if (!fs_file_exists("/etc/net.conf") || fs_read_file("/etc/net.conf", buf, &sz) != 0) return 0;
+    buf[sz] = 0;
+    while (buf[i]) {
+        char* line = buf + i; uint32_t v;
+        while (buf[i] && buf[i] != '\n') i++;
+        if (buf[i]) buf[i++] = 0;
+        if (strncasecmp(line, "ip ", 3) == 0 && parse_dotted(line + 3, &v)) { ip = v; have_ip = 1; }
+        else if (strncasecmp(line, "mask ", 5) == 0 && parse_dotted(line + 5, &v)) mask = v;
+        else if (strncasecmp(line, "gw ", 3) == 0 && parse_dotted(line + 3, &v)) gw = v;
+        else if (strncasecmp(line, "dns ", 4) == 0 && parse_dotted(line + 4, &v)) dns = v;
     }
-    b[n] = 0;
-    boot_log(b);
+    if (!have_ip) return 0;
+    net_set_static(ip, mask, gw, dns ? dns : gw);
+    return 1;
+}
+
+static void log_cfg(const char* how) {
+    char a[16], g[16], m[100];
+    ip_str(cfg.ip, a); ip_str(cfg.gw, g);
+    snprintf(m, sizeof(m), "Network: eth%d %s %s gateway %s", cur_nic, how, a, g);
+    boot_log(m);
 }
 
 void net_init(void) {
-    nic_t n;
-    memset(&n, 0, sizeof(n));
-    extern void nic_log_net(void);
-    nic_log_net();
-    if (nic_probe_pci(&n) != 0) {
-        boot_log("Network: no supported Ethernet adapter found");
+    int i, ready = 0, pass;
+    char m[100];
+    uint32_t t0;
+    nnics = nic_scan_all(nics, MAX_NICS);
+    if (!nnics) { boot_log("Network: no Ethernet controller found on the PCI bus"); return; }
+
+    for (i = 0; i < nnics; i++) {
+        nic_found_t* f = &nics[i];
+        if (f->state == NIC_ST_READY) {
+            ready++;
+            snprintf(m, sizeof(m), "Network: eth%d %s %04x:%04x %02x:%02x:%02x:%02x:%02x:%02x", i, f->driver,
+                     f->vendor, f->device, f->nic.mac[0], f->nic.mac[1], f->nic.mac[2],
+                     f->nic.mac[3], f->nic.mac[4], f->nic.mac[5]);
+        } else if (f->state == NIC_ST_NODRIVER) {
+            snprintf(m, sizeof(m), "Network: eth%d %04x:%04x at pci %02x:%02x.%d - no driver for this card yet",
+                     i, f->vendor, f->device, f->bus, f->dev, f->fn);
+        } else if (f->state == NIC_ST_FAILED) {
+            snprintf(m, sizeof(m), "Network: eth%d %04x:%04x (%s) - driver could not start the card",
+                     i, f->vendor, f->device, f->driver);
+        } else {
+            snprintf(m, sizeof(m), "Network: eth%d %04x:%04x (%s) - second card of this kind, not used",
+                     i, f->vendor, f->device, f->driver);
+        }
+        boot_log(m);
+    }
+    if (!ready) { boot_log("Network: none of the Ethernet cards could be started"); return; }
+
+    /* give auto-negotiation a moment: wait until some card has a link (max 2.5 s) */
+    t0 = get_uptime_ms();
+    for (;;) {
+        int any = 0;
+        for (i = 0; i < nnics; i++) if (nics[i].state == NIC_ST_READY && nics[i].nic.link()) any = 1;
+        if (any || get_uptime_ms() - t0 >= 2500) break;
+        timer_delay_ms(50);
+    }
+
+    /* cards with a link first; the first one that gets an address wins */
+    for (pass = 0; pass < 2; pass++) {
+        for (i = 0; i < nnics; i++) {
+            int up;
+            if (nics[i].state != NIC_ST_READY) continue;
+            up = nics[i].nic.link();
+            if ((pass == 0) != (up != 0)) continue;
+            if (pass == 1) continue;                      /* no link at all: nothing to configure yet */
+            select_nic(&nics[i].nic, i);
+            if (load_static_conf()) { log_cfg("static"); return; }
+            if (net_dhcp() == 0) { log_cfg("DHCP"); return; }
+            snprintf(m, sizeof(m), "Network: eth%d has a link but DHCP got no answer", i);
+            boot_log(m);
+        }
+    }
+    for (i = 0; i < nnics; i++) {                         /* nothing configured: park on the first card */
+        if (nics[i].state != NIC_ST_READY) continue;
+        select_nic(&nics[i].nic, i);
+        if (load_static_conf()) { log_cfg("static"); return; }
+        if (!nics[i].nic.link()) boot_log("Network: no cable connected (will configure when one is plugged in)");
+        else boot_log("Network: not configured - try 'ifconfig dhcp' or 'ifconfig static ...'");
         return;
-    }
-    net_attach(&n);
-    {
-        char b[64] = "Network: ";
-        int l = 9, k = 0;
-        while (n.name[k]) b[l++] = n.name[k++];
-        b[l++] = ' '; b[l] = 0;
-        log_mac(b, n.mac);
-    }
-    /* give auto-negotiation a moment to bring the link up */
-    {
-        uint32_t t0 = get_uptime_ms();
-        while (!nic.link() && get_uptime_ms() - t0 < 2000) timer_delay_ms(50);
-    }
-    last_link = nic.link();
-    if (!last_link) {
-        boot_log("Network: cable not connected (will configure when it is plugged in)");
-        return;
-    }
-    boot_log("Network: link up, requesting address via DHCP");
-    if (net_dhcp() == 0) {
-        char a[16], g[16], msg[96]; int p = 0, k;
-        ip_str(cfg.ip, a); ip_str(cfg.gw, g);
-        const char* s1 = "Network: "; const char* s2 = "  gateway ";
-        for (k = 0; s1[k]; k++) msg[p++] = s1[k];
-        for (k = 0; a[k]; k++) msg[p++] = a[k];
-        for (k = 0; s2[k]; k++) msg[p++] = s2[k];
-        for (k = 0; g[k]; k++) msg[p++] = g[k];
-        msg[p] = 0;
-        boot_log(msg);
-    } else {
-        boot_log("Network: DHCP failed (no server answered) - try 'ifconfig dhcp'");
     }
 }

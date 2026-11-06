@@ -14,6 +14,7 @@ typedef struct {
     char     driver[16];    /* "e1000", "rtl8139", ... */
     uint8_t  mac[6];
     uint32_t ip, mask, gw, dns;
+    uint32_t rx_frames, tx_frames, tx_errors;   /* since boot / last switch */
 } net_info_t;
 
 /* ---- NIC driver ABI (kernel/nic.c, and any future Wi-Fi driver) ---- */
@@ -25,7 +26,19 @@ typedef struct {
     int  (*link)(void);                              /* 1 = link up */
 } nic_t;
 
-int  nic_probe_pci(nic_t* out);   /* kernel/nic.c: 0 = found a supported NIC */
+/* One PCI Ethernet controller found at boot */
+#define NIC_ST_READY    0   /* driver attached and running */
+#define NIC_ST_NODRIVER 1   /* a network card we have no driver for (yet) */
+#define NIC_ST_FAILED   2   /* we have a driver but it could not start the card */
+#define NIC_ST_SECOND   3   /* second card of a kind that is already in use */
+typedef struct {
+    nic_t       nic;                 /* valid when state == NIC_ST_READY */
+    const char* driver;              /* driver name, or 0 */
+    uint16_t    vendor, device;
+    uint8_t     bus, dev, fn;
+    int         state;
+} nic_found_t;
+int  nic_scan_all(nic_found_t* out, int max);   /* kernel/nic.c: find + start every Ethernet card */
 
 /* ---- kernel-internal ---- */
 void net_init(void);              /* probe NIC + DHCP, called once at boot */
@@ -35,6 +48,21 @@ int  net_attach(const nic_t* n);  /* make this NIC the active interface */
 /* ---- program API (exported to /bin programs) ---- */
 int  net_get_info(net_info_t* out);
 int  net_dhcp(void);                                   /* 0 = configured */
+
+/* every Ethernet controller seen at boot, usable or not */
+typedef struct {
+    char     name[16];                 /* driver name, or "" when there is none */
+    uint16_t vendor, device;
+    uint8_t  bus, dev, fn;
+    uint8_t  mac[6];
+    int      state;                    /* NIC_ST_* */
+    int      link;                     /* 1 = cable/link up (READY cards only) */
+    int      active;                   /* this is the interface the stack uses */
+} net_nic_info_t;
+int  net_nic_count(void);
+int  net_nic_info(int idx, net_nic_info_t* out);       /* 0 = ok */
+int  net_nic_use(int idx);                             /* switch the active interface (not configured yet) */
+int  net_set_static(uint32_t ip, uint32_t mask, uint32_t gw, uint32_t dns);
 int  net_ping(uint32_t ip, int timeout_ms);            /* rtt in ms, <0 = no reply */
 int  net_resolve(const char* host, uint32_t* ip);      /* 0 = ok; dotted quad or DNS */
 const char* net_tls_error(void);                       /* reason for the last NET_E_TLS */
@@ -54,63 +82,5 @@ int  net_http_save(const char* url, const char* path, uint32_t* len);
 #define NET_E_TLS     (-8)   /* handshake/certificate failure: see net_tls_error() */
 #define NET_E_TOOBIG  (-6)
 #define NET_E_URL     (-7)
-
-/* ---- Wi-Fi (kernel/wifi.c) ---- */
-#define WIFI_SEC_OPEN 0
-#define WIFI_SEC_WEP  1
-#define WIFI_SEC_WPA  2      /* WPA / WPA2 personal (PSK) */
-#define WIFI_SEC_WPA3 3      /* WPA3 personal (SAE), or WPA2/WPA3 mixed */
-#define WIFI_SEC_EAP  4      /* 802.1X enterprise */
-
-/* error codes shared by drivers and wifi_* calls (negative) */
-#define WIFI_E_NOADAPTER   (-1)
-#define WIFI_E_AUTH        (-2)   /* wrong passphrase / rejected */
-#define WIFI_E_BADPASS     (-3)   /* passphrase has an invalid length/format */
-#define WIFI_E_UNSUPPORTED (-4)   /* security type the driver can't do */
-#define WIFI_E_NOTFOUND    (-5)   /* SSID not in range */
-#define WIFI_E_TIMEOUT     (-6)
-#define WIFI_E_FAIL        (-7)
-
-typedef struct {
-    char     ssid[33];
-    int      signal;         /* 0..100 */
-    int      security;       /* WIFI_SEC_* */
-    int      channel;        /* 1-14 = 2.4 GHz, 32+ = 5 GHz */
-} wifi_net_t;
-
-/* One wifi_driver_t == one adapter. Drivers only need to fill what their
- * radio can do; scan results may contain duplicates / hidden (empty) SSIDs,
- * the framework tidies them. */
-typedef struct {
-    const char* name;
-    int (*scan)(wifi_net_t* out, int max);                 /* count or <0 */
-    int (*connect)(const char* ssid, const char* pass);    /* 0 or WIFI_E_* */
-    int (*disconnect)(void);
-    int (*status)(char* ssid_out, int cap);                /* 1 = associated */
-} wifi_driver_t;
-
-/* A Wi-Fi card found on the PCI bus (whether or not a driver exists for it) */
-typedef struct { uint16_t vendor, device; uint8_t bus, dev, fn; } wifi_hw_t;
-int  nic_wifi_scan(wifi_hw_t* out, int max);           /* kernel/nic.c: PCI class 02:80 */
-int  wifi_hw_list(char (*lines)[56], int max);         /* printable "Intel 8086:2723 at pci 02:00.0" */
-
-int  wifi_attach_hw(char* msg, int cap);                 /* start the OpenBSD driver on the detected card; 0 = ok */
-int  bsd_selftest_all(void);                          /* checks the OpenBSD compatibility layer; 0 = all passed */
-int  wifi_register(const wifi_driver_t* d);            /* kernel-side, up to 4 adapters */
-void wifi_init(void);                                  /* boot: autoconnect */
-
-int  wifi_adapter_count(void);
-int  wifi_adapter_info(int idx, char* name, int cap);  /* 1 = exists */
-int  wifi_select(int idx);                             /* choose the active adapter */
-int  wifi_selected(void);
-int  wifi_adapter_name(char* out, int cap);            /* active adapter; 1 = present */
-int  wifi_scan(wifi_net_t* out, int max);              /* sorted, de-duplicated, no hidden */
-int  wifi_connect(const char* ssid, const char* pass); /* "" = open; saves creds on success */
-int  wifi_disconnect(void);
-int  wifi_status(char* ssid_out, int cap);
-int  wifi_saved_pass(const char* ssid, char* pass, int cap);  /* 1 = known */
-int  wifi_saved_list(char (*ssids)[33], int max);
-int  wifi_forget(const char* ssid);
-const char* wifi_strerror(int rc);
 
 #endif
