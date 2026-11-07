@@ -59,3 +59,6 @@ linux_exit_restore:
     mov  esp, [kernel_esp_save]
     sti                         ; the int 0x80 gate cleared IF
     ret                         ; back into linux_run's caller frame
+
+; Non-allocating note so ld does not assume an executable stack.
+section .note.GNU-stack noalloc noexec nowrite progbits

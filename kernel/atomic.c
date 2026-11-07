@@ -28,16 +28,16 @@ static inline void irq_on(void)  { __asm__ __volatile__("sti" ::: "memory"); }
 void __atomic_store_##SZ(volatile void* p, T v, int model) { \
     (void)model; irq_off(); *(volatile T*)p = v; irq_on(); \
 } \
-T __atomic_load_##SZ(volatile void* p, int model) { \
-    T r; (void)model; irq_off(); r = *(volatile T*)p; irq_on(); return r; \
+T __atomic_load_##SZ(const volatile void* p, int model) { \
+    T r; (void)model; irq_off(); r = *(const volatile T*)p; irq_on(); return r; \
 } \
 T __atomic_exchange_##SZ(volatile void* p, T v, int model) { \
     T o; (void)model; irq_off(); o = *(volatile T*)p; *(volatile T*)p = v; irq_on(); return o; \
 } \
-int __atomic_compare_exchange_##SZ(volatile void* p, void* expected, \
-                                   T desired, int weak, \
-                                   int success, int failure) { \
-    T cur; int ok; (void)weak; (void)success; (void)failure; \
+_Bool __atomic_compare_exchange_##SZ(volatile void* p, void* expected, \
+                                     T desired, _Bool weak, \
+                                     int success, int failure) { \
+    T cur; _Bool ok; (void)weak; (void)success; (void)failure; \
     irq_off(); \
     cur = *(volatile T*)p; \
     if (cur == *(T*)expected) { *(volatile T*)p = desired; ok = 1; } \
@@ -106,7 +106,7 @@ void atomic_flag_clear_explicit(void* object, int model) {
 
 /* All supported widths (1/2/4/8, see parse_atomic's size check) are
  * always lock-free here. */
-int __atomic_is_lock_free(size_t size, void* ptr) {
+_Bool __atomic_is_lock_free(size_t size, const volatile void* ptr) {
     (void)ptr;
     return size == 1 || size == 2 || size == 4 || size == 8;
 }

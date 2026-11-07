@@ -70,3 +70,6 @@ exception_common:
     popa
     add esp, 4              ; pop the pushed vector
     iret
+
+; Non-allocating note so ld does not assume an executable stack.
+section .note.GNU-stack noalloc noexec nowrite progbits

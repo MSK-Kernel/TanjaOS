@@ -36,3 +36,6 @@ longjmp:
         mov     esp, [eax+16]         ; switch stack last
         mov     eax, ecx               ; setjmp returns val
         jmp     edx
+
+; Non-allocating note so ld does not assume an executable stack.
+section .note.GNU-stack noalloc noexec nowrite progbits

@@ -1,17 +1,9 @@
 CC=gcc
 LD=ld
+OBJCOPY=objcopy
 ASM=nasm
 
-# LIVECD=1 builds an image that never persists: it always boots and runs from
-# the embedded archive in RAM and never writes to any disk it can see. Use it
-# for the stick/CD you hand out or dd to a USB stick; use a plain build for an
-# installed system.
-LIVECD ?= 0
-ifeq ($(LIVECD),1)
-LIVECD_DEFS = -DTANJA_LIVECD=1
-endif
-
-CFLAGS=-ffreestanding -m32 -c -fno-stack-protector -fno-builtin -fno-pic -fno-pie $(LIVECD_DEFS) -I.
+CFLAGS=-ffreestanding -m32 -c -fno-stack-protector -fno-builtin -fno-pic -fno-pie -I.
 LDFLAGS=-m elf_i386 -T linker/linker.ld -nostdlib
 
 KERNEL_OBJ = kernel/kernel.o kernel/game.o kernel/ata.o kernel/ahci.o kernel/store.o kernel/idt.o kernel/elf.o kernel/atomic.o kernel/libc.o kernel/libc2.o kernel/exec.o kernel/setjmp_asm.o kernel/linux.o kernel/nic.o kernel/net.o kernel/tls.o arch/x86/linux_asm.o
@@ -80,6 +72,10 @@ home.tar: Makefile $(shell find home -type f -o -type d 2>/dev/null | grep -v '^
 home_tar.o: home.tar
 	@echo "[OBJ] Embedding home/"
 	$(LD) -r -b binary -m elf_i386 -o $@ $<
+	@# -b binary objects have no .note.GNU-stack, which makes ld warn
+	@# about an executable stack at the final link: stamp the note in.
+	$(OBJCOPY) --add-section .note.GNU-stack=/dev/null \
+	           --set-section-flags .note.GNU-stack=contents,readonly $@
 
 kernel/%.o: kernel/%.c $(HDRS)
 	@echo "[CC] kernel/$(notdir $<)"

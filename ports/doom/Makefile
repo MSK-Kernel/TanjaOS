@@ -1,3 +1,4 @@
+OBJCOPY=objcopy
 # ports/doom/Makefile - build Doom (doomgeneric) as a TanjaOS ELF32 program.
 #
 # Built by the top-level default 'make' target; 'make clean' removes build outputs.
@@ -55,6 +56,8 @@ build/doom_elf.o: build/doom.elf
 
 build/doom_wad.o: build/doom.wad
 	cd build && $(LD) -r -b binary -m elf_i386 -o doom_wad.o doom.wad
+	$(OBJCOPY) --add-section .note.GNU-stack=/dev/null \
+	           --set-section-flags .note.GNU-stack=contents,readonly build/doom_wad.o
 
 # Combine the real relocatable program sections and IWAD into one ET_REL
 # applet. Do not wrap the engine object in a binary blob: elf_run needs main.

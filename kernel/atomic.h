@@ -16,10 +16,10 @@
 #include <stddef.h>
 
 #define TANJA_ATOMIC_LOADS(X) \
-    X(__atomic_load_1,  uint8_t,  (volatile void*, int)) \
-    X(__atomic_load_2,  uint16_t, (volatile void*, int)) \
-    X(__atomic_load_4,  uint32_t, (volatile void*, int)) \
-    X(__atomic_load_8,  uint64_t, (volatile void*, int))
+    X(__atomic_load_1,  uint8_t,  (const volatile void*, int)) \
+    X(__atomic_load_2,  uint16_t, (const volatile void*, int)) \
+    X(__atomic_load_4,  uint32_t, (const volatile void*, int)) \
+    X(__atomic_load_8,  uint64_t, (const volatile void*, int))
 
 #define TANJA_ATOMIC_STORES(X) \
     X(__atomic_store_1, void, (volatile void*, uint8_t,  int)) \
@@ -33,11 +33,15 @@
     X(__atomic_exchange_4, uint32_t, (volatile void*, uint32_t, int)) \
     X(__atomic_exchange_8, uint64_t, (volatile void*, uint64_t, int))
 
+/* Signatures below mirror gcc's own builtin declarations exactly - _Bool
+ * result, _Bool weak, two memory orders - so -Wbuiltin-declaration-mismatch
+ * stays quiet. The ABI is unchanged: _Bool comes back in al/eax as 0 or 1,
+ * which is what the implementations already returned. */
 #define TANJA_ATOMIC_CMPXCHGS(X) \
-    X(__atomic_compare_exchange_1, int, (volatile void*, void*, uint8_t,  int, int, int)) \
-    X(__atomic_compare_exchange_2, int, (volatile void*, void*, uint16_t, int, int, int)) \
-    X(__atomic_compare_exchange_4, int, (volatile void*, void*, uint32_t, int, int, int)) \
-    X(__atomic_compare_exchange_8, int, (volatile void*, void*, uint64_t, int, int, int))
+    X(__atomic_compare_exchange_1, _Bool, (volatile void*, void*, uint8_t,  _Bool, int, int)) \
+    X(__atomic_compare_exchange_2, _Bool, (volatile void*, void*, uint16_t, _Bool, int, int)) \
+    X(__atomic_compare_exchange_4, _Bool, (volatile void*, void*, uint32_t, _Bool, int, int)) \
+    X(__atomic_compare_exchange_8, _Bool, (volatile void*, void*, uint64_t, _Bool, int, int))
 
 /* fetch_X returns the OLD value, X_fetch returns the NEW value */
 #define TANJA_ATOMIC_RMWS(X) \
@@ -101,7 +105,7 @@
     X(atomic_flag_test_and_set_explicit, int,  (void*, int)) \
     X(atomic_flag_clear,                 void, (void*)) \
     X(atomic_flag_clear_explicit,        void, (void*, int)) \
-    X(__atomic_is_lock_free,             int,  (size_t, void*))
+    X(__atomic_is_lock_free,             _Bool, (size_t, const volatile void*))
 
 #define TANJA_ATOMIC_ALL(X) \
     TANJA_ATOMIC_LOADS(X) \
