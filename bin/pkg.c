@@ -57,7 +57,7 @@ static int get_repo(char* out, int cap) {
     return 1;
 }
 
-static void no_perm(void) { print("pkg: permission denied (are you root? try: sudo pkg ...)\n"); }
+static void no_perm(void) { print("pkg: Permission denied; are you root?\n"); }
 
 static void do_install(const char* name) {
     char repo[200], url[300], marker[96], bin[96];
@@ -73,7 +73,7 @@ static void do_install(const char* name) {
         return;
     }
     if (!net_get_info(&ni) || !ni.configured) {
-        print("pkg: network not configured (try: ifconfig dhcp)\n");
+        print("pkg: network not configured, try: ifconfig dhcp\n");
         return;
     }
 
@@ -133,7 +133,7 @@ static void do_remove(const char* name) {
     mkpath(marker, "/var/pkg/", name, "");
     if (!fs_file_exists(bin)) { printf("pkg: '%s' is not installed\n", name); return; }
     if (!fs_file_exists(marker)) {
-        printf("pkg: '%s' was not installed by pkg, refusing to delete a system command (use rm if you mean it)\n", name);
+        printf("pkg: '%s' was not installed by pkg\n", name);
         return;
     }
     if (fs_delete_file(bin) != 0) {
@@ -149,7 +149,7 @@ void main(char* args) {
 
     /* Package installation/removal changes system-wide /usr/bin and /var/pkg. */
     if (fs_cur_uid != 0) {
-        print("pkg: permission denied; use sudo pkg install <name> or sudo pkg remove <name>\n");
+        print("pkg: Permission denied, are you root?\n");
         return;
     }
     int i = 0, j = 0;

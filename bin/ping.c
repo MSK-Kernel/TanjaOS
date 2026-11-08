@@ -15,7 +15,7 @@ void main(char* args) {
     while (*args == ' ') args++;
     if (!*args) { print("usage: ping <host or ip>\n"); return; }
     if (!net_get_info(&ni) || !ni.configured) {
-        print("ping: network not configured (try: ifconfig dhcp)\n");
+        print("ping: network not configured, try: ifconfig dhcp\n");
         return;
     }
     if (net_resolve(args, &ip) != 0) {

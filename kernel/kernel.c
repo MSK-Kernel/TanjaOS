@@ -874,6 +874,10 @@ static char input_line[INPUT_BUFFER_SIZE];
 
 int read_line_eof = 0;
 
+/* password masking: while set, read_line echoes one '*' per character
+ * typed (and edited) instead of the real text */
+static int rl_mask = 0;
+
 void read_line(char* buffer, int max_len) {
     char* line = input_line;
     int pos = 0;
@@ -927,7 +931,7 @@ void read_line(char* buffer, int max_len) {
                         prompt_start -= VGA_WIDTH;
                         cursor = prompt_start + i;
                     }
-                    VGA[cursor] = VGA_COLOR | line[i];
+                    VGA[cursor] = VGA_COLOR | (rl_mask ? '*' : line[i]);
                     cursor++;
                 }
 
@@ -993,7 +997,7 @@ void read_line(char* buffer, int max_len) {
                         prompt_start -= VGA_WIDTH;
                         cursor = prompt_start + i;
                     }
-                    VGA[cursor] = VGA_COLOR | line[i];
+                    VGA[cursor] = VGA_COLOR | (rl_mask ? '*' : line[i]);
                     cursor++;
                 }
 
@@ -1026,6 +1030,14 @@ void read_line(char* buffer, int max_len) {
         buffer[copy_len] = 4;
         buffer[copy_len + 1] = 0;
     }
+}
+
+/* like read_line, but every typed character echoes as '*' - used for
+ * every password prompt (login, sudo, su, passwd, setup wizard) */
+void read_line_secret(char* buffer, int max_len) {
+    rl_mask = 1;
+    read_line(buffer, max_len);
+    rl_mask = 0;
 }
 
 int read_int(void) {
@@ -1759,9 +1771,9 @@ void setup_wizard() {
  * where the legacy config had no root password yet. */
     while (1) {
         char pw1[MAX_PASSWORD], pw2[MAX_PASSWORD];
-        print("Set a root password: "); read_line(pw1, MAX_PASSWORD);
+        print("Set a root password: "); read_line_secret(pw1, MAX_PASSWORD);
         if (!pw1[0]) { print("Password cannot be empty\n"); continue; }
-        print("Confirm root password: "); read_line(pw2, MAX_PASSWORD);
+        print("Confirm root password: "); read_line_secret(pw2, MAX_PASSWORD);
         if (!streq(pw1, pw2)) { print("Passwords do not match\n"); continue; }
         strncpy(users[0].password, pw1, MAX_PASSWORD);
         break;
@@ -1798,9 +1810,9 @@ void setup_wizard() {
  * for this login, not the name */
                 while (1) {
                     char pass[MAX_PASSWORD], conf[MAX_PASSWORD];
-                    print("Create a password: "); read_line(pass, MAX_PASSWORD);
+                    print("Create a password: "); read_line_secret(pass, MAX_PASSWORD);
                     if (!pass[0]) { print("Password cannot be empty\n"); continue; }
-                    print("Confirm password: "); read_line(conf, MAX_PASSWORD);
+                    print("Confirm password: "); read_line_secret(conf, MAX_PASSWORD);
                     if (!streq(pass, conf)) { print("Passwords do not match\n"); continue; }
                     int r = user_add(name, pass);
                     if (r == -2) print("user table full\n");
@@ -1821,9 +1833,9 @@ static void prompt_root_password(void) {
     print("\nThis system has no root password yet.\n");
     while (1) {
         char pw1[MAX_PASSWORD], pw2[MAX_PASSWORD];
-        print("Set a root password: "); read_line(pw1, MAX_PASSWORD);
+        print("Set a root password: "); read_line_secret(pw1, MAX_PASSWORD);
         if (!pw1[0]) { print("Password cannot be empty\n"); continue; }
-        print("Confirm root password: "); read_line(pw2, MAX_PASSWORD);
+        print("Confirm root password: "); read_line_secret(pw2, MAX_PASSWORD);
         if (!streq(pw1, pw2)) { print("Passwords do not match\n"); continue; }
         strncpy(users[0].password, pw1, MAX_PASSWORD);
         break;
@@ -1860,7 +1872,7 @@ void login_prompt() {
             set_session_user(idx);
             return;
         }
-        print("Password: "); read_line(p, MAX_PASSWORD);
+        print("Password: "); read_line_secret(p, MAX_PASSWORD);
         if (idx >= 0 && streq(p, users[idx].password)) {
             set_session_user(idx);
             return;
@@ -1937,7 +1949,7 @@ void cmd_sudo(char* args) {
         print("[sudo] password for ");
         print(cur_username);
         print(": ");
-        read_line(pw, MAX_PASSWORD);
+        read_line_secret(pw, MAX_PASSWORD);
         if (pw[0] == 0) { print("sudo: no password was provided\n"); return; }
         if (users[self].password[0] && streq(pw, users[self].password)) {
             int saved_uid = fs_cur_uid;
@@ -1972,7 +1984,7 @@ void cmd_useradd(char* args) {
     if (user_find(name) >= 0) { print("useradd: user '"); print(name); print("' already exists\n"); return; }
     char pw[MAX_PASSWORD];
     if (!pass) {
-        print("New password: "); read_line(pw, MAX_PASSWORD);
+        print("New password: "); read_line_secret(pw, MAX_PASSWORD);
         if (!pw[0]) { print("Password cannot be empty\n"); return; }
         pass = pw;
     }
@@ -2190,7 +2202,7 @@ void cmd_su(char* args) {
  * needs no prompt, mirroring the login screen */
     if (fs_cur_uid != 0 && users[idx].password[0]) {
         char pw[MAX_PASSWORD];
-        print("Password: "); read_line(pw, MAX_PASSWORD);
+        print("Password: "); read_line_secret(pw, MAX_PASSWORD);
         if (!streq(pw, users[idx].password)) {
             print("su: Authentication failure\n");
             return;
@@ -2297,7 +2309,7 @@ void cmd_passwd(char* args) {
     /* current password, unless root or the account has none */
     if (cur_uid != 0 && users[idx].password[0]) {
         char cur_pw[MAX_PASSWORD];
-        print("Current password: "); read_line(cur_pw, MAX_PASSWORD);
+        print("Current password: "); read_line_secret(cur_pw, MAX_PASSWORD);
         if (!streq(cur_pw, users[idx].password)) {
             print("passwd: Authentication token manipulation error\n");
             print("passwd: password unchanged\n");
@@ -2308,7 +2320,7 @@ void cmd_passwd(char* args) {
         char pw1[MAX_PASSWORD], pw2[MAX_PASSWORD];
         int attempt, j;
         for (attempt = 0; attempt < 2; attempt++) {
-            print("New password: "); read_line(pw1, MAX_PASSWORD);
+            print("New password: "); read_line_secret(pw1, MAX_PASSWORD);
             for (j = 0; j < MAX_PASSWORD; j++) users[idx].password[j] = 0;
             if (!pw1[0]) {
                 /* blank: erase the password (passwordless login) */
@@ -2316,7 +2328,7 @@ void cmd_passwd(char* args) {
                 store_save();
                 return;
             }
-            print("Retype new password: "); read_line(pw2, MAX_PASSWORD);
+            print("Retype new password: "); read_line_secret(pw2, MAX_PASSWORD);
             if (streq(pw1, pw2)) {
                 for (j = 0; pw1[j] && j < MAX_PASSWORD - 1; j++)
                     users[idx].password[j] = pw1[j];

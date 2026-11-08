@@ -34,6 +34,7 @@ extern void sync_cursor(void);
 extern int get_key(void);          /* blocks; returns ASCII or a KEY_* code */
 extern int key_available(void);
 extern void read_line(char* buf, int max_len);
+extern void read_line_secret(char* buf, int max_len); /* echoes '*' per char */
 
 /* Extended key codes returned by get_key() - must match kernel.c */
 #define KEY_UP        0x80

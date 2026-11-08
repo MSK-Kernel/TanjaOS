@@ -26,6 +26,7 @@ extern void sync_cursor(void);
 extern int get_key(void);
 extern int key_available(void);
 extern void read_line(char* buf, int max_len);
+extern void read_line_secret(char* buf, int max_len);
 extern int strlen(const char* s);
 extern int strcmp(const char* a, const char* b);
 extern int strncmp(const char* a, const char* b, unsigned int n);
@@ -169,6 +170,7 @@ static const struct tanja_export tanja_exports[] = {
     { "get_key", (void*)get_key },
     { "key_available", (void*)key_available },
     { "read_line", (void*)read_line },
+    { "read_line_secret", (void*)read_line_secret },
     { "strlen", (void*)strlen },
     { "strcmp", (void*)strcmp },
     { "strncmp", (void*)strncmp },
