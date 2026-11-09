@@ -496,6 +496,10 @@ void print(const char* s);
 extern int tanja_exit_jmp[5];
 extern int tanja_exit_active;
 int kb_raw_mode;
+/* Linux programs that bring their own line editor (busybox ash, vim...)
+ * switch the terminal to no-echo via TCSETS. While that is set the
+ * console must not echo too, or every typed line appears twice. */
+int read_line_echo = 1;
 
 void timer_handler()
 {
@@ -552,8 +556,138 @@ static void serial_put(char c) {
     outb(0x3F8, (uint8_t)c);
 }
 
+
+/* ---- minimal ANSI/CSI interpreter ----------------------------------
+ * Real programs speak in escape sequences: busybox ash redraws its input
+ * line with ESC[J / ESC[K and cursor moves, `ls --color` emits SGR. The
+ * console used to draw those bytes literally, which is where the "[J"
+ * and "[1;34m" noise came from. We honour cursor motion, erase-in-line,
+ * erase-in-screen and SGR colours, and swallow everything else. */
+static int ansi_state;          /* 0 text, 1 after ESC, 2 inside CSI   */
+static int ansi_p[8];           /* numeric parameters                  */
+static int ansi_np;             /* how many parameters                 */
+static int ansi_digit;          /* a parameter is being accumulated    */
+static int ansi_fg = 0x0F, ansi_bg = 0x00, ansi_bold;
+static int ansi_color_on;       /* SGR has changed the colour          */
+
+void console_ansi_reset(void) {
+    ansi_state = 0; ansi_np = 0; ansi_digit = 0;
+    ansi_fg = 0x0F; ansi_bg = 0x00; ansi_bold = 0; ansi_color_on = 0;
+}
+
+static uint16_t ansi_attr(void) {
+    int fg = ansi_fg & 0x0F;
+    if (ansi_bold) fg |= 0x08;
+    return (uint16_t)(((ansi_bg & 0x0F) << 4 | fg) << 8);
+}
+
+static void ansi_erase(int from, int to) {
+    if (from < 0) from = 0;
+    if (to > VGA_WIDTH * VGA_HEIGHT) to = VGA_WIDTH * VGA_HEIGHT;
+    for (int i = from; i < to; i++) VGA[i] = VGA_COLOR | ' ';
+}
+
+static void ansi_sgr(void) {
+    int i, n = ansi_np;
+    if (!n) { ansi_color_on = 0; return; }
+    for (i = 0; i < n; i++) {
+        int v = ansi_p[i];
+        if (v == 0)      { ansi_fg = 0x0F; ansi_bg = 0; ansi_bold = 0; ansi_color_on = 0; }
+        else if (v == 1) { ansi_bold = 1; ansi_color_on = 1; }
+        else if (v == 22) ansi_bold = 0;
+        else if (v >= 30 && v <= 37) { ansi_fg = v - 30; ansi_color_on = 1; }
+        else if (v >= 90 && v <= 97) { ansi_fg = v - 90 + 8; ansi_color_on = 1; }
+        else if (v == 39) ansi_fg = 0x0F;
+        else if (v >= 40 && v <= 47) { ansi_bg = v - 40; ansi_color_on = 1; }
+        else if (v == 49) ansi_bg = 0;
+    }
+}
+
+static void ansi_csi(char final) {
+    int n0 = ansi_p[0] ? ansi_p[0] : 1;
+    int n1 = ansi_p[1] ? ansi_p[1] : 1;
+    int row, col;
+
+    switch (final) {
+    case 'A': cursor -= n0 * VGA_WIDTH; if (cursor < 0) cursor = 0; break;
+    case 'B': cursor += n0 * VGA_WIDTH;
+              if (cursor >= VGA_WIDTH * VGA_HEIGHT) cursor = VGA_WIDTH * VGA_HEIGHT - 1;
+              break;
+    case 'C': col = cursor % VGA_WIDTH + n0; if (col > VGA_WIDTH - 1) col = VGA_WIDTH - 1;
+              cursor = cursor - cursor % VGA_WIDTH + col; break;
+    case 'D': col = cursor % VGA_WIDTH - n0; if (col < 0) col = 0;
+              cursor = cursor - cursor % VGA_WIDTH + col; break;
+    case 'E': cursor = cursor - cursor % VGA_WIDTH + n0 * VGA_WIDTH; break;
+    case 'F': cursor = cursor - cursor % VGA_WIDTH - n0 * VGA_WIDTH;
+              if (cursor < 0) cursor = 0; break;
+    case 'G': col = n0 - 1; if (col < 0) col = 0; if (col > VGA_WIDTH - 1) col = VGA_WIDTH - 1;
+              cursor = cursor - cursor % VGA_WIDTH + col; break;
+    case 'H': case 'f':
+        row = n0 - 1; col = n1 - 1;
+        if (row < 0) row = 0; if (row > VGA_HEIGHT - 1) row = VGA_HEIGHT - 1;
+        if (col < 0) col = 0; if (col > VGA_WIDTH - 1) col = VGA_WIDTH - 1;
+        cursor = row * VGA_WIDTH + col;
+        break;
+    case 'J':
+        if (ansi_p[0] == 2) ansi_erase(0, VGA_WIDTH * VGA_HEIGHT);
+        else if (ansi_p[0] == 1) ansi_erase(0, cursor + 1);
+        else ansi_erase(cursor, VGA_WIDTH * VGA_HEIGHT);
+        break;
+    case 'K':
+        if (ansi_p[0] == 2) ansi_erase(cursor - cursor % VGA_WIDTH,
+                                       cursor - cursor % VGA_WIDTH + VGA_WIDTH);
+        else if (ansi_p[0] == 1) ansi_erase(cursor - cursor % VGA_WIDTH, cursor + 1);
+        else ansi_erase(cursor, cursor - cursor % VGA_WIDTH + VGA_WIDTH);
+        break;
+    case 'm': ansi_sgr(); break;
+    default: break;                     /* h/l/H-mode and the rest: ignore */
+    }
+    ansi_np = 0; ansi_digit = 0;
+}
+
+/* returns 1 if the byte was consumed as part of an escape sequence */
+static int ansi_feed(char c) {
+    if (ansi_state == 0) {
+        if (c == 27) { ansi_state = 1; return 1; }
+        return 0;
+    }
+    if (ansi_state == 1) {
+        if (c == '[') { ansi_state = 2; ansi_np = 0; ansi_digit = 0;
+                        ansi_p[0] = ansi_p[1] = ansi_p[2] = ansi_p[3] = 0; return 1; }
+        if (c == ']') { ansi_state = 3; return 1; }     /* OSC: skip to BEL */
+        ansi_state = 0;
+        return 1;
+    }
+    if (ansi_state == 3) {                              /* inside OSC */
+        if (c == 7 || c == 27) ansi_state = 0;
+        return 1;
+    }
+    /* CSI: parameters, then a final byte in 0x40..0x7E */
+    if (c >= '0' && c <= '9') {
+        if (ansi_np < 8) {
+            ansi_p[ansi_np] = ansi_p[ansi_np] * 10 + (c - '0');
+            ansi_digit = 1;
+        }
+        return 1;
+    }
+    if (c == ';') { if (ansi_np < 7) ansi_np++; ansi_digit = 0; return 1; }
+    if (c == '?' || c == '>' || c == '=' || c == '!') return 1;  /* private */
+    if (c >= 0x40 && c <= 0x7E) {
+        if (ansi_digit || ansi_np) ansi_np++;
+        ansi_state = 0;
+        ansi_csi(c);
+        return 1;
+    }
+    ansi_state = 0;                       /* malformed: drop it */
+    return 1;
+}
+
 static void putc_draw(char c, uint16_t color) {
     serial_put(c);
+    if (ansi_feed(c))
+        return;                       /* escape sequence, not text */
+    if (ansi_color_on)
+        color = ansi_attr();
     if (c == '\n') {
         cursor = ((cursor / VGA_WIDTH) + 1) * VGA_WIDTH;
     } else if (c == '\b') {
@@ -923,6 +1057,8 @@ void read_line(char* buffer, int max_len) {
 
                 line[len] = 0;
 
+                if (!read_line_echo) continue;   /* program echoes */
+
                 cursor = prompt_start;
 
                 for (int i = 0; i < len; i++) {
@@ -988,6 +1124,7 @@ void read_line(char* buffer, int max_len) {
 
                 line[len] = 0;
 
+                if (!read_line_echo) continue;   /* program echoes */
 
                 cursor = prompt_start;
 

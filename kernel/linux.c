@@ -4,6 +4,7 @@
 
 extern void print(const char* s);
 extern void print_dec(uint32_t n);
+extern void print_hex(uint32_t n);
 extern void console_putc(char c);
 extern void* memcpy(void* dst, const void* src, size_t n);
 extern void* memset(void* dst, int c, size_t n);
@@ -12,6 +13,15 @@ extern const char* get_env(const char* name);
 extern void read_line(char* buffer, int max_len);
 extern int read_line_eof;
 extern int kb_raw_mode;
+extern int read_line_echo;
+extern void console_ansi_reset(void);
+extern int get_key(void);
+#define LX_KEY_UP 0x80
+#define LX_KEY_DOWN 0x81
+#define LX_KEY_LEFT 0x82
+#define LX_KEY_RIGHT 0x83
+extern const char* tanja_current_user(void);
+extern void tanja_get_home(char* out, int cap);
 extern int tanja_exit_jmp[5];
 extern int tanja_exit_active;
 
@@ -37,6 +47,8 @@ typedef struct {
 } Elf32_Phdr;
 
 #define PT_LOAD 1
+/* every static i386 binary links at the classic ET_EXEC base 0x08048000 */
+#define LX_EXEC_CLASSIC_BASE 0x08000000u
 
 /* Linux ABI constants */
 #define ENOSYS_L   38
@@ -143,6 +155,12 @@ void linux_set_layout(uint32_t kernel_end, uint32_t ram_top)
      * 40 MiB when the machine has the room. */
     if (win > (40u << 20)) win = (40u << 20);
     if (win < (4u << 20)) win = (avail > (1u << 20)) ? (avail / 2) : 0;
+    /* Keep the window below 0x08000000: every static i386 binary links at
+     * the classic ET_EXEC base 0x08048000, and a window that reached into
+     * that range would overlap (and be wiped by) any such program. */
+    if (lx_mmap_base + win > LX_EXEC_CLASSIC_BASE)
+        win = (LX_EXEC_CLASSIC_BASE > lx_mmap_base)
+                  ? (LX_EXEC_CLASSIC_BASE - lx_mmap_base) : 0;
     if (lx_mmap_base + win > lx_brk_limit)
         win = (lx_brk_limit > lx_mmap_base) ? (lx_brk_limit - lx_mmap_base) : 0;
     lx_mmap_limit = lx_mmap_base + win;
@@ -523,6 +541,94 @@ static uint32_t sys_close(uint32_t fd)
     return 0;
 }
 
+/* ---- poll / select ---------------------------------------------------
+ * busybox ash, less and anything driving a libc select() loop depend on
+ * these. There is no scheduler here to wait on, so readiness is derived
+ * from the fd table: the keyboard and regular files are always readable,
+ * outputs are always writable - which is exactly what such programs need
+ * (they poll, see "ready", then read, and read blocks for the next line).
+ * Without this they died with "sh: poll: Function not implemented". */
+
+#define POLLIN_L   0x0001
+#define POLLOUT_L  0x0004
+#define POLLERR_L  0x0008
+#define POLLHUP_L  0x0010
+#define POLLNVAL_L 0x0020
+
+/* is fd a descriptor this kernel can serve? 0..2 are the std fds. */
+static int lx_fd_valid(int fd)
+{
+    if (fd >= 0 && fd < 3) return 1;
+    if (fd >= 3 && fd < LINUX_MAX_FD && lfd[fd].used) return 1;
+    return 0;
+}
+
+/* struct pollfd { int fd; short events; short revents; } - 8 bytes */
+static uint32_t sys_poll(uint8_t* fds, uint32_t nfds, int32_t timeout_ms)
+{
+    uint32_t i, ready = 0;
+
+    (void)timeout_ms;                  /* nothing to wait for: answer now */
+    if (!fds && nfds) return (uint32_t)-EINVAL_L;
+    if (nfds > 256) nfds = 256;
+
+    for (i = 0; i < nfds; i++) {
+        uint8_t* e = fds + i * 8;
+        int32_t fd = *(int32_t*)e;
+        int16_t events = *(int16_t*)(e + 4);
+        int16_t revents = 0;
+
+        if (fd < 0) {                  /* ignored by poll(2) */
+            *(int16_t*)(e + 6) = 0;
+            continue;
+        }
+        if (!lx_fd_valid(fd)) {
+            revents = POLLNVAL_L;
+        } else {
+            if (events & POLLIN_L)  revents |= POLLIN_L;
+            if (events & POLLOUT_L) revents |= POLLOUT_L;
+            if (!events) revents |= POLLIN_L;   /* "anything" is fine */
+        }
+        *(int16_t*)(e + 6) = revents;
+        if (revents) ready++;
+    }
+    return ready;
+}
+
+/* select(nfds, readfds, writefds, exceptfds, timeout) / _newselect */
+static uint32_t sys_select(uint32_t nfds, uint32_t* rfdp, uint32_t* wfdp,
+                           uint32_t* efdp, uint8_t* tvp)
+{
+    uint32_t i, ready = 0, in_r = 0, in_w = 0;
+    uint32_t out_r = 0, out_w = 0, out_e = 0;
+
+    (void)tvp;                         /* never actually blocks */
+    if (rfdp) in_r = *rfdp;
+    if (wfdp) in_w = *wfdp;
+    if (nfds > 32) nfds = 32;
+
+    for (i = 0; i < nfds; i++) {
+        uint32_t bit = 1u << i;
+        int want_r = (in_r & bit) != 0, want_w = (in_w & bit) != 0, hit = 0;
+
+        if (!want_r && !want_w) continue;
+        if (!lx_fd_valid((int)i)) {
+            if (want_r) { out_r |= bit; hit = 1; }
+            if (want_w) { out_w |= bit; hit = 1; }
+            out_e |= bit;              /* POLLNVAL-ish: report an error */
+        } else {
+            if (want_r) { out_r |= bit; hit = 1; }
+            if (want_w) { out_w |= bit; hit = 1; }
+        }
+        if (hit) ready++;
+    }
+
+    if (rfdp) *rfdp = out_r;
+    if (wfdp) *wfdp = out_w;
+    if (efdp) *efdp = out_e;
+    return ready;
+}
+
 static uint32_t sys_read(uint32_t fd, uint8_t* buf, uint32_t count)
 {
     linux_fd_t* f;
@@ -531,6 +637,24 @@ static uint32_t sys_read(uint32_t fd, uint8_t* buf, uint32_t count)
     if (fd == 0 && !(lfd[0].used && lfd[0].path[0] && !lfd[0].is_dir)) {
         /* stdin: line-buffered keyboard, one tty line per refill */
         if (!buf || !count) return 0;
+        if (!read_line_echo) {
+            /* The program turned echo off (ICANON/ECHO clear): it runs its
+             * own line editor, so hand it one key per read like a tty in
+             * raw mode - that way busybox ash, vim and friends echo and
+             * edit while you type instead of printing the line afterwards. */
+            int k = get_key();
+            if (k == LX_KEY_UP || k == LX_KEY_DOWN ||
+                k == LX_KEY_LEFT || k == LX_KEY_RIGHT) {
+                if (count < 3) return 0;
+                buf[0] = 27; buf[1] = '[';
+                buf[2] = (k == LX_KEY_UP) ? 'A' : (k == LX_KEY_DOWN) ? 'B'
+                       : (k == LX_KEY_RIGHT) ? 'C' : 'D';
+                return 3;
+            }
+            if (k == 8 || k == 127 || k == 0x85) { buf[0] = 127; return 1; }
+            buf[0] = (uint8_t)k;
+            return 1;
+        }
         if (lx_stdin_pos >= lx_stdin_len) {
             int i = 0;
             read_line(lx_stdin_line, (int)sizeof lx_stdin_line - 1);
@@ -1294,21 +1418,77 @@ void linux_syscall(linux_regs_t* r)
     case 43: r->eax = sys_times((uint8_t*)a1); break;
     case 45: r->eax = sys_brk(a1); break;
     case 54:                                                 /* ioctl */
-        /* TCGETS on a console fd: report it as a tty so glibc's
- * isatty() returns 1 for fd 0/1/2; everything else ENOTTY */
-        if (a2 == 0x5401u && a1 <= 2) {
-            if (a3) memset((void*)a3, 0, 36);    /* struct termios */
+        /* Console fds 0/1/2 answer the tty ioctls a shell needs: a real
+         * termios (canonical + echo, so isatty() and line editing both
+         * behave), a window size, a foreground process group and the
+         * pending-input count. busybox ash checks exactly these. */
+        if (a1 > 2) { r->eax = (uint32_t)-ENOTTY_L; break; }
+        switch (a2) {
+        case 0x5401: {                                   /* TCGETS */
+            uint8_t* t = (uint8_t*)a3;
+            if (t) {
+                memset(t, 0, 36);                        /* struct termios */
+                *(uint32_t*)(t + 4)  = 0x00000001;       /* OPOST          */
+                *(uint32_t*)(t + 12) = 0x0000000B;       /* ICANON|ECHO|ISIG */
+                t[17 + 0] = 3;                           /* VINTR  ^C      */
+                t[17 + 2] = 127;                         /* VERASE DEL     */
+                t[17 + 4] = 4;                           /* VEOF   ^D      */
+                t[17 + 5] = 0;                           /* VTIME          */
+                t[17 + 6] = 1;                           /* VMIN           */
+            }
             r->eax = 0;
-        } else {
+            break;
+        }
+        case 0x5402: case 0x5403: case 0x5404: {         /* TCSETS/W/F */
+            /* Honour the ECHO bit: busybox ash (and any program with its
+             * own line editor) turns echo off, and then echoes itself -
+             * if the console echoed too, every line showed up twice. */
+            const uint8_t* t = (const uint8_t*)a3;
+            if (t) read_line_echo = (*(const uint32_t*)(t + 12) & 0x8) ? 1 : 0;
+            r->eax = 0;
+            break;
+        }
+        /* TIOCGPGRP/TIOCSPGRP deliberately stay ENOTTY: this kernel has
+         * no process groups, and a shell that believes it owns the
+         * foreground pgrp spins on kill(0, SIGTTIN) forever. Reporting
+         * "no job control" is the honest answer and busybox copes. */
+        case 0x5413:                                     /* TIOCGWINSZ */
+            if (a3) { *(uint16_t*)(a3) = 25; *(uint16_t*)(a3 + 2) = 80; }
+            r->eax = 0;
+            break;
+        case 0x541B:                                     /* FIONREAD */
+            if (a3) *(int32_t*)a3 = (int32_t)(lx_stdin_len - lx_stdin_pos);
+            r->eax = 0;
+            break;
+        default:
             r->eax = (uint32_t)-ENOTTY_L;
+            break;
         }
         break;
+    case 57: r->eax = 0; break;                    /* setpgid: single pgrp */
+    case 65: r->eax = 1; break;                    /* getpgrp */
     case 55: case 221: r->eax = 0; break;                   /* fcntl(64) */
     case 63: r->eax = sys_dup2(a1, a2); break;
     case 76: case 191: r->eax = sys_getrlimit((uint8_t*)a2); break;
     case 77: r->eax = sys_getrusage((uint8_t*)a2); break;
     case 78: r->eax = sys_gettimeofday((uint8_t*)a1); break;
     case 85: r->eax = sys_readlink((const char*)a1, (uint8_t*)a2, a3); break;
+    case 82:  case 142:                       /* select / _newselect */
+        r->eax = sys_select(a1, (uint32_t*)a2, (uint32_t*)a3,
+                            (uint32_t*)a4, (uint8_t*)a5);
+        break;
+    case 168:                                 /* poll */
+        r->eax = sys_poll((uint8_t*)a1, a2, (int32_t)a3);
+        break;
+    case 309: {                               /* ppoll(fds,n,ts,sigmask) */
+        int32_t ms = -1;
+        if (a3) {
+            int32_t* ts = (int32_t*)a3;
+            ms = ts[0] * 1000 + ts[1] / 1000000;
+        }
+        r->eax = sys_poll((uint8_t*)a1, a2, ms);
+        break;
+    }
     case 192: r->eax = sys_mmap(a1, a2, a4, (int32_t)a5, a6 << 12); break;
     case 90: {  /* old mmap: pointer to struct {addr,len,prot,flags,fd,off} */
         uint32_t* ms = (uint32_t*)a1;
@@ -1417,8 +1597,8 @@ void linux_syscall(linux_regs_t* r)
  * tolerate ENOSYS for all of these - staying QUIET avoids
  * misleading error spam on a successful run. */
     case 2:   case 7:   case 9:   case 11:  case 42:  case 67:  /* fork.. */
-    case 82:  case 114: case 117: case 120: case 126: case 141:
-    case 168: case 298: case 301: case 302: case 305:
+    case 114: case 117: case 120: case 126: case 141:
+    case 298: case 301: case 302: case 305:
     case 306: case 311: case 331: case 353: case 356:
     case 386: case 422: case 435: case 439:
         r->eax = (uint32_t)-ENOSYS_L;
@@ -1438,6 +1618,238 @@ void linux_syscall(linux_regs_t* r)
     lx_log_res[(lx_log_i - 1) % LX_LOG_N] = r->eax;
 }
 
+/* ---- ELF32 loader: conformance helpers -------------------------------
+ * The loader used to trust whatever the header claimed. These helpers
+ * validate an image the way a kernel has to: correct magic, class, byte
+ * order, machine and type, a program header table inside the file, every
+ * PT_LOAD inside the file and inside addressable RAM, and an entry point
+ * that really lands in executable code. A bad image now prints one clear
+ * line instead of corrupting memory or triple-faulting. */
+
+#define ELFCLASS32_L   1
+#define ELFDATA2LSB_L  1
+#define EM_386_L       3
+#define ET_EXEC_L      2
+#define ET_DYN_L       3
+#define PT_INTERP_L    3
+#define PF_X_L         1
+
+static const char* lx_elf_why = "malformed ELF image";
+
+static uint32_t lx_page_down(uint32_t v) { return v & ~4095u; }
+static uint32_t lx_page_up(uint32_t v)   { return (v + 4095u) & ~4095u; }
+
+/* header-level checks, shared by the executable and its interpreter */
+static int lx_elf_header(const uint8_t* e, uint32_t size, uint32_t* phoff_out,
+                         uint16_t* phnum_out, uint16_t* phentsize_out,
+                         uint16_t* type_out)
+{
+    uint32_t phoff;
+    uint16_t type, machine, phentsize, phnum;
+
+    if (size < 52) {                       /* sizeof(Elf32_Ehdr) */
+        lx_elf_why = "file is too small to hold an ELF32 header";
+        return -1;
+    }
+    if (!(e[0] == 0x7f && e[1] == 'E' && e[2] == 'L' && e[3] == 'F')) {
+        lx_elf_why = "not an ELF file";
+        return -1;
+    }
+    if (e[4] != ELFCLASS32_L) {
+        if (e[4] == 2)
+            lx_elf_why = "64-bit ELF image - only 32-bit i386 executables run here (rebuild with -m32)";
+        else
+            lx_elf_why = "unknown ELF class";
+        return -1;
+    }
+    if (e[5] != ELFDATA2LSB_L) {
+        lx_elf_why = "big-endian ELF image - only little-endian i386 is supported";
+        return -1;
+    }
+    if (e[6] != 1) {
+        lx_elf_why = "unsupported ELF identification version";
+        return -1;
+    }
+    if (*(uint32_t*)(e + 20) != 1) {
+        lx_elf_why = "unsupported ELF version";
+        return -1;
+    }
+
+    type    = *(uint16_t*)(e + 16);
+    machine = *(uint16_t*)(e + 18);
+    if (machine != EM_386_L) {
+        lx_elf_why = "wrong machine type - not an i386 executable";
+        return -1;
+    }
+    if (type == 1) {
+        lx_elf_why = "relocatable object file, not an executable";
+        return -1;
+    }
+    if (type != ET_EXEC_L && type != ET_DYN_L) {
+        lx_elf_why = "unsupported ELF type - only ET_EXEC and ET_DYN can run";
+        return -1;
+    }
+
+    phoff     = *(uint32_t*)(e + 28);
+    phentsize = *(uint16_t*)(e + 42);
+    phnum     = *(uint16_t*)(e + 44);
+    if (!phnum) {
+        lx_elf_why = "image has no program headers";
+        return -1;
+    }
+    if (phnum == 0xffff) {
+        lx_elf_why = "extended program header count (PN_XNUM) is not supported";
+        return -1;
+    }
+    if (phentsize < sizeof(Elf32_Phdr)) {
+        lx_elf_why = "program header entry is smaller than 32 bytes";
+        return -1;
+    }
+    if (phoff + (uint32_t)phnum * phentsize < phoff ||
+        phoff + (uint32_t)phnum * phentsize > size) {
+        lx_elf_why = "program header table runs past the end of the file";
+        return -1;
+    }
+
+    *phoff_out     = phoff;
+    *phnum_out     = phnum;
+    *phentsize_out = phentsize;
+    *type_out      = type;
+    return 0;
+}
+
+/* Map every PT_LOAD of `e` at `bias`, after zeroing the whole image span
+ * so a program always starts from clean RAM (Linux hands out zeroed
+ * pages; a previous run can leave bytes in the gaps between segments).
+ * Returns the image end address, 0 with lx_elf_why set on failure. */
+static uint32_t lx_elf_map(const uint8_t* e, uint32_t size, uint32_t bias,
+                           uint32_t floor, uint32_t limit, uint32_t* min_out)
+{
+    uint32_t phoff     = *(uint32_t*)(e + 28);
+    uint16_t phentsize = *(uint16_t*)(e + 42);
+    uint16_t phnum     = *(uint16_t*)(e + 44);
+    uint32_t min_start = 0xffffffffu, max_end = 0;
+    int i;
+
+    for (i = 0; i < (int)phnum; i++) {
+        const Elf32_Phdr* ph = (const Elf32_Phdr*)(e + phoff + i * phentsize);
+        uint32_t s, en;
+
+        if (ph->p_type != PT_LOAD) continue;
+
+        if (ph->p_memsz < ph->p_filesz) {
+            lx_elf_why = "segment is larger in the file than in memory";
+            return 0;
+        }
+        if (ph->p_filesz &&
+            (ph->p_offset > size ||
+             ph->p_offset + ph->p_filesz < ph->p_offset ||
+             ph->p_offset + ph->p_filesz > size)) {
+            lx_elf_why = "segment data runs past the end of the file";
+            return 0;
+        }
+        if (ph->p_vaddr + ph->p_memsz < ph->p_vaddr) {
+            lx_elf_why = "segment virtual address overflows";
+            return 0;
+        }
+        if (ph->p_align && (ph->p_align & (ph->p_align - 1))) {
+            lx_elf_why = "segment alignment is not a power of two";
+            return 0;
+        }
+        if (!ph->p_memsz) continue;
+
+        s  = bias + ph->p_vaddr;
+        en = s + ph->p_memsz;
+        if (en < s) {
+            lx_elf_why = "segment address overflows";
+            return 0;
+        }
+        if (s < (floor ? floor : 0x10000u)) {
+            lx_elf_why = "segment would load over the kernel/reserved area";
+            return 0;
+        }
+        if (en > limit) {
+            lx_elf_why = "image does not fit below the stack";
+            return 0;
+        }
+        if (s < min_start) min_start = s;
+        if (en > max_end)  max_end = en;
+    }
+    if (!max_end) {
+        lx_elf_why = "image has no loadable segments";
+        return 0;
+    }
+
+    /* fresh memory: zero the mapped window (bounded, so a wild header
+     * cannot make us memset gigabytes), or each segment body if huge */
+    if (lx_page_up(max_end) - lx_page_down(min_start) <= (32u << 20)) {
+        memset((void*)lx_page_down(min_start), 0,
+               lx_page_up(max_end) - lx_page_down(min_start));
+    } else {
+        for (i = 0; i < (int)phnum; i++) {
+            const Elf32_Phdr* ph =
+                (const Elf32_Phdr*)(e + phoff + i * phentsize);
+            if (ph->p_type != PT_LOAD || !ph->p_memsz) continue;
+            memset((void*)(bias + ph->p_vaddr), 0,
+                   lx_page_up(ph->p_vaddr + ph->p_memsz) - ph->p_vaddr);
+        }
+    }
+
+    for (i = 0; i < (int)phnum; i++) {
+        const Elf32_Phdr* ph = (const Elf32_Phdr*)(e + phoff + i * phentsize);
+        if (ph->p_type != PT_LOAD || !ph->p_memsz) continue;
+        if (ph->p_filesz)
+            memcpy((void*)(bias + ph->p_vaddr), e + ph->p_offset,
+                   ph->p_filesz);
+        /* .bss: p_memsz past p_filesz reads back as zero, like Linux */
+        if (ph->p_memsz > ph->p_filesz)
+            memset((void*)(bias + ph->p_vaddr + ph->p_filesz), 0,
+                   ph->p_memsz - ph->p_filesz);
+    }
+
+    *min_out = min_start;
+    return max_end;
+}
+
+/* does `entry` land inside an executable PT_LOAD? */
+static int lx_elf_entry_in_code(const uint8_t* e, uint32_t bias, uint32_t entry)
+{
+    uint32_t phoff     = *(uint32_t*)(e + 28);
+    uint16_t phentsize = *(uint16_t*)(e + 42);
+    uint16_t phnum     = *(uint16_t*)(e + 44);
+    int i;
+
+    for (i = 0; i < (int)phnum; i++) {
+        const Elf32_Phdr* ph = (const Elf32_Phdr*)(e + phoff + i * phentsize);
+        if (ph->p_type != PT_LOAD || !(ph->p_flags & PF_X_L)) continue;
+        if (entry >= bias + ph->p_vaddr &&
+            entry <  bias + ph->p_vaddr + ph->p_memsz)
+            return 1;
+    }
+    return 0;
+}
+
+/* AT_PHDR: address of the program headers as mapped into memory, found
+ * by locating the PT_LOAD that carries e_phoff (works for images whose
+ * first segment does not start at file offset 0). 0 = not mappable. */
+static uint32_t lx_elf_phdr_addr(const uint8_t* e, uint32_t bias)
+{
+    uint32_t phoff     = *(uint32_t*)(e + 28);
+    uint32_t phbytes   = (uint32_t)*(uint16_t*)(e + 44) * *(uint16_t*)(e + 42);
+    uint16_t phentsize = *(uint16_t*)(e + 42);
+    uint16_t phnum     = *(uint16_t*)(e + 44);
+    int i;
+
+    for (i = 0; i < (int)phnum; i++) {
+        const Elf32_Phdr* ph = (const Elf32_Phdr*)(e + phoff + i * phentsize);
+        if (ph->p_type != PT_LOAD) continue;
+        if (phoff >= ph->p_offset &&
+            phoff + phbytes <= ph->p_offset + ph->p_filesz)
+            return bias + ph->p_vaddr + (phoff - ph->p_offset);
+    }
+    return 0;
+}
+
 /* linux_run - load a static ET_EXEC i386 image and run it
  */
 
@@ -1445,77 +1857,90 @@ int linux_run(const uint8_t* image, uint32_t size, const char* path,
               const char* args)
 {
     const uint8_t* e = image;
-    uint32_t entry, phoff, phentsize, phnum, max_end = 0;
-    uint32_t hdr_vaddr = 0;      /* vaddr the ELF header itself maps to */
-    uint16_t e_type;
+    uint32_t entry, phoff, max_end = 0, min_start = 0;
+    uint32_t phdr_addr = 0;
+    uint16_t e_type, phentsize, phnum;
     uint32_t load_bias = 0;
-    uint32_t interp_off = 0;     /* file offset of the PT_INTERP string */
     const char* interp_path = 0;
-    uint32_t ld_base = 0;        /* nonzero once the interpreter is loaded */
+    uint32_t ld_base = 0;
     int i;
 
-    if (size < 52) return -1;
-    e_type     = *(uint16_t*)(e + 16);
-    entry      = *(uint32_t*)(e + 24);
-    phoff      = *(uint32_t*)(e + 28);
-    phentsize  = *(uint16_t*)(e + 42);
-    phnum      = *(uint16_t*)(e + 44);
-    if (phentsize < sizeof(Elf32_Phdr) || !phnum) return -1;
-    if (phoff + phnum * phentsize > size) return -1;
+    /* Validate the header before trusting a single field in it. */
+    if (lx_elf_header(e, size, &phoff, &phnum, &phentsize, &e_type) != 0) {
+        print("elf: ");
+        print(lx_elf_why);
+        print("\n");
+        return -1;
+    }
+    entry = *(uint32_t*)(e + 24);
 
-    /* ET_DYN executables (PIE) carry relative addresses; they get a
- * fixed load bias so their absolute code lives below the static
- * ET_EXEC area. Everything else is mapped verbatim as before. */
-    if (e_type == 3 /* ET_DYN */)
+    /* ET_DYN (PIE) images carry relative addresses: they get a fixed
+     * load bias above the mmap window. ET_EXEC images load verbatim. */
+    if (e_type == ET_DYN_L)
         load_bias = lx_exe_base;
 
-    /* find PT_INTERP (a dynamic executable names its interpreter) */
+    /* PT_INTERP: a dynamic executable names its interpreter (ld.so). */
     for (i = 0; i < (int)phnum; i++) {
         const Elf32_Phdr* ph = (const Elf32_Phdr*)(e + phoff + i * phentsize);
-        if (ph->p_type == 3 /* PT_INTERP */ && ph->p_filesz > 1 &&
-            ph->p_offset + ph->p_filesz <= size) {
-            interp_off = ph->p_offset;
-            interp_path = (const char*)(e + ph->p_offset);
+        const char* s;
+        uint32_t k;
+
+        if (ph->p_type != PT_INTERP_L) continue;
+        if (ph->p_filesz < 2 || ph->p_offset > size ||
+            ph->p_offset + ph->p_filesz < ph->p_offset ||
+            ph->p_offset + ph->p_filesz > size) {
+            print("elf: broken PT_INTERP (interpreter path)\n");
+            return -1;
         }
+        s = (const char*)(e + ph->p_offset);
+        for (k = 0; k < ph->p_filesz; k++)
+            if (!s[k]) break;
+        if (k == ph->p_filesz) {
+            print("elf: interpreter path is not NUL-terminated\n");
+            return -1;
+        }
+        if (s[0] != '/') {
+            print("elf: interpreter path must be absolute\n");
+            return -1;
+        }
+        interp_path = s;
+        break;
     }
 
-    /* copy PT_LOAD segments to their virtual addresses */
-    for (i = 0; i < (int)phnum; i++) {
-        const Elf32_Phdr* ph = (const Elf32_Phdr*)(e + phoff + i * phentsize);
-        if (ph->p_type != PT_LOAD) continue;
-        if (ph->p_vaddr + ph->p_memsz < ph->p_vaddr) return -1;
-        if (ph->p_offset + ph->p_filesz > size) return -1;
-        memcpy((void*)(load_bias + ph->p_vaddr), e + ph->p_offset,
-               ph->p_filesz);
-        if (ph->p_memsz > ph->p_filesz)
-            memset((void*)(load_bias + ph->p_vaddr + ph->p_filesz), 0,
-                   ph->p_memsz - ph->p_filesz);
-        if (load_bias + ph->p_vaddr + ph->p_memsz > max_end)
-            max_end = load_bias + ph->p_vaddr + ph->p_memsz;
-        /* the segment that contains file offset 0 holds the ELF
- * header and the program-header table: remember where it
- * landed so AT_PHDR can point at the mapped phdrs */
-        if (ph->p_offset == 0)
-            hdr_vaddr = load_bias + ph->p_vaddr;
-    }
-    if (!max_end) return -1;
-
-    /* Zero the tail of the last page past p_memsz: ld.so's minimal
- * malloc arena starts at _end and glibc's __minimal_calloc
- * assumes bump-allocated memory is already zero. Without this,
- * a second dynamic run reuses stale link-map bytes from the
- * previous run and dl_main skips the main map's relocation. */
-    {
-        uint32_t tail_end = (max_end + 4095) & ~4095u;
-        if (tail_end > max_end)
-            memset((void*)max_end, 0, tail_end - max_end);
+    /* Map every PT_LOAD, validating each one against the file and RAM. */
+    max_end = lx_elf_map(e, size, load_bias, lx_ld_base, lx_brk_limit,
+                         &min_start);
+    if (!max_end) {
+        print("elf: ");
+        print(lx_elf_why);
+        print("\n");
+        return -1;
     }
 
-    /* dynamic: load the ELF interpreter (ld-linux) */
+    /* A fixed-address image must not land on the reserved ABI regions
+     * (ld.so, the mmap window, the brk gap, the stack). */
+    if (min_start < lx_mmap_limit && max_end > lx_ld_base) {
+        print("elf: image would overlap the loader/mmap area - rebuild it");
+        print(" as position-independent (gcc -static-pie)\n");
+        return -1;
+    }
+
+    /* The entry point has to be executable code, not data. */
+    if (!lx_elf_entry_in_code(e, load_bias, load_bias + entry)) {
+        print("elf: entry point is outside any executable segment\n");
+        return -1;
+    }
+
+    phdr_addr = lx_elf_phdr_addr(e, load_bias);
+
+    /* dynamic: load the interpreter, validated like any other image */
     if (interp_path) {
         static uint8_t ldimg[512 * 1024];
         uint32_t ldsize = sizeof ldimg;
-        uint32_t lde, ldph, ldphent, ldphnum, ldmax = 0;
+        uint32_t lde, lde_off, ldmax, ldmin = 0;
+        uint32_t ldphoff;
+        uint16_t ldphent, ldphnum;
+        uint16_t ldtype;
 
         if (fs_read_file(interp_path, (char*)ldimg, &ldsize) != 0) {
             print("elf: interpreter not found: ");
@@ -1523,36 +1948,35 @@ int linux_run(const uint8_t* image, uint32_t size, const char* path,
             print("\n");
             return -1;
         }
-        if (ldsize < 52) return -1;
-        lde     = *(uint32_t*)(ldimg + 24);
-        ldph    = *(uint32_t*)(ldimg + 28);
-        ldphent = *(uint16_t*)(ldimg + 42);
-        ldphnum = *(uint16_t*)(ldimg + 44);
-        if (ldphent < sizeof(Elf32_Phdr) || !ldphnum) return -1;
-        if (ldph + ldphnum * ldphent > ldsize) return -1;
-        for (i = 0; i < (int)ldphnum; i++) {
-            const Elf32_Phdr* ph =
-                (const Elf32_Phdr*)(ldimg + ldph + i * ldphent);
-            if (ph->p_type != PT_LOAD) continue;
-            if (ph->p_offset + ph->p_filesz > ldsize) return -1;
-            memcpy((void*)(lx_ld_base + ph->p_vaddr),
-                   ldimg + ph->p_offset, ph->p_filesz);
-            if (ph->p_memsz > ph->p_filesz)
-                memset((void*)(lx_ld_base + ph->p_vaddr + ph->p_filesz), 0,
-                       ph->p_memsz - ph->p_filesz);
-            if (lx_ld_base + ph->p_vaddr + ph->p_memsz > ldmax)
-                ldmax = lx_ld_base + ph->p_vaddr + ph->p_memsz;
+        if (lx_elf_header(ldimg, ldsize, &ldphoff, &ldphnum, &ldphent,
+                          &ldtype) != 0) {
+            print("elf: bad interpreter: ");
+            print(lx_elf_why);
+            print("\n");
+            return -1;
         }
-        if (!ldmax) return -1;
-        {
-            uint32_t tail_end = (ldmax + 4095) & ~4095u;
-            if (tail_end > ldmax)
-                memset((void*)ldmax, 0, tail_end - ldmax);
+        if (ldtype != ET_DYN_L) {
+            print("elf: interpreter is not a shared object (ET_DYN)\n");
+            return -1;
         }
+        ldmax = lx_elf_map(ldimg, ldsize, lx_ld_base, lx_ld_base,
+                           lx_mmap_base, &ldmin);
+        if (!ldmax) {
+            print("elf: bad interpreter: ");
+            print(lx_elf_why);
+            print("\n");
+            return -1;
+        }
+        lde_off = *(uint32_t*)(ldimg + 24);
+        if (!lx_elf_entry_in_code(ldimg, lx_ld_base, lx_ld_base + lde_off)) {
+            print("elf: interpreter entry point is outside its code\n");
+            return -1;
+        }
+        lde     = lx_ld_base + lde_off;
         ld_base = lx_ld_base;
         /* execution begins in the interpreter; it relocates itself
- * against ld_base, maps libc, then jumps to AT_ENTRY */
-        entry = lx_ld_base + lde;
+         * against ld_base, maps the libraries, then jumps to AT_ENTRY */
+        entry   = lde;
     } else if (load_bias) {
         entry = load_bias + entry;   /* static-PIE: bias the entry too */
     }
@@ -1648,10 +2072,52 @@ int linux_run(const uint8_t* image, uint32_t size, const char* path,
             *sp_top++ = 0;
         }
 
-        words[w++] = (uint32_t)argc;
-        for (k = 0; k < argc; k++) words[w++] = argv_ptrs[k];
-        words[w++] = 0;                                  /* argv NULL */
-        words[w++] = 0;                                  /* envp NULL */
+        /* Environment: real programs (busybox sh above all) read PATH,
+         * HOME, USER, TERM and PWD from envp, and ash prints nothing at
+         * all without a usable environment. */
+        {
+            static char envbuf[512];
+            char cwd[MAX_PATH];
+            char home[MAX_PATH];
+            const char* user = tanja_current_user();
+            const char* term = get_env("TERM");
+            char* ep = envbuf;
+            uint32_t env_ptrs[8];
+            int ec = 0;
+
+            fs_get_current_path(cwd);
+            tanja_get_home(home, sizeof home);
+            if (!term || !term[0]) term = "vt100";
+            if (!user || !user[0]) user = "root";
+
+#define LX_ENV_ADD(name, val) do {                       \
+                char* d = ep;                               \
+                const char* n2 = (name);                    \
+                const char* v2 = (val);                     \
+                while (*n2) *d++ = *n2++;                   \
+                *d++ = '=';                                 \
+                while (*v2) *d++ = *v2++;                   \
+                *d++ = 0;                                   \
+                env_ptrs[ec++] = (uint32_t)ep;              \
+                ep = d;                                     \
+            } while (0)
+
+            LX_ENV_ADD("PATH", "/bin:/usr/bin:/Programs");
+            LX_ENV_ADD("HOME", home);
+            LX_ENV_ADD("USER", user);
+            LX_ENV_ADD("LOGNAME", user);
+            LX_ENV_ADD("SHELL", "/bin/sh");
+            LX_ENV_ADD("TERM", term);
+            LX_ENV_ADD("PWD", cwd);
+            LX_ENV_ADD("PS1", "\\h:\\w# ");
+#undef LX_ENV_ADD
+
+            words[w++] = (uint32_t)argc;
+            for (k = 0; k < argc; k++) words[w++] = argv_ptrs[k];
+            words[w++] = 0;                              /* argv NULL */
+            for (k = 0; k < ec; k++) words[w++] = env_ptrs[k];
+            words[w++] = 0;                              /* envp NULL */
+        }
         words[w++] = AT_PAGESZ_L;  words[w++] = 4096;
         words[w++] = AT_CLKTCK_L;  words[w++] = 100;
         words[w++] = AT_HWCAP_L;   words[w++] = 0;
@@ -1662,10 +2128,9 @@ int linux_run(const uint8_t* image, uint32_t size, const char* path,
         words[w++] = AT_SECURE_L;  words[w++] = 0;
         words[w++] = AT_RANDOM_L;  words[w++] = randp;
         words[w++] = AT_EXECFN_L;  words[w++] = execfnp;
-        if (hdr_vaddr && hdr_vaddr + phoff + phnum * phentsize
-                              <= hdr_vaddr + max_end) {
-            /* phdrs are inside the loaded image: point dl at them */
-            words[w++] = AT_PHDR_L;   words[w++] = hdr_vaddr + phoff;
+        if (phdr_addr) {
+            /* phdrs are mapped inside the image: point dl at them */
+            words[w++] = AT_PHDR_L;   words[w++] = phdr_addr;
             words[w++] = AT_PHENT_L;  words[w++] = phentsize;
             words[w++] = AT_PHNUM_L;  words[w++] = phnum;
         }
@@ -1714,6 +2179,8 @@ int linux_run(const uint8_t* image, uint32_t size, const char* path,
             memcpy(tanja_exit_jmp, save_jmp, sizeof save_jmp);
             tanja_exit_active = save_active;
             kb_raw_mode = 0;          /* keyboard belongs to the shell */
+            read_line_echo = 1;
+            console_ansi_reset();   /* program's colours/escapes end here */
             fd_flush_all();
         }
     }

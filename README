@@ -80,6 +80,25 @@ To run any program, just type its name: './hello.o', 'hello.o' or
 builtin or a /bin command but names an existing file, the shell runs
 it: ELF32 objects as programs, text files as line-per-command scripts).
 
+Real Linux i386 executables run too: static ET_EXEC (the classic
+0x08048000 layout), static-PIE (ET_DYN) and dynamically linked binaries
+whose interpreter (/lib/ld-linux.so.2) and libraries are installed. The
+loader (kernel/linux.c) validates an image instead of trusting it - ELF
+magic/class/byte order/machine/type, program-header bounds, every
+PT_LOAD against the file and against RAM, and an entry point that really
+lands in executable code - so a foreign or corrupt binary prints one
+clear 'elf: ...' line instead of crashing the kernel. Each run starts
+from zeroed memory, so .bss and the gaps between segments never expose
+bytes left by a previous program.
+
+Programs also get what a real Linux process expects at startup: argv, a
+small environment (PATH, HOME, USER, LOGNAME, SHELL, TERM, PWD, PS1),
+working poll/select, and the console ioctls a shell probes (TCGETS/TCSETS,
+TIOCGWINSZ, FIONREAD). A stock i686 busybox therefore runs interactively -
+'busybox sh' gives a prompt and runs its builtins. Job control is the one
+piece missing (no process groups or fork): ash says "can't access tty;
+job control turned off" and carries on.
+
 Programs are entered as void main(char* args) (the single command-line
 argument string) - int main(void) works too. The kernel exports the full
 stdio/stdlib/string/ctype/time/math surface (printf/scanf families,

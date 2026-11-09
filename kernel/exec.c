@@ -27,6 +27,17 @@ static uint8_t exec_buffers[EXEC_MAX_DEPTH][EXEC_BUFFER_NEST];
 static uint8_t exec_buffer_top[EXEC_BUFFER_TOP];
 static int exec_depth = 0;
 
+/* last path component, for "<name>: exec format error" style messages */
+static const char* exec_base_name(const char* path)
+{
+    const char* b = path;
+    const char* p;
+    if (!path) return "";
+    for (p = path; *p; p++)
+        if (*p == '/') b = p + 1;
+    return b;
+}
+
 static int exec_file_at(const char* path, const char* args,
                         uint8_t* exec_buffer, uint32_t exec_cap)
 {
@@ -61,25 +72,30 @@ static int exec_file_at(const char* path, const char* args,
     if (elf_is_elf32(image, size)) {
         uint16_t e_type = *(uint16_t*)(image + 16);
         uint16_t e_machine = *(uint16_t*)(image + 18);
-        if (e_machine == 3 /* EM_386 */ &&
-            (e_type == 2 /* ET_EXEC */ ||
-             (e_type == 3 /* ET_DYN: runnable if it is an executable,
- * i.e. has an entry point or an interpreter */))) {
-            uint32_t phoff = *(uint32_t*)(image + 28);
-            uint16_t phentsize = *(uint16_t*)(image + 42);
-            uint16_t phnum = *(uint16_t*)(image + 44);
-            uint32_t e_entry = *(uint32_t*)(image + 24);
-            int runnable = (e_type == 2) || (e_entry != 0);
-            int pi;
-            for (pi = 0; pi < phnum && !runnable; pi++) {
-                uint32_t p_type = *(uint32_t*)(image + phoff
-                                              + pi * phentsize);
-                if (p_type == 3 /* PT_INTERP */) runnable = 1;
+
+        /* ET_REL i386 objects are TanjaOS applets. Everything else is
+         * subjected to the real ELF rules by the Linux loader, which
+         * diagnoses foreign/malformed images (wrong class, machine,
+         * byte order, broken program headers) instead of silently
+         * treating them as applets. */
+        if (e_type == 1 /* ET_REL */ && e_machine == 3 /* EM_386 */)
+            return elf_run(image, size, path, args);
+        return linux_run(image, size, path, args);
+    }
+
+    /* Not an ELF and not text: a real kernel reports ENOEXEC ("exec
+     * format error") rather than feeding binary junk to the shell. */
+    {
+        uint32_t lim = size < 128 ? size : 128;
+        uint32_t k;
+        for (k = 0; k < lim; k++) {
+            uint8_t c = image[k];
+            if (c == 0 || (c < 0x20 && c != '\n' && c != '\r' && c != '\t')) {
+                print(exec_base_name(path));
+                print(": exec format error\n");
+                return -1;
             }
-            if (runnable)
-                return linux_run(image, size, path, args);
         }
-        return elf_run(image, size, path, args);
     }
 
     /* Text files are shell scripts. Execute one command per line.

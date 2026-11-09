@@ -13,7 +13,14 @@ extern linux_syscall
 linux_int80_stub:
     pusha
     push esp                    ; &regs frame (pusha order)
+    ; The 0x80 gate is an interrupt gate, so IF is clear here. A syscall
+    ; such as read(0,...) waits for a keystroke, and that wait parks in
+    ; hlt: with IF clear nothing ever wakes it, so the program froze on
+    ; its first interactive read. Let the timer and keyboard IRQs run
+    ; while the syscall is serviced (iret restores the caller's IF).
+    sti
     call linux_syscall
+    cli
     add esp, 4
     popa                        ; eax slot carries the result
     iret
