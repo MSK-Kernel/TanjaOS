@@ -240,6 +240,276 @@ static void fpool_free(void* ptr) {
     fpool_coalesce();
 }
 
+
+/* ---------------------------------------------------------------------
+ * Disk-backed file data.
+ *
+ * The RAM pool above is what limits how much a machine can store: at
+ * 64 MiB of RAM the pool is only ~18 MiB, so installing Doom (26 MiB)
+ * failed with "no space" on a disk with a terabyte free.
+ *
+ * When persistence is active the Storefile already owns the whole disk,
+ * so a file that does not fit the pool is stored on the disk itself, in
+ * a contiguous extent of 4 KiB blocks in the free area between the boot
+ * image and the reserved Storefile region. Small files stay in the pool
+ * (fast, zero-copy for exec); big ones - package payloads, Doom, tarballs -
+ * use the disk, and capacity becomes the size of the disk.
+ * ------------------------------------------------------------------- */
+extern int      store_data_ready(void);
+extern uint32_t store_data_first_sector(void);
+extern uint32_t store_data_sector_count(void);
+extern int      store_data_read(uint32_t lba, uint32_t count, void* buf);
+extern int      store_data_write(uint32_t lba, uint32_t count, const void* buf);
+
+#define DSK_SECTS_PER_BLK 8u
+#define DSK_BLK_BYTES     (DSK_SECTS_PER_BLK * 512u)
+
+static uint32_t fstart[MAX_F];    /* first data block (1-based), 0 = in pool */
+static uint32_t fblocks[MAX_F];   /* blocks owned by this file              */
+static uint32_t dsk_high;         /* highest block ever handed out         */
+
+/* Small hole table: deleted extents are reused before the high-water
+ * mark is advanced again. Eight entries is plenty for a system where
+ * only a handful of large files exist at once; anything that does not
+ * fit is simply leaked (the disk is the size it is). */
+#define DSK_HOLES 8
+static uint32_t hole_start[DSK_HOLES];
+static uint32_t hole_blocks[DSK_HOLES];
+static uint32_t hole_n;
+
+static uint8_t dsk_io[DSK_BLK_BYTES];
+
+static void dsk_memcpy(void* d, const void* s2, uint32_t n) {
+    uint8_t* dp = (uint8_t*)d; const uint8_t* sp = (const uint8_t*)s2;
+    while (n--) *dp++ = *sp++;
+}
+
+static uint32_t dsk_max_blocks(void) {
+    return store_data_sector_count() / DSK_SECTS_PER_BLK;
+}
+static uint32_t dsk_lba(uint32_t blk) {
+    return store_data_first_sector() + (blk - 1) * DSK_SECTS_PER_BLK;
+}
+static int dsk_read_blk(uint32_t blk, void* buf) {
+    return store_data_read(dsk_lba(blk), DSK_SECTS_PER_BLK, buf);
+}
+static int dsk_write_blk(uint32_t blk, const void* buf) {
+    return store_data_write(dsk_lba(blk), DSK_SECTS_PER_BLK, buf);
+}
+
+static uint32_t dsk_alloc(uint32_t nblocks) {
+    uint32_t i;
+    if (!nblocks) return 0;
+    for (i = 0; i < hole_n; i++) {
+        if (hole_blocks[i] >= nblocks) {
+            uint32_t start = hole_start[i];
+            if (hole_blocks[i] > nblocks) {
+                hole_start[i] += nblocks;
+                hole_blocks[i] -= nblocks;
+            } else {
+                hole_start[i] = hole_start[hole_n - 1];
+                hole_blocks[i] = hole_blocks[hole_n - 1];
+                hole_n--;
+            }
+            return start;
+        }
+    }
+    if (dsk_high + nblocks > dsk_max_blocks()) return 0;
+    dsk_high += nblocks;
+    return dsk_high - nblocks + 1;
+}
+
+static void dsk_release(uint32_t start, uint32_t nblocks) {
+    if (!start || !nblocks) return;
+    if (start + nblocks - 1 == dsk_high) {          /* top of the file area */
+        dsk_high = start - 1;
+        return;
+    }
+    if (hole_n < DSK_HOLES) {
+        hole_start[hole_n] = start;
+        hole_blocks[hole_n] = nblocks;
+        hole_n++;
+    }
+}
+
+/* grow/shrink a disk extent; returns 0 or -3 when the disk is full */
+static int dsk_set_blocks(int idx, uint32_t need) {
+    uint32_t cur = fblocks[idx];
+    if (need == cur) return 0;
+    if (need < cur) {
+        dsk_release(fstart[idx] + need, cur - need);
+        fblocks[idx] = need;
+        return 0;
+    }
+    /* grow: extend in place when the extent is at the top of the area */
+    if (fstart[idx] + cur - 1 == dsk_high) {
+        uint32_t extra = need - cur;
+        if (dsk_high + extra > dsk_max_blocks()) return -3;
+        dsk_high += extra;
+        fblocks[idx] = need;
+        return 0;
+    }
+    {
+        uint32_t ns = dsk_alloc(need), b;
+        if (!ns) return -3;
+        for (b = 0; b < cur; b++) {
+            if (dsk_read_blk(fstart[idx] + b, dsk_io) != 0) { dsk_release(ns, need); return -3; }
+            if (dsk_write_blk(ns + b, dsk_io) != 0) { dsk_release(ns, need); return -3; }
+        }
+        dsk_release(fstart[idx], cur);
+        fstart[idx] = ns;
+        fblocks[idx] = need;
+        return 0;
+    }
+}
+
+static int dsk_read_bytes(int idx, uint32_t off, char* dst, uint32_t len) {
+    while (len) {
+        uint32_t bi = off / DSK_BLK_BYTES;
+        uint32_t bo = off % DSK_BLK_BYTES;
+        uint32_t n  = DSK_BLK_BYTES - bo;
+        if (bi >= fblocks[idx]) return -1;
+        if (n > len) n = len;
+        if (bo == 0 && n == DSK_BLK_BYTES) {
+            if (dsk_read_blk(fstart[idx] + bi, dst) != 0) return -1;
+        } else {
+            if (dsk_read_blk(fstart[idx] + bi, dsk_io) != 0) return -1;
+            dsk_memcpy(dst, dsk_io + bo, n);
+        }
+        dst += n; off += n; len -= n;
+    }
+    return 0;
+}
+
+static int dsk_write_bytes(int idx, uint32_t off, const char* src, uint32_t len) {
+    while (len) {
+        uint32_t bi = off / DSK_BLK_BYTES;
+        uint32_t bo = off % DSK_BLK_BYTES;
+        uint32_t n  = DSK_BLK_BYTES - bo;
+        if (bi >= fblocks[idx]) return -1;
+        if (n > len) n = len;
+        if (bo == 0 && n == DSK_BLK_BYTES) {
+            if (dsk_write_blk(fstart[idx] + bi, src) != 0) return -1;
+        } else {
+            if (dsk_read_blk(fstart[idx] + bi, dsk_io) != 0) return -1;
+            dsk_memcpy(dsk_io + bo, src, n);
+            if (dsk_write_blk(fstart[idx] + bi, dsk_io) != 0) return -1;
+        }
+        src += n; off += n; len -= n;
+    }
+    return 0;
+}
+
+/* move a pool-resident file onto the disk (used when it outgrows RAM) */
+static int dsk_migrate(int idx) {
+    uint32_t sz = (uint32_t)(fsize[idx] < 0 ? 0 : fsize[idx]);
+    uint32_t need = (sz + DSK_BLK_BYTES - 1) / DSK_BLK_BYTES;
+    uint32_t start = dsk_alloc(need);
+    if (need && !start) return -3;
+    if (need) {
+        if (sz) {
+            /* write the whole file out, one block at a time */
+            uint32_t done = 0, b = 0;
+            while (b < need) {
+                uint32_t n = sz - done;
+                if (n > DSK_BLK_BYTES) n = DSK_BLK_BYTES;
+                uint32_t k;
+                for (k = 0; k < DSK_BLK_BYTES; k++)
+                    dsk_io[k] = (k < n) ? (uint8_t)fdata[idx][done + k] : 0;
+                if (dsk_write_blk(start + b, dsk_io) != 0) { dsk_release(start, need); return -3; }
+                done += n; b++;
+            }
+        } else {
+            uint32_t k;
+            for (k = 0; k < DSK_BLK_BYTES; k++) dsk_io[k] = 0;
+            if (dsk_write_blk(start, dsk_io) != 0) { dsk_release(start, need); return -3; }
+        }
+    }
+    fpool_free(fdata[idx]);
+    fdata[idx] = 0;
+    fstart[idx] = start;
+    fblocks[idx] = need;
+    return 0;
+}
+
+/* --- one interface the rest of fs.c uses, pool or disk --- */
+static int data_read(int idx, uint32_t off, char* dst, uint32_t len) {
+    if (fstart[idx]) return dsk_read_bytes(idx, off, dst, len);
+    if (!fdata[idx]) return -1;
+    dsk_memcpy(dst, fdata[idx] + off, len);
+    return 0;
+}
+
+static int data_write(int idx, uint32_t off, const char* src, uint32_t len) {
+    if (fstart[idx]) return dsk_write_bytes(idx, off, src, len);
+    if (!fdata[idx]) return -1;
+    dsk_memcpy(fdata[idx] + off, src, len);
+    return 0;
+}
+
+/* Resize a file's data area. Tries the RAM pool first so existing
+ * behaviour (and zero-copy exec) is unchanged whenever everything fits;
+ * falls back to the disk when the pool cannot satisfy the request. */
+static int data_resize(int idx, uint32_t size) {
+    if (idx < 0 || idx >= MAX_F) return -1;
+    if (size > MAX_FILE_DATA - 1) return -2;
+
+    if (fstart[idx]) {                       /* already on disk */
+        uint32_t need = (size + DSK_BLK_BYTES - 1) / DSK_BLK_BYTES;
+        if (dsk_set_blocks(idx, need) != 0) return -3;
+        fsize[idx] = (int)size;
+        return 0;
+    }
+
+    if (size == 0) {
+        fpool_free(fdata[idx]);
+        fdata[idx] = 0;
+        fsize[idx] = 0;
+        return 0;
+    }
+
+    {
+        char* p = (char*)fpool_alloc(size + 1);
+        if (!p) {
+            /* no RAM left for this file: put it on the disk */
+            if (!store_data_ready()) return -3;
+            if (dsk_migrate(idx) != 0) return -3;
+            {
+                uint32_t need = (size + DSK_BLK_BYTES - 1) / DSK_BLK_BYTES;
+                if (dsk_set_blocks(idx, need) != 0) return -3;
+            }
+            fsize[idx] = (int)size;
+            return 0;
+        }
+        if (fdata[idx] && fsize[idx] > 0) {
+            uint32_t copy = (uint32_t)fsize[idx];
+            if (copy > size) copy = size;
+            uint32_t j;
+            for (j = 0; j < copy; j++) p[j] = fdata[idx][j];
+        }
+        p[size] = 0;
+        fpool_free(fdata[idx]);
+        fdata[idx] = p;
+        fsize[idx] = (int)size;
+        return 0;
+    }
+}
+
+static void data_release(int idx) {
+    if (idx < 0 || idx >= MAX_F) return;
+    if (fstart[idx]) {
+        dsk_release(fstart[idx], fblocks[idx]);
+        fstart[idx] = 0;
+        fblocks[idx] = 0;
+    }
+    fpool_free(fdata[idx]);
+    fdata[idx] = 0;
+    fsize[idx] = 0;
+}
+
+/* 1 when this file's bytes live on the disk (no RAM pointer available) */
+static int data_on_disk(int idx) { return fstart[idx] != 0; }
+
 static int fdata_resize(int idx, uint32_t size) {
     if (idx < 0 || idx >= MAX_F) return -1;
     if (size > MAX_FILE_DATA - 1) return -2;
@@ -374,7 +644,8 @@ void fs_init(void) {
     int i;
     fpool_init();
     for (i = 0; i < MAX_F; i++) { fused[i] = 0; fsize[i] = 0; fdata[i] = 0; fname[i][0] = 0;
-                                  fowner[i] = 0; fmode[i] = 0755; }
+                                  fowner[i] = 0; fmode[i] = 0755; fstart[i] = 0; fblocks[i] = 0; }
+    dsk_high = 0; hole_n = 0;
     for (i = 0; i < MAX_D; i++) { dused[i] = 0; dname[i][0] = 0;
                                   downer[i] = 0; dmode[i] = 0755; }
     dused[0] = 1;
@@ -730,6 +1001,8 @@ int fs_create_file(const char* path) {
             strcpy_safe(fname[i], full, FS_PATH_CAP);
             fsize[i] = 0;
             fdata[i] = 0;
+            fstart[i] = 0;
+            fblocks[i] = 0;
             fused[i] = 1;
             fowner[i] = fs_cur_uid;
             fmode[i] = 0644;
@@ -761,9 +1034,7 @@ int fs_delete_file(const char* path) {
         if (fused[i] && strcmp_safe(fname[i], full)) {
             fused[i] = 0;
             fname[i][0] = 0;
-            fpool_free(fdata[i]);
-            fdata[i] = 0;
-            fsize[i] = 0;
+            data_release(i);
             fs_commit_change();
             return 0;
         }
@@ -802,18 +1073,18 @@ int fs_write_file(const char* path, const char* data, uint32_t size) {
         }
         return -2;
     }
-    if (fdata_resize(idx, size) != 0) {
+    if (data_resize(idx, size) != 0) {
         /* If this call created a new empty file, roll its metadata back.
            Never leave a zero-byte placeholder after a failed write. */
-        if (fsize[idx] == 0 && fdata[idx] == 0) {
+        if (fsize[idx] == 0 && fdata[idx] == 0 && !fstart[idx]) {
             fused[idx] = 0;
             fname[idx][0] = 0;
             fsize[idx] = 0;
         }
         return -3;
     }
-    for (i = 0; i < (int)size; i++) fdata[idx][i] = data[i];
-    fdata[idx][size] = 0;
+    if (size && data_write(idx, 0, data, size) != 0) return -3;
+    if (!data_on_disk(idx) && fdata[idx]) fdata[idx][size] = 0;
     fs_commit_change();
     return 0;
 }
@@ -842,7 +1113,7 @@ int fs_prealloc_file(const char* path, uint32_t size)
         if (idx < 0) return -1;
     }
     fpool_coalesce();
-    if (fdata_resize(idx, size) != 0) return -3;
+    if (data_resize(idx, size) != 0) return -3;
     /* Logical size stays 0 until appends fill it; remember capacity in fsize
      * by storing the allocated length. Callers then overwrite via append
      * which will see oldsz and grow. To avoid a second alloc, set fsize
@@ -863,12 +1134,9 @@ int fs_write_at(const char* path, uint32_t offset, const char* data, uint32_t le
     abs_path(path, full);
     for (i = 0; i < MAX_F; i++)
         if (fused[i] && strcmp_safe(fname[i], full)) { idx = i; break; }
-    if (idx < 0 || !fdata[idx]) return -1;
+    if (idx < 0 || (!fdata[idx] && !fstart[idx])) return -1;
     if (offset + len > (uint32_t)fsize[idx]) return -3;
-    {
-        uint32_t k;
-        for (k = 0; k < len; k++) fdata[idx][offset + k] = data[k];
-    }
+    if (data_write(idx, offset, data, len) != 0) return -1;
     return 0;
 }
 
@@ -902,13 +1170,9 @@ int fs_append_file(const char* path, const char* data, uint32_t len)
 
         if (oldsz + len > MAX_FILE_DATA - 1) return -3;   /* full pool */
 
-        if (fdata_resize(idx, oldsz + len) != 0) return -4;
-        {
-            uint32_t k;
-            for (k = 0; k < len; k++)
-                fdata[idx][oldsz + k] = data[k];
-        }
-        fdata[idx][oldsz + len] = 0;
+        if (data_resize(idx, oldsz + len) != 0) return -4;
+        if (data_write(idx, oldsz, data, len) != 0) return -4;
+        if (!data_on_disk(idx) && fdata[idx]) fdata[idx][oldsz + len] = 0;
         return 0;
     }
 }
@@ -943,8 +1207,7 @@ int fs_read_file_prefix(const char* path, char* buffer, uint32_t capacity, uint3
             }
             uint32_t sz = (uint32_t)fsize[i];
             if (sz > capacity - 1) sz = capacity - 1;
-            uint32_t j;
-            for (j = 0; j < sz; j++) buffer[j] = fdata[i][j];
+            if (sz && data_read(i, 0, buffer, sz) != 0) return -1;
             buffer[sz] = 0;
             *size = sz;
             return 0;
@@ -977,9 +1240,7 @@ int fs_read_file_range(const char* path, uint32_t offset, char* buffer,
             uint32_t n = total - offset;
             if (n > capacity) n = capacity;
 
-            uint32_t j;
-            for (j = 0; j < n; j++)
-                buffer[j] = fdata[i][offset + j];
+            if (n && data_read(i, offset, buffer, n) != 0) return -1;
 
             *size = n;
             return 0;
@@ -1142,7 +1403,7 @@ int parse_path(const char* a, char* b, char* c) { (void)a; if(b)b[0]=0; if(c)c[0
 // a 24 MiB on-demand file-data pool
 // 256 bytes cwd
 
-#define STORE_VERSION 4
+#define STORE_VERSION 5
 
 /* Storefile format v4 is intentionally sparse. The old format reserved
  * MAX_FILE_DATA bytes for EVERY file slot, so a single mkdir/rm caused a
@@ -1347,7 +1608,10 @@ uint32_t fs_store_size(void) {
         + FS_DATA_POOL_SIZE
         + 256
         + (MAX_D * 6)      /* downer(4) + dmode(2) */
-        + (MAX_F * 6);     /* fowner(4) + fmode(2) */
+        + (MAX_F * 6)      /* fowner(4) + fmode(2) */
+        + (MAX_F * 8)      /* fstart + fblocks per file */
+        + 8                /* dsk_high + hole count     */
+        + (DSK_HOLES * 8); /* free extent table         */
 }
 
 uint32_t fs_serialized_size(void) {
@@ -1359,10 +1623,15 @@ uint32_t fs_serialized_size(void) {
         + (MAX_F * FS_PATH_CAP)
         + 256
         + (MAX_D * 6)
-        + (MAX_F * 6);
+        + (MAX_F * 6)
+        + (MAX_F * 8)      /* fstart + fblocks per file */
+        + 8                /* dsk_high + hole count     */
+        + (DSK_HOLES * 8); /* free extent table         */
     int i;
     for (i = 0; i < MAX_F; i++) {
-        if (fused[i] && fsize[i] > 0)
+        /* disk-backed files are already on the disk; only pool bytes are
+         * written into the Storefile image */
+        if (fused[i] && fsize[i] > 0 && !fstart[i])
             need += (uint32_t)fsize[i];
     }
     return need;
@@ -1412,8 +1681,14 @@ int fs_serialize_sink(void* ctx, fs_emit_fn emit)
     for (i = 0; i < MAX_F; i++)
         emit(ctx, (const uint8_t*)fname[i], FS_PATH_CAP);
 
+    /* where each file's bytes live: a disk extent, or the RAM pool */
     for (i = 0; i < MAX_F; i++) {
-        if (!fused[i] || fsize[i] <= 0) continue;
+        fs_emit_le32(ctx, emit, fstart[i]);
+        fs_emit_le32(ctx, emit, fblocks[i]);
+    }
+
+    for (i = 0; i < MAX_F; i++) {
+        if (!fused[i] || fsize[i] <= 0 || fstart[i]) continue;  /* disk files: not in the image */
         emit(ctx, (const uint8_t*)fdata[i], (uint32_t)fsize[i]);
     }
 
@@ -1438,6 +1713,14 @@ int fs_serialize_sink(void* ctx, fs_emit_fn emit)
             t[1] = (uint8_t)((fmode[i] >> 8) & 0xFF);
             emit(ctx, t, 2);
         }
+    }
+
+    /* disk file-data allocator state */
+    fs_emit_le32(ctx, emit, dsk_high);
+    fs_emit_le32(ctx, emit, hole_n);
+    for (i = 0; i < DSK_HOLES; i++) {
+        fs_emit_le32(ctx, emit, hole_start[i]);
+        fs_emit_le32(ctx, emit, hole_blocks[i]);
     }
     return 0;
 }
@@ -1483,6 +1766,8 @@ int fs_deserialize_fill(void* ctx, fs_fill_fn fill)
         fpool_free(fdata[i]);
         fdata[i] = 0;
         fsize[i] = 0;
+        fstart[i] = 0;
+        fblocks[i] = 0;
     }
     fpool_init();
 
@@ -1508,11 +1793,23 @@ int fs_deserialize_fill(void* ctx, fs_fill_fn fill)
     for (i = 0; i < MAX_F; i++)
         if (fill(ctx, (uint8_t*)fname[i], FS_PATH_CAP) != 0) return -1;
 
+    /* disk extents, then pool contents for the files that live in RAM */
+    for (i = 0; i < MAX_F; i++) {
+        if (fill(ctx, tmp4, 4) != 0) return -1;
+        fstart[i] = (uint32_t)tmp4[0] | ((uint32_t)tmp4[1] << 8)
+                  | ((uint32_t)tmp4[2] << 16) | ((uint32_t)tmp4[3] << 24);
+        if (fill(ctx, tmp4, 4) != 0) return -1;
+        fblocks[i] = (uint32_t)tmp4[0] | ((uint32_t)tmp4[1] << 8)
+                   | ((uint32_t)tmp4[2] << 16) | ((uint32_t)tmp4[3] << 24);
+        if (!fused[i]) { fstart[i] = 0; fblocks[i] = 0; }
+    }
+
     for (i = 0; i < MAX_F; i++) {
         if (!fused[i]) {
             fsize[i] = 0;
             continue;
         }
+        if (fstart[i]) continue;              /* bytes are already on the disk */
         if (fdata_resize(i, (uint32_t)fsize[i]) != 0) return -1;
         if (fill(ctx, (uint8_t*)fdata[i], (uint32_t)fsize[i]) != 0) return -1;
         fdata[i][fsize[i]] = 0;
@@ -1541,6 +1838,32 @@ int fs_deserialize_fill(void* ctx, fs_fill_fn fill)
                      | ((uint32_t)tmp4[2] << 16) | ((uint32_t)tmp4[3] << 24));
             if (fill(ctx, tmp2, 2) != 0) { have_owners = 0; break; }
             fmode[i] = (int)tmp2[0] | ((int)tmp2[1] << 8);
+        }
+    }
+
+    /* disk allocator state */
+    dsk_high = 0; hole_n = 0;
+    for (i = 0; i < DSK_HOLES; i++) { hole_start[i] = 0; hole_blocks[i] = 0; }
+    if (fill(ctx, tmp4, 4) == 0) {
+        dsk_high = (uint32_t)tmp4[0] | ((uint32_t)tmp4[1] << 8)
+                 | ((uint32_t)tmp4[2] << 16) | ((uint32_t)tmp4[3] << 24);
+        if (fill(ctx, tmp4, 4) == 0) {
+            hole_n = (uint32_t)tmp4[0] | ((uint32_t)tmp4[1] << 8)
+                   | ((uint32_t)tmp4[2] << 16) | ((uint32_t)tmp4[3] << 24);
+            if (hole_n > DSK_HOLES) hole_n = DSK_HOLES;
+            /* the writer always emits the whole table: read every slot,
+             * even the ones past hole_n, or the config blob that follows
+             * the image lands 64 bytes early */
+            for (i = 0; i < DSK_HOLES; i++) {
+                uint32_t hs = 0, hb = 0;
+                if (fill(ctx, tmp4, 4) != 0) return -1;
+                hs = (uint32_t)tmp4[0] | ((uint32_t)tmp4[1] << 8)
+                   | ((uint32_t)tmp4[2] << 16) | ((uint32_t)tmp4[3] << 24);
+                if (fill(ctx, tmp4, 4) != 0) return -1;
+                hb = (uint32_t)tmp4[0] | ((uint32_t)tmp4[1] << 8)
+                   | ((uint32_t)tmp4[2] << 16) | ((uint32_t)tmp4[3] << 24);
+                if (i < (int)hole_n) { hole_start[i] = hs; hole_blocks[i] = hb; }
+            }
         }
     }
     return 0;
@@ -1587,7 +1910,9 @@ const char* fs_file_data_ptr(const char* path, uint32_t* size_out)
                 }
                 if (size_out)
                     *size_out = (uint32_t)(fsize[i] < 0 ? 0 : fsize[i]);
-                return fdata[i];
+                /* Bytes on the disk cannot be handed out as a pointer;
+                 * callers fall back to fs_read_file / fs_read_file_range. */
+                return data_on_disk(i) ? 0 : fdata[i];
             }
         }
     }

@@ -12,9 +12,10 @@ The shell runs a command by trying /bin/<name>.o first, then
 
 1B. Memory
 
-The kernel is 32-bit with no PAE, so it can use RAM below 4 GiB only, and the
-chipset's PCI/MMIO hole sits in the way (on a 4 GiB machine the usable block
-ends at 3 GiB). Boot sizing therefore reports both numbers:
+Let's say the machine has 16 GiB RAM, the kernel is 32-bit with no PAE, so it
+can use RAM below 4 GiB only, and the chipset's PCI/MMIO hole sits in the way
+(on a 4 GiB machine the usable block ends at 3 GiB). Boot sizing therefore
+reports both numbers:
 
     Memory: RAM 16383 MiB (3071 MiB usable in 32-bit mode), file pool 48 MiB, malloc arena 16 MiB
 

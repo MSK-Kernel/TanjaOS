@@ -2737,8 +2737,7 @@ extern void net_init(void);
 extern void linux_set_layout(uint32_t kernel_end, uint32_t ram_top);
 extern char __kernel_end[];
 
-/* ------------------------------------------------------------------ *
- * Boot memory allocator
+/* Boot memory allocator
  *
  * The kernel used to keep every big RAM pool as a static .bss array:
  * 48 MiB file pool + 16 MiB malloc arena + a 32 MiB rename buffer.
@@ -2751,7 +2750,8 @@ extern char __kernel_end[];
  * from mem_upper. Everything here is handed out once, in order, and never
  * freed: the filesystem pool first, then the malloc arena, then whatever
  * linux_set_layout() gets is the space that is left for programs.
- * ------------------------------------------------------------------ */
+ */
+
 static uint32_t boot_mem_next;
 static uint32_t boot_mem_top;
 

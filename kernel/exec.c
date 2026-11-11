@@ -2,6 +2,7 @@
 #include "../include/fs.h"
 
 extern void print(const char* s);
+extern void print_dec(uint32_t n);
 extern void execute_command(const char* cmd_line);
 extern int elf_run(const uint8_t* image, uint32_t size, const char* path, const char* args);
 extern int elf_is_elf32(const uint8_t* image, uint32_t size);
@@ -58,11 +59,44 @@ static int exec_file_at(const char* path, const char* args,
         if (ptr && fsz > 0) {
             image = (const uint8_t*)ptr;
             size = fsz;
-        } else if (fs_read_file(path, (char*)exec_buffer, &size) != 0) {
-            print("exec: file not found: ");
-            print(path);
-            print("\n");
-            return -1;
+        } else {
+            /* No pointer means the bytes live on the disk (the file did
+             * not fit the RAM pool), so the image has to be read through
+             * the exec buffer. Say so plainly instead of letting the
+             * truncated copy fail later with a confusing ELF error. */
+            uint32_t real = fs_get_file_size(path);
+            if (real > exec_cap - 1) {
+                /* Too big for the exec buffer. If it is a real Linux ELF,
+                 * stream it: the loader reads each segment straight from
+                 * the disk into the address it will run at, so there is no
+                 * copy of the image in RAM and no size limit here. */
+                uint8_t hdr[64];
+                uint32_t got = sizeof hdr;
+                if (real < sizeof hdr ||
+                    fs_read_file_range(path, 0, (char*)hdr, sizeof hdr,
+                                       &got) != 0 ||
+                    got < sizeof hdr ||
+                    !(hdr[0] == 0x7f && hdr[1] == 'E' && hdr[2] == 'L' &&
+                      hdr[3] == 'F')) {
+                    print("exec: ");
+                    print(path);
+                    print(": too large to load, and it is not an ELF image\n");
+                    return -1;
+                }
+                if (hdr[16] == 1) {          /* ET_REL: a TanjaOS applet */
+                    print("exec: ");
+                    print(path);
+                    print(": applet is too large to load\n");
+                    return -1;
+                }
+                return linux_run(0, real, path, args);
+            }
+            if (fs_read_file(path, (char*)exec_buffer, &size) != 0) {
+                print("exec: file not found: ");
+                print(path);
+                print("\n");
+                return -1;
+            }
         }
     }
 

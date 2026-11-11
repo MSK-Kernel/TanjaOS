@@ -52,6 +52,9 @@ static uint32_t store_lba = STORE_FALLBACK_LBA;
 static uint8_t store_stage[STORE_STAGE_BYTES];
 static uint8_t store_cfgbuf[STORE_CFG_BUF];
 static int store_enabled = 0;
+/* Set once the persistent region has been validated, i.e. the disk area
+ * between the boot image and the Storefile may be used for file data. */
+static int store_data_ok = 0;
 static uint32_t store_sectors = 0;       /* sectors actually used by current image */
 static uint32_t store_capacity_sectors = 0; /* maximum reserved region */
 static uint32_t store_fs_need = 0;
@@ -469,6 +472,8 @@ void store_init(uint32_t mb_magic, uint32_t mb_addr) {
         store_panic_disk_too_small();
     }
 
+    store_data_ok = 1;
+
     // store_lba is anchored to the END of the disk, but the installer put
     // the boot image (GRUB/kernel/tanja.cfg) at the START with nothing
     // reserving space in between. On a disk that isn't comfortably bigger
@@ -554,3 +559,45 @@ void store_init(uint32_t mb_magic, uint32_t mb_addr) {
     store_autosave();
     boot_log("Storefile: persistence enabled, initial state written to disk");
 }
+
+/* ---------------------------------------------------------------------
+ * Raw block access for file data that does not fit the RAM pool.
+ *
+ * The filesystem keeps small files in RAM and spills large ones (package
+ * payloads, Doom, tarballs) onto the disk itself. That area is everything
+ * between the boot image at the front - the installer dd's GRUB plus the
+ * kernel there - and the reserved Storefile region at the end, so its
+ * size is whatever the disk has: a 1 TB disk means 1 TB of files even
+ * with 64 MiB of RAM.
+ * ------------------------------------------------------------------- */
+#define STORE_DATA_GUARD_SECTORS 64
+
+int store_data_ready(void) {
+    return store_data_ok && backend != BACKEND_NONE;
+}
+
+uint32_t store_data_first_sector(void) {
+    return STORE_FRONT_RESERVE_SECTORS;
+}
+
+uint32_t store_data_sector_count(void) {
+    if (!store_data_ready()) return 0;
+    if (store_lba <= STORE_FRONT_RESERVE_SECTORS + STORE_DATA_GUARD_SECTORS)
+        return 0;
+    return store_lba - STORE_DATA_GUARD_SECTORS - STORE_FRONT_RESERVE_SECTORS;
+}
+
+int store_data_read(uint32_t lba, uint32_t count, void* buf) {
+    if (!store_data_ready() || !buf || !count) return -1;
+    if (lba < STORE_FRONT_RESERVE_SECTORS) return -1;
+    if ((uint64_t)lba + count > (uint64_t)store_lba) return -1;
+    return store_backend_read(lba, count, buf);
+}
+
+int store_data_write(uint32_t lba, uint32_t count, const void* buf) {
+    if (!store_data_ready() || !buf || !count) return -1;
+    if (lba < STORE_FRONT_RESERVE_SECTORS) return -1;
+    if ((uint64_t)lba + count > (uint64_t)store_lba) return -1;
+    return store_backend_write(lba, count, buf);
+}
+

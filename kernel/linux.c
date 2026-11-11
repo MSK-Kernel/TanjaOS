@@ -1640,6 +1640,42 @@ static uint32_t lx_page_down(uint32_t v) { return v & ~4095u; }
 static uint32_t lx_page_up(uint32_t v)   { return (v + 4095u) & ~4095u; }
 
 /* header-level checks, shared by the executable and its interpreter */
+
+/* ---------------------------------------------------------------------
+ * Image source: a program image either sits in RAM (the usual case: it
+ * fits the file pool and exec hands us a pointer) or lives on the disk
+ * (it did not fit the pool). Streaming the disk case means a binary of
+ * any size can be loaded - the file is read straight into the addresses
+ * it will run at, instead of through the 4 MiB exec buffer.
+ * ------------------------------------------------------------------- */
+typedef struct {
+    const uint8_t* mem;    /* image bytes in RAM, or NULL when on disk */
+    uint32_t size;
+    const char* path;      /* file to stream from when mem == NULL     */
+} lx_src_t;
+
+static int lx_src_read(const lx_src_t* s, uint32_t off, void* dst, uint32_t len)
+{
+    if (!s || !len) return 0;
+    if (off > s->size || len > s->size - off) return -1;
+    if (s->mem) {
+        memcpy(dst, s->mem + off, len);
+        return 0;
+    }
+    {
+        uint32_t got = len;
+        if (!s->path || fs_read_file_range(s->path, off, (char*)dst, len, &got) != 0)
+            return -1;
+        return got == len ? 0 : -1;
+    }
+}
+
+/* header + program header table are small: they get staged in RAM so the
+ * existing validators can keep reading plain pointers */
+#define LX_HEAD_BYTES 16384
+static uint8_t lx_head[LX_HEAD_BYTES];
+static uint8_t lx_interp_path[256];
+
 static int lx_elf_header(const uint8_t* e, uint32_t size, uint32_t* phoff_out,
                          uint16_t* phnum_out, uint16_t* phentsize_out,
                          uint16_t* type_out)
@@ -1722,8 +1758,9 @@ static int lx_elf_header(const uint8_t* e, uint32_t size, uint32_t* phoff_out,
  * so a program always starts from clean RAM (Linux hands out zeroed
  * pages; a previous run can leave bytes in the gaps between segments).
  * Returns the image end address, 0 with lx_elf_why set on failure. */
-static uint32_t lx_elf_map(const uint8_t* e, uint32_t size, uint32_t bias,
-                           uint32_t floor, uint32_t limit, uint32_t* min_out)
+static uint32_t lx_elf_map(const uint8_t* e, const lx_src_t* src, uint32_t size,
+                           uint32_t bias, uint32_t floor, uint32_t limit,
+                           uint32_t* min_out)
 {
     uint32_t phoff     = *(uint32_t*)(e + 28);
     uint16_t phentsize = *(uint16_t*)(e + 42);
@@ -1798,9 +1835,16 @@ static uint32_t lx_elf_map(const uint8_t* e, uint32_t size, uint32_t bias,
     for (i = 0; i < (int)phnum; i++) {
         const Elf32_Phdr* ph = (const Elf32_Phdr*)(e + phoff + i * phentsize);
         if (ph->p_type != PT_LOAD || !ph->p_memsz) continue;
-        if (ph->p_filesz)
-            memcpy((void*)(bias + ph->p_vaddr), e + ph->p_offset,
-                   ph->p_filesz);
+        if (ph->p_filesz) {
+            /* straight into the address the segment will run at: no
+             * whole-image buffer, so a disk-backed binary of any size
+             * loads without needing RAM for both copies */
+            if (lx_src_read(src, ph->p_offset,
+                            (void*)(bias + ph->p_vaddr), ph->p_filesz) != 0) {
+                lx_elf_why = "could not read segment data";
+                return 0;
+            }
+        }
         /* .bss: p_memsz past p_filesz reads back as zero, like Linux */
         if (ph->p_memsz > ph->p_filesz)
             memset((void*)(bias + ph->p_vaddr + ph->p_filesz), 0,
@@ -1857,6 +1901,7 @@ int linux_run(const uint8_t* image, uint32_t size, const char* path,
               const char* args)
 {
     const uint8_t* e = image;
+    lx_src_t src;
     uint32_t entry, phoff, max_end = 0, min_start = 0;
     uint32_t phdr_addr = 0;
     uint16_t e_type, phentsize, phnum;
@@ -1864,6 +1909,21 @@ int linux_run(const uint8_t* image, uint32_t size, const char* path,
     const char* interp_path = 0;
     uint32_t ld_base = 0;
     int i;
+
+    /* image == NULL means the program's bytes are on the disk: stream
+     * them. The header and program header table are staged in RAM so the
+     * validators below can keep working on plain pointers. */
+    src.mem = image;
+    src.size = size;
+    src.path = path;
+    if (!image) {
+        uint32_t want = size < LX_HEAD_BYTES ? size : LX_HEAD_BYTES;
+        if (lx_src_read(&src, 0, lx_head, want) != 0 || want < 52) {
+            print("exec: cannot read the program image from disk\n");
+            return -1;
+        }
+        e = lx_head;
+    }
 
     /* Validate the header before trusting a single field in it. */
     if (lx_elf_header(e, size, &phoff, &phnum, &phentsize, &e_type) != 0) {
@@ -1873,6 +1933,12 @@ int linux_run(const uint8_t* image, uint32_t size, const char* path,
         return -1;
     }
     entry = *(uint32_t*)(e + 24);
+
+    if (phoff + (uint32_t)phnum * phentsize > size ||
+        (image == 0 && phoff + (uint32_t)phnum * phentsize > LX_HEAD_BYTES)) {
+        print("elf: program header table is too large to load\n");
+        return -1;
+    }
 
     /* ET_DYN (PIE) images carry relative addresses: they get a fixed
      * load bias above the mmap window. ET_EXEC images load verbatim. */
@@ -1892,7 +1958,15 @@ int linux_run(const uint8_t* image, uint32_t size, const char* path,
             print("elf: broken PT_INTERP (interpreter path)\n");
             return -1;
         }
-        s = (const char*)(e + ph->p_offset);
+        if (ph->p_filesz >= MAX_PATH) {
+            print("elf: interpreter path is too long\n");
+            return -1;
+        }
+        if (lx_src_read(&src, ph->p_offset, lx_interp_path, ph->p_filesz) != 0) {
+            print("elf: cannot read the interpreter path\n");
+            return -1;
+        }
+        s = (const char*)lx_interp_path;
         for (k = 0; k < ph->p_filesz; k++)
             if (!s[k]) break;
         if (k == ph->p_filesz) {
@@ -1908,7 +1982,7 @@ int linux_run(const uint8_t* image, uint32_t size, const char* path,
     }
 
     /* Map every PT_LOAD, validating each one against the file and RAM. */
-    max_end = lx_elf_map(e, size, load_bias, lx_ld_base, lx_brk_limit,
+    max_end = lx_elf_map(e, &src, size, load_bias, lx_ld_base, lx_brk_limit,
                          &min_start);
     if (!max_end) {
         print("elf: ");
@@ -1936,6 +2010,7 @@ int linux_run(const uint8_t* image, uint32_t size, const char* path,
     /* dynamic: load the interpreter, validated like any other image */
     if (interp_path) {
         static uint8_t ldimg[512 * 1024];
+        lx_src_t ldsrc;
         uint32_t ldsize = sizeof ldimg;
         uint32_t lde, lde_off, ldmax, ldmin = 0;
         uint32_t ldphoff;
@@ -1959,7 +2034,8 @@ int linux_run(const uint8_t* image, uint32_t size, const char* path,
             print("elf: interpreter is not a shared object (ET_DYN)\n");
             return -1;
         }
-        ldmax = lx_elf_map(ldimg, ldsize, lx_ld_base, lx_ld_base,
+        ldsrc.mem = ldimg; ldsrc.size = ldsize; ldsrc.path = 0;
+        ldmax = lx_elf_map(ldimg, &ldsrc, ldsize, lx_ld_base, lx_ld_base,
                            lx_mmap_base, &ldmin);
         if (!ldmax) {
             print("elf: bad interpreter: ");
