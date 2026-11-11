@@ -99,12 +99,12 @@ static void do_install(const char* name) {
     if (st < 0) {
         if (fs_file_exists(bin)) fs_delete_file(bin);
         switch (st) {
-        case NET_E_DNS:     print("pkg: cannot resolve the repo host (check DNS / the repo URL)\n"); break;
+        case NET_E_DNS:     print("pkg: cannot resolve the repo host (check DNS / repo URL)\n"); break;
         case NET_E_CONNECT: print("pkg: cannot connect to the repo\n"); break;
         case NET_E_TLS:     printf("pkg: secure connection failed: %s\n", net_tls_error()); break;
-        case NET_E_TOOBIG:  print("pkg: package is too large\n"); break;
+        case NET_E_TOOBIG:  print("\npkg: package is too large\n"); break;
         case NET_E_URL:     print("pkg: bad repo URL (set PKG_REPO or /etc/pkg.repo)\n"); break;
-        default:            print("pkg: not enough storage or connection dropped\n"); break;
+        default:            print("\npkg: not enough storage or connection dropped\n"); break;
         }
         return;
     }
