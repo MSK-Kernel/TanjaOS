@@ -41,7 +41,7 @@ include/build_id.h: $(wildcard kernel/*.c) $(wildcard fs/*.c) $(BIN_SRC) $(wildc
 	@echo "#define TANJA_BUILD_ID_HI 0u" >> $@
 
 home/bin:
-	mkdir -p home/bin
+	mkdir -p home/bin home/usr/bin
 
 BIN_CFLAGS = -m32 -ffreestanding -fno-stack-protector -fno-builtin \
              -fno-pic -fno-pie -fno-common \
