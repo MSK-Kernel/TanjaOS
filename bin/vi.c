@@ -23,7 +23,7 @@
 #define SHIFT_WIDTH 4
 #define VGA_HEIGHT 25
 #define VGA_TOTAL_CELLS (VI_COLS * VGA_HEIGHT)
-#define VGA_COLOR (0x0F << 8)
+#define VGA_COLOR (0x07 << 8)   /* user program text: light grey */
 #define VGA_REVERSE (0x70 << 8)
 
 #define MODE_COMMAND 0

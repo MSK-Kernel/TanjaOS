@@ -151,7 +151,7 @@ static void ls_print_entries(int count, int opt_l, int opt_h, int opt_a) {
         } else {
             disp_len[i] = len;
             color[i] = ls_is_green(epath[i])
-                       ? COLOR_LIGHT_GREEN : COLOR_WHITE;
+                       ? COLOR_LIGHT_GREEN : COLOR_LIGHT_GREY;
             if (opt_l)
                 ls_fmt_size(fs_get_file_size(epath[i]), opt_h, sizestr[i]);
         }
@@ -344,10 +344,10 @@ void main(char* args) {
                 print("- ");
                 print(sz);
                 print("  ");
-                print_color(pa, ls_is_green(pa) ? COLOR_LIGHT_GREEN : COLOR_WHITE);
+                print_color(pa, ls_is_green(pa) ? COLOR_LIGHT_GREEN : COLOR_LIGHT_GREY);
                 print("\n");
             } else {
-                print_color(pa, ls_is_green(pa) ? COLOR_LIGHT_GREEN : COLOR_WHITE);
+                print_color(pa, ls_is_green(pa) ? COLOR_LIGHT_GREEN : COLOR_LIGHT_GREY);
                 print("\n");
             }
             return;

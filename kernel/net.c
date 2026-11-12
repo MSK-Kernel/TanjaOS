@@ -14,6 +14,54 @@ extern void  print(const char* s);
 extern int   printf(const char* fmt, ...);
 extern int   snprintf(char* s, unsigned int n, const char* fmt, ...);
 extern void  boot_log(const char* msg);
+extern void  print_dec_pad(uint32_t n, int width);
+extern uint16_t con_color;              /* current console attribute (kernel.c) */
+
+/* Internet logging is the one kernel subsystem that does not print in white.
+ * Network lines (card probe, DHCP, link state, transfer progress) are drawn in
+ * light grey - the same shade user programs use - so "Internet stuff" is easy
+ * to pick out of the boot log.
+ *
+ * They also carry no "[ <time> ]" stamp: each line is prefixed with the
+ * interface it belongs to instead - "eth0: DHCP 10.0.2.15 gateway 10.0.2.2" -
+ * and messages that are not about one card use "net: ". */
+#define CON_NET_COLOR (0x07 << 8)
+
+extern void print_dec(uint32_t n);
+
+static void net_emit(const char* dev, int idx, const char* msg) {
+    uint16_t save = con_color;
+    con_color = CON_NET_COLOR;
+    print(dev);
+    if (idx >= 0) {
+        print_dec((uint32_t)idx);
+    }
+    print(": ");
+    print(msg);
+    print("\n");
+    con_color = save;
+}
+
+/* A line about one card: "eth<N>: ..." */
+static void net_log_dev(int idx, const char* msg) { net_emit("eth", idx, msg); }
+
+/* A line about networking in general: "net: ..." */
+static void net_log(const char* msg) { net_emit("net", -1, msg); }
+
+static void net_puts(const char* s) {
+    uint16_t save = con_color;
+    con_color = CON_NET_COLOR;
+    print(s);
+    con_color = save;
+}
+
+static void net_pct(int pct) {
+    uint16_t save = con_color;
+    con_color = CON_NET_COLOR;
+    print_dec_pad((uint32_t)pct, 3);
+    print("%");
+    con_color = save;
+}
 extern void  timer_delay_ms(uint32_t ms);
 extern uint32_t get_uptime_ms(void);
 extern void* memset(void* d, int v, unsigned int n);
@@ -982,7 +1030,7 @@ int net_http_save(const char* url0, const char* outpath, uint32_t* out_len) {
                 /* 206: this_len is the remaining length */
                 if (!content_len) content_len = total + this_len;
             }
-            if (content_len && last_pct < 0) { print_dec_pad(0, 3); print("%"); }
+            if (content_len && last_pct < 0) net_pct(0);
             /* One allocation for the whole file. Repeated append reallocs
              * fragment the pool and fail part-way through large packages. */
             if (content_len && total == 0) {
@@ -1016,9 +1064,8 @@ int net_http_save(const char* url0, const char* outpath, uint32_t* out_len) {
                         int pct = (int)((total * 100ull) / content_len);
                         if (pct > 100) pct = 100;
                         if (pct != last_pct) {
-                            print("\b\b\b\b");
-                            print_dec_pad((uint32_t)pct, 3);
-                            print("%");
+                            net_puts("\b\b\b\b");
+                            net_pct(pct);
                             last_pct = pct;
                         }
                     }
@@ -1027,9 +1074,9 @@ int net_http_save(const char* url0, const char* outpath, uint32_t* out_len) {
                 if (r == 0) { /* clean EOF */
                     conn_close();
                     if (content_len && last_pct != 100) {
-                        print("\b\b\b\b"); print_dec_pad(100, 3); print("%");
+                        net_puts("\b\b\b\b"); net_pct(100);
                     }
-                    print("\n");
+                    net_puts("\n");
                     if (out_len) *out_len = total;
                     return 200;
                 }
@@ -1141,8 +1188,8 @@ static int load_static_conf(void) {
 static void log_cfg(const char* how) {
     char a[16], g[16], m[100];
     ip_str(cfg.ip, a); ip_str(cfg.gw, g);
-    snprintf(m, sizeof(m), "Network: eth%d %s %s gateway %s", cur_nic, how, a, g);
-    boot_log(m);
+    snprintf(m, sizeof(m), "%s %s gateway %s", how, a, g);
+    net_log_dev(cur_nic, m);
 }
 
 void net_init(void) {
@@ -1150,28 +1197,28 @@ void net_init(void) {
     char m[100];
     uint32_t t0;
     nnics = nic_scan_all(nics, MAX_NICS);
-    if (!nnics) { boot_log("Network: no Ethernet controller found on the PCI bus"); return; }
+    if (!nnics) { net_log("no Ethernet controller found on the PCI bus"); return; }
 
     for (i = 0; i < nnics; i++) {
         nic_found_t* f = &nics[i];
         if (f->state == NIC_ST_READY) {
             ready++;
-            snprintf(m, sizeof(m), "Network: eth%d %s %04x:%04x %02x:%02x:%02x:%02x:%02x:%02x", i, f->driver,
+            snprintf(m, sizeof(m), "%s %04x:%04x %02x:%02x:%02x:%02x:%02x:%02x", f->driver,
                      f->vendor, f->device, f->nic.mac[0], f->nic.mac[1], f->nic.mac[2],
                      f->nic.mac[3], f->nic.mac[4], f->nic.mac[5]);
         } else if (f->state == NIC_ST_NODRIVER) {
-            snprintf(m, sizeof(m), "Network: eth%d %04x:%04x at pci %02x:%02x.%d - no driver for this card yet",
-                     i, f->vendor, f->device, f->bus, f->dev, f->fn);
+            snprintf(m, sizeof(m), "%04x:%04x at pci %02x:%02x.%d - no driver for this card yet",
+                     f->vendor, f->device, f->bus, f->dev, f->fn);
         } else if (f->state == NIC_ST_FAILED) {
-            snprintf(m, sizeof(m), "Network: eth%d %04x:%04x (%s) - driver could not start the card",
-                     i, f->vendor, f->device, f->driver);
+            snprintf(m, sizeof(m), "%04x:%04x (%s) - driver could not start the card",
+                     f->vendor, f->device, f->driver);
         } else {
-            snprintf(m, sizeof(m), "Network: eth%d %04x:%04x (%s) - second card of this kind, not used",
-                     i, f->vendor, f->device, f->driver);
+            snprintf(m, sizeof(m), "%04x:%04x (%s) - second card of this kind, not used",
+                     f->vendor, f->device, f->driver);
         }
-        boot_log(m);
+        net_log_dev(i, m);
     }
-    if (!ready) { boot_log("Network: none of the Ethernet cards could be started"); return; }
+    if (!ready) { net_log("none of the Ethernet cards could be started"); return; }
 
     /* give auto-negotiation a moment: wait until some card has a link (max 2.5 s) */
     t0 = get_uptime_ms();
@@ -1193,16 +1240,15 @@ void net_init(void) {
             select_nic(&nics[i].nic, i);
             if (load_static_conf()) { log_cfg("static"); return; }
             if (net_dhcp() == 0) { log_cfg("DHCP"); return; }
-            snprintf(m, sizeof(m), "Network: eth%d has a link but DHCP got no answer", i);
-            boot_log(m);
+            net_log_dev(i, "has a link but DHCP got no answer");
         }
     }
     for (i = 0; i < nnics; i++) {                         /* nothing configured: park on the first card */
         if (nics[i].state != NIC_ST_READY) continue;
         select_nic(&nics[i].nic, i);
         if (load_static_conf()) { log_cfg("static"); return; }
-        if (!nics[i].nic.link()) boot_log("Network: no cable connected (will configure when one is plugged in)");
-        else boot_log("Network: not configured - try 'ifconfig dhcp' or 'ifconfig static ...'");
+        if (!nics[i].nic.link()) net_log_dev(i, "no cable connected (will configure when one is plugged in)");
+        else net_log_dev(i, "not configured - try 'ifconfig dhcp' or 'ifconfig static ...'");
         return;
     }
 }

@@ -6,6 +6,8 @@ extern void print(const char* s);
 extern void print_dec(uint32_t n);
 extern void print_hex(uint32_t n);
 extern void console_putc(char c);
+extern uint16_t con_color;            /* current console attribute (kernel.c) */
+#define VGA_USER_COLOR (0x07 << 8)    /* user program text: light grey */
 extern void* memcpy(void* dst, const void* src, size_t n);
 extern void* memset(void* dst, int c, size_t n);
 extern uint32_t get_uptime_ms(void);
@@ -703,8 +705,15 @@ static uint32_t sys_write(uint32_t fd, const uint8_t* buf, uint32_t count)
     if (fd == 1 || fd == 2) {
         /* dup2() may have redirected the console onto a file */
         if (!(lfd[fd].used && lfd[fd].writable && lfd[fd].path[0])) {
+            /* Program output goes out in light grey so it is easy to tell
+             * apart from the kernel's white log text. The attribute is put
+             * back afterwards: whatever the program left on screen, the
+             * shell (kernel) keeps printing in white. */
+            uint16_t save_color = con_color;
+            con_color = VGA_USER_COLOR;
             for (n = 0; n < count; n++)
                 console_putc((char)buf[n]);
+            con_color = save_color;
             return count;
         }
     }

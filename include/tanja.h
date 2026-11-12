@@ -46,6 +46,7 @@ extern void read_line_secret(char* buf, int max_len); /* echoes '*' per char */
 
 /* VGA text-mode colors (attribute already shifted into the high byte,
  * black background: (fg << 8)). */
+#define COLOR_LIGHT_GREY  (0x07 << 8)
 #define COLOR_WHITE       (0x0F << 8)
 #define COLOR_LIGHT_GREEN (0x0A << 8)
 #define COLOR_DIR         (0x09 << 8)

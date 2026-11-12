@@ -20,6 +20,8 @@ extern void clear_screen(void);
 extern void print_dec(uint32_t n);
 extern void print_dec_pad(uint32_t n, int width);
 extern void print_hex(uint32_t n);
+extern uint16_t con_color;           /* current console attribute (kernel.c) */
+#define VGA_USER_COLOR (0x07 << 8)   /* user program text: light grey */
 extern uint16_t* VGA;
 extern int cursor;
 extern void sync_cursor(void);
@@ -710,13 +712,20 @@ int elf_run(const uint8_t* image, uint32_t size, const char* path, const char* a
  * execute_command) unwind to their OWN elf_run. */
         int save_active = tanja_exit_active;
         int save_jmp[5];
+        uint16_t save_color = con_color;
         memcpy(save_jmp, tanja_exit_jmp, sizeof save_jmp);
         tanja_exit_active = 1;
+        /* Everything this program prints (it calls the kernel's print/
+         * printf/putchar exports) is light grey, so applet output is
+         * distinct from the white kernel log. Restored on every way out:
+         * normal return, exit(), fault or Ctrl+C (both longjmp to here). */
+        con_color = VGA_USER_COLOR;
         if (__builtin_setjmp(tanja_exit_jmp)) {
             /* exit(code) was called */
         } else {
             ((void(*)(const char*))entry)(args ? args : "");
         }
+        con_color = save_color;
         memcpy(tanja_exit_jmp, save_jmp, sizeof save_jmp);
         tanja_exit_active = save_active;
         kb_raw_mode = 0;          /* keyboard belongs to the shell again */

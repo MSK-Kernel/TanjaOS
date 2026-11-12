@@ -9,12 +9,33 @@
 
 // VGA CONSTANTS
 
-#define VGA_COLOR (0x0F << 8)
+/* Console text attributes.
+ *
+ * Kernel boot/log/shell text is bright white; text produced by user
+ * programs (Linux binaries writing to fd 1/2 and /bin applets) is light
+ * grey, so it is obvious at a glance which side of the fence a line came
+ * from. Network ("Internet") logging is the single exception: the kernel
+ * emits those lines in light grey too (see net_log() in net.c).
+ *
+ * con_color is the attribute the console uses for ordinary text right
+ * now; whoever is printing swaps it around its own output. It defaults to
+ * light grey: the shell prompt, typed commands, login/setup prompts, shell
+ * errors and user program output are all light grey.
+ *
+ * The only white on screen is the kernel's own log: boot_log() lines are
+ * drawn in con_log_color, which defaults to white. Network ("Internet")
+ * logging is the one exception - net_log() in net.c swaps con_log_color to
+ * light grey for its lines. Kernel panics and real kernel fault dumps
+ * force white as well. */
+#define VGA_COLOR (0x0F << 8)          /* kernel log text: white        */
+#define VGA_USER_COLOR (0x07 << 8)     /* everything else: light grey   */
 #define VGA_WIDTH 80
 #define VGA_HEIGHT 25
 
 uint16_t* VGA = (uint16_t*)0xB8000;
 int cursor = 0;
+uint16_t con_color = VGA_USER_COLOR;      /* default text attribute      */
+uint16_t con_log_color = VGA_COLOR;       /* boot_log() line attribute   */
 
 // FPU INIT
 
@@ -510,7 +531,9 @@ void timer_handler()
     if (tanja_exit_active && !kb_raw_mode && ctrlc_poll()) {
         /* unwinds exactly like exit() / a program fault: back into
  * elf_run, which restores the program break, then the shell
- * prompt continues.  Terminal output matches bash: just ^C. */
+ * prompt continues.  Terminal output matches bash: just ^C.
+ * It is shell/runtime output, not a kernel log line, so it
+ * uses the console's default light grey. */
         print("^C\n");
         asm volatile ("sti");
         __builtin_longjmp((void**)tanja_exit_jmp, 1);
@@ -531,7 +554,7 @@ void scroll() {
     for (int i = 0; i < VGA_WIDTH * (VGA_HEIGHT - 1); i++)
         VGA[i] = VGA[i + VGA_WIDTH];
     for (int i = VGA_WIDTH * (VGA_HEIGHT - 1); i < VGA_WIDTH * VGA_HEIGHT; i++)
-        VGA[i] = VGA_COLOR | ' ';
+        VGA[i] = con_color | ' ';
     cursor = VGA_WIDTH * (VGA_HEIGHT - 1);
 }
 
@@ -570,9 +593,14 @@ static int ansi_digit;          /* a parameter is being accumulated    */
 static int ansi_fg = 0x0F, ansi_bg = 0x00, ansi_bold;
 static int ansi_color_on;       /* SGR has changed the colour          */
 
+/* The foreground an SGR reset ("\e[0m", "\e[39m", no parameters) returns
+ * to: whatever the current default attribute is. Kernel text resets to
+ * white, program text to light grey. */
+static int ansi_base_fg(void) { return (con_color >> 8) & 0x0F; }
+
 void console_ansi_reset(void) {
     ansi_state = 0; ansi_np = 0; ansi_digit = 0;
-    ansi_fg = 0x0F; ansi_bg = 0x00; ansi_bold = 0; ansi_color_on = 0;
+    ansi_fg = ansi_base_fg(); ansi_bg = 0x00; ansi_bold = 0; ansi_color_on = 0;
 }
 
 static uint16_t ansi_attr(void) {
@@ -584,7 +612,7 @@ static uint16_t ansi_attr(void) {
 static void ansi_erase(int from, int to) {
     if (from < 0) from = 0;
     if (to > VGA_WIDTH * VGA_HEIGHT) to = VGA_WIDTH * VGA_HEIGHT;
-    for (int i = from; i < to; i++) VGA[i] = VGA_COLOR | ' ';
+    for (int i = from; i < to; i++) VGA[i] = con_color | ' ';
 }
 
 static void ansi_sgr(void) {
@@ -592,12 +620,12 @@ static void ansi_sgr(void) {
     if (!n) { ansi_color_on = 0; return; }
     for (i = 0; i < n; i++) {
         int v = ansi_p[i];
-        if (v == 0)      { ansi_fg = 0x0F; ansi_bg = 0; ansi_bold = 0; ansi_color_on = 0; }
+        if (v == 0)      { ansi_fg = ansi_base_fg(); ansi_bg = 0; ansi_bold = 0; ansi_color_on = 0; }
         else if (v == 1) { ansi_bold = 1; ansi_color_on = 1; }
         else if (v == 22) ansi_bold = 0;
         else if (v >= 30 && v <= 37) { ansi_fg = v - 30; ansi_color_on = 1; }
         else if (v >= 90 && v <= 97) { ansi_fg = v - 90 + 8; ansi_color_on = 1; }
-        else if (v == 39) ansi_fg = 0x0F;
+        else if (v == 39) ansi_fg = ansi_base_fg();
         else if (v >= 40 && v <= 47) { ansi_bg = v - 40; ansi_color_on = 1; }
         else if (v == 49) ansi_bg = 0;
     }
@@ -750,7 +778,7 @@ void putc_color(char c, uint16_t color) {
 }
 
 void console_putc(char c) {
-    putc_color(c, VGA_COLOR);
+    putc_color(c, con_color);
 }
 
 /* ISO C-style console functions exposed to TanjaOS C programs. */
@@ -774,7 +802,7 @@ void print_n(const char* s, uint32_t len) {
  * console decoder, same as putc/print) but only update the
  * hardware cursor once for the whole chunk. */
     for (uint32_t i = 0; i < len; i++)
-        console_feed(s[i], VGA_COLOR);
+        console_feed(s[i], con_color);
 
     sync_cursor();
 }
@@ -791,7 +819,7 @@ void print_color(const char* s, uint16_t color) {
 
 void clear_screen() {
     for (int i = 0; i < VGA_WIDTH * VGA_HEIGHT; i++)
-        VGA[i] = VGA_COLOR | ' ';
+        VGA[i] = con_color | ' ';
     cursor = 0;
     sync_cursor();
 }
@@ -815,7 +843,13 @@ void print_dec(uint32_t n) {
 
 void boot_log(const char* msg)
 {
+    /* Kernel log lines are the only white text on screen; net.c's
+     * net_log() temporarily switches con_log_color to light grey so
+     * "Internet" logging stands out. */
+    uint16_t save = con_color;
     uint32_t t = get_uptime_ms();
+
+    con_color = con_log_color;
 
     print("[ ");
 
@@ -836,6 +870,7 @@ void boot_log(const char* msg)
 
     print(msg);
     print("\n");
+    con_color = save;
 }
 
 void print_dec_pad(uint32_t n, int width) {
@@ -1067,12 +1102,12 @@ void read_line(char* buffer, int max_len) {
                         prompt_start -= VGA_WIDTH;
                         cursor = prompt_start + i;
                     }
-                    VGA[cursor] = VGA_COLOR | (rl_mask ? '*' : line[i]);
+                    VGA[cursor] = con_color | (rl_mask ? '*' : line[i]);
                     cursor++;
                 }
 
                 if (cursor < VGA_WIDTH * VGA_HEIGHT)
-                    VGA[cursor] = VGA_COLOR | ' ';
+                    VGA[cursor] = con_color | ' ';
 
                 cursor = prompt_start + pos;
                 sync_cursor();
@@ -1134,7 +1169,7 @@ void read_line(char* buffer, int max_len) {
                         prompt_start -= VGA_WIDTH;
                         cursor = prompt_start + i;
                     }
-                    VGA[cursor] = VGA_COLOR | (rl_mask ? '*' : line[i]);
+                    VGA[cursor] = con_color | (rl_mask ? '*' : line[i]);
                     cursor++;
                 }
 
@@ -2690,6 +2725,7 @@ void shell() {
 
 void kernel_panic_storage(const char *reason) {
     clear_screen();
+    con_color = VGA_COLOR;   /* panic text is kernel log text: white */
     print("panic: due to: Disk size too small for functional TanjaOS environment\n");
     if (reason) {
         print(reason);
@@ -2710,6 +2746,7 @@ static void kernel_panic_no_bin(void) {
         extern uint32_t fs_pool_bytes(void);
         if (fs_pool_bytes() < (4u * 1024u * 1024u)) {
             clear_screen();
+            con_color = VGA_COLOR;
             print("panic: due to: not enough RAM to build the TanjaOS filesystem\n");
             print("This machine reports ");
             print_dec(boot_ram_top_bytes / (1024u * 1024u));
@@ -2726,6 +2763,7 @@ static void kernel_panic_no_bin(void) {
  * If /bin has been removed or emptied, TanjaOS refuses to start
  * another shell and leaves the panic message on screen. */
     clear_screen();
+    con_color = VGA_COLOR;
     print("panic: due to: TanjaOS cannot boot because /bin is missing or empty\n");
     print("The command binaries are required for userspace.\n");
     print("Try reinstall TanjaOS to restore /bin.\n");

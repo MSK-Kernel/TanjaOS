@@ -116,6 +116,8 @@ void fault_handler(uint32_t vector, uint32_t err, uint32_t eip,
     asm volatile ("cli");
 
     if ((uint32_t)(uintptr_t)&__kernel_end <= eip && tanja_exit_active) {
+        /* A program fault is reported with the program's own text colour
+         * (light grey), like any other runtime message about a program. */
         print("\nprogram fault: ");
         print(fault_name(vector));
         print(" (eip ");
@@ -143,6 +145,11 @@ void fault_handler(uint32_t vector, uint32_t err, uint32_t eip,
         __builtin_longjmp((void**)tanja_exit_jmp, 1);
     }
 
+    /* A real kernel fault is kernel log text: force white for the dump. */
+    {
+        extern uint16_t con_color;
+        con_color = (0x0F << 8);
+    }
     print("\n\nKERNEL FAULT #");
     fault_print_hex(vector);
     print(" - ");
