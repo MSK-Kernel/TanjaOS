@@ -29,22 +29,15 @@ need PAE or a 64-bit build.
 
 2. Programming in TanjaOS
 
-TinyCC is installed from the package repository as /usr/bin/tcc.o, so 'tcc' is just another command. It compiles
-real C99/C11 (the full tcc frontend) into ELF32 objects the kernel ELF
-driver can run. The OS ships a real, standard C header set at /usr/include
-- stdio.h, stdlib.h, string.h, unistd.h, ctype.h, time.h, math.h, errno.h,
-assert.h, setjmp.h, signal.h, fcntl.h, inttypes.h, limits.h, locale.h,
-fenv.h, iso646.h, stdatomic.h, stdalign.h, stdnoreturn.h, tgmath.h,
-sys/... - and NOTHING custom: no tanja.h. The kernel API (console, printf,
-keyboard, the fs_* filesystem functions, environment, timers) is declared
-inside those standard headers, so a TanjaOS program is just a normal C
-file.
+You can install TinyCC in TanjaOS with 'pkg install tcc'
+which it will fetch from https://github.com/MSK-Kernel/pkg_tcc
+and you will see some text about TinyCC below.
 
 tcc is strict by default, on purpose:
 
   * ALL warnings are hard compile-time errors (-Werror is injected
     first in the argument list).  Pass -Wno-error to get normal
-    warning behavior back.  (#warning directives are exempt, like
+    warning behavior back. (warning directives are exempt, like
     a real gcc -Werror build.)
   * After a clean compile the wrapper verifies EVERY external symbol
     the produced object references against the live kernel export
