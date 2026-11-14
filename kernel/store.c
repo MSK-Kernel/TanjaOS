@@ -418,6 +418,23 @@ void store_init(uint32_t mb_magic, uint32_t mb_addr) {
         }
     }
 
+    /* USB Live boot: the stick the image was written to appears as a
+       removable ATA device (or its model string identifies it as USB /
+       flash). Never use it for persistent storage; run from RAM instead.
+       Fixed hard disks still get persistence. */
+    if (found && backend == BACKEND_ATA &&
+        (info.removable ||
+         has_word(info.model, "usb") ||
+         has_word(info.model, "flash") ||
+         has_word(info.model, "mass storage") ||
+         has_word(info.model, "udisk"))) {
+        store_enabled = 0;
+        fs_init();
+        fs_seed_home();
+        boot_log("Storefile: booted from USB/removable media, running from RAM (nothing is written to the stick)");
+        return;
+    }
+
     if (!found && ahci_init() == 0) {
         backend = BACKEND_AHCI;
         disk_sectors = ahci_get_sector_count();

@@ -42,6 +42,7 @@ typedef struct {
     char firmware[9];   // 8 chars + null terminator
     uint32_t sectors;   // Total sectors (if LBA28 supported)
     int present;        // 1 if drive exists
+    int removable;      // 1 if removable media (USB stick, etc.)
 } ata_drive_info_t;
 
 // Function prototypes

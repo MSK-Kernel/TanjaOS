@@ -185,6 +185,7 @@ int ata_detect_drive(int channel, int drive, ata_drive_info_t *info) {
         info->model[i * 2 + 1] = (char)(w & 0xFF);
     }
     info->model[40] = 0;
+    info->removable = (id[0] & 0x80) ? 1 : 0;  /* bit 7 of word 0 = removable media */
 
     return 0;
 }
