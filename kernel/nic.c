@@ -19,7 +19,7 @@ static inline uint8_t  io_inb(uint16_t p)  { uint8_t v;  asm volatile ("inb %1, 
 static inline uint16_t io_inw(uint16_t p)  { uint16_t v; asm volatile ("inw %1, %0" : "=a"(v) : "Nd"(p)); return v; }
 static inline uint32_t io_inl(uint16_t p)  { uint32_t v; asm volatile ("inl %1, %0" : "=a"(v) : "Nd"(p)); return v; }
 
-/* ---------------------------------------------------------------- PCI */
+/* PCI */
 
 static uint32_t pci_rd(uint8_t b, uint8_t d, uint8_t f, uint8_t off) {
     io_outl(0xCF8, 0x80000000u | ((uint32_t)b << 16) | ((uint32_t)d << 11) |
@@ -95,7 +95,7 @@ static uint32_t pci_bar_mmio(uint8_t b, uint8_t d, uint8_t f, uint8_t off) {
     return addr;
 }
 
-/* ------------------------------------------------------------- e1000 */
+/* e1000 */
 
 #define E_CTRL   0x0000
 #define E_STATUS 0x0008
@@ -240,7 +240,7 @@ static int e1000_init(uint8_t b, uint8_t d, uint8_t f, nic_t* out) {
     return 0;
 }
 
-/* ----------------------------------------------------------- rtl8139 */
+/* rtl8139 */
 
 #define R_IDR0  0x00
 #define R_TSD0  0x10
@@ -310,7 +310,7 @@ static int rtl8139_init(uint8_t b, uint8_t d, uint8_t f, nic_t* out) {
     r_io = (uint16_t)(bar0 & ~3u);
 
     /* 0x50 = Cfg9346: on real chips the CONFIG registers below are
-     * write-protected until it is written with 0xC0. */
+ * write-protected until it is written with 0xC0. */
     io_outb(r_io + 0x50, 0xC0);
     io_outb(r_io + R_CONFIG1, 0x00);                          /* power on, no wake events */
     io_outb(r_io + 0x59, 0x00);                               /* CONFIG3: no cardbus wake */
@@ -341,7 +341,7 @@ static int rtl8139_init(uint8_t b, uint8_t d, uint8_t f, nic_t* out) {
 }
 
 
-/* ---------------------------------------------------- rtl8168/8169/8111 */
+/* rtl8168/8169/8111 */
 /* The NIC on most real motherboards and cheap PCI-E cards. Polled,
  * legacy descriptors, no firmware. Covers 8169, 8168, 8111, 8101. */
 
@@ -483,7 +483,7 @@ static int rtl8169_init(uint8_t b, uint8_t d, uint8_t f, nic_t* out) {
 extern void boot_log(const char* s);
 extern void print_hex(uint32_t n);
 
-/* ------------------------------------------------- ne2000 / RTL8029AS */
+/* ne2000 / RTL8029AS */
 /* Novell NE2000 and its clones: Realtek RTL8029AS (10EC:8029), the card
  * QEMU calls "ne2k_pci", and the ISA cards of 486 / Pentium class machines.
  * dp8390 register set, 16 KiB of card RAM: TX page 0x40, Rx ring 0x46..0x7F.
@@ -563,7 +563,7 @@ static int n_send(const void* frame, uint32_t len) {
     if (len > 1514) return -1;
     if (n_tx_pending) {                                /* previous frame still going */
         /* TSR bit 0 = PTX. ISR cannot be used here: the receive path clears
-         * ISR to acknowledge packets, which would take PTX with it. */
+ * ISR to acknowledge packets, which would take PTX with it. */
         t0 = get_uptime_ms();
         while (!(io_inb(n_io + N_TSR) & 0x01)) {
             if (get_uptime_ms() - t0 > 200) return -1;
@@ -588,8 +588,8 @@ static int n_send(const void* frame, uint32_t len) {
 
 static int n_recv(void* buf, uint32_t cap) {
     /* Keep pulling frames while they are queued, dropping any that do not fit
-     * in the caller's buffer: the 14 KiB card ring overflows if the stack
-     * spends time on disk I/O between polls. */
+ * in the caller's buffer: the 14 KiB card ring overflows if the stack
+ * spends time on disk I/O between polls. */
     int guard;
     for (guard = 0; guard < 8; guard++) {
         uint8_t hdr[4], bnry, next, page;
@@ -644,7 +644,7 @@ static int ne2k_init(uint8_t b, uint8_t d, uint8_t f, nic_t* out) {
     io_outb(n_io + N_BNRY, N_RX_START - 1);            /* boundary = last page consumed */
 
     /* MAC: real cards load PAR from their PROM at power-up; emulated ones
-     * leave it zero, so fall back to reading the PROM through remote DMA. */
+ * leave it zero, so fall back to reading the PROM through remote DMA. */
     io_outb(n_io + N_CR, 0x61);                        /* page 1 */
     for (i = 0; i < 6; i++) out->mac[i] = io_inb(n_io + 0x01 + i);
     if (!(out->mac[0] | out->mac[1] | out->mac[2] |
@@ -683,7 +683,7 @@ static int ne2k_match(uint16_t ven, uint16_t dev) {
     return ven == 0x10EC && (dev == 0x8029 || dev == 0x8028);
 }
 
-/* ------------------------------------------------------- atheros AR8132 */
+/* atheros AR8132 */
 /* Attansic L2C / Atheros AR8132 (PCI 1969:1062). Common on ASUS Eee PC.
  * Polled, one TX ring + one RX free ring + one RX return ring.
  * RX buffers must be <= 1536 or the chip locks up. */
@@ -823,7 +823,7 @@ static int ar8132_init(uint8_t b, uint8_t d, uint8_t f, nic_t* out) {
 }
 
 
-/* ------------------------------------------------------------ virtio-net */
+/* virtio-net */
 /* The NIC of KVM/QEMU, Proxmox, most clouds, VirtualBox and UTM. Both the
  * legacy (I/O port) and the modern (PCI capability / MMIO) transport. Polled. */
 
@@ -1042,7 +1042,7 @@ static int virtio_init(uint8_t b, uint8_t d, uint8_t f, nic_t* out) {
 }
 static int virtio_match(uint16_t ven, uint16_t dev) { return ven == 0x1AF4 && (dev == 0x1000 || dev == 0x1041); }
 
-/* ------------------------------------------------------------ AMD PCnet */
+/* AMD PCnet */
 /* PCnet-PCI II / FAST III: VirtualBox's default NIC, old VMware, QEMU "pcnet". */
 
 #define P_N 16
@@ -1145,7 +1145,7 @@ static int pcnet_init(uint8_t b, uint8_t d, uint8_t f, nic_t* out) {
 static int pcnet_match(uint16_t ven, uint16_t dev) { return ven == 0x1022 && (dev == 0x2000 || dev == 0x2001); }
 
 
-/* ---------------------------------------------------------------------
+/*
  * Intel 8255x / PRO-100 family (i82557, i82558, i82559, 82801 ICH...).
  *
  * The board is driven through the SCB window: put an address in the
@@ -1153,12 +1153,12 @@ static int pcnet_match(uint16_t ven, uint16_t dev) { return ven == 0x1022 && (de
  * (CU) or a receive frame descriptor list (RU) from memory. Two things
  * matter for real hardware:
  *
- *  - PCI bus mastering must be on, or the CU reads nothing and parks;
- *  - a command is only accepted once SCBCommand reads back as zero.
+ * - PCI bus mastering must be on, or the CU reads nothing and parks;
+ * - a command is only accepted once SCBCommand reads back as zero.
  *
  * Layout follows Intel's reference driver: CU/RU base loaded as 0, so
  * every link field is a plain absolute address.
- * ------------------------------------------------------------------- */
+ */
 
 #define EX_CSR_STATUS   0x00    /* 16: CU state bits 7-6, RU state 5-2 */
 #define EX_CSR_CMD      0x02    /* 16: command byte */
@@ -1237,7 +1237,7 @@ static int ex_cmd(uint8_t cmd, uint32_t ptr) {
     return 0;
 }
 
-/* ---- 93C46 EEPROM: word 0..2 hold the factory MAC ------------------ */
+/* 93C46 EEPROM: word 0..2 hold the factory MAC */
 #define EE_CS 0x02
 #define EE_SK 0x01
 #define EE_DI 0x04
@@ -1275,7 +1275,7 @@ static uint16_t ee_read(uint8_t addr) {
     return v;
 }
 
-/* ---- MII (PHY) access: link status ------------------------------- */
+/* MII (PHY) access: link status */
 static uint16_t ex_mdio(uint8_t reg) {
     uint32_t v = (2u << 26) | ((uint32_t)ex_phy << 21) | ((uint32_t)reg << 16);
     int i;
@@ -1293,7 +1293,7 @@ static int ex_link(void) {
     return (ex_mdio(1) & 0x0004) != 0;    /* BMSR: link status */
 }
 
-/* ---- command blocks ----------------------------------------------- */
+/* command blocks */
 static void ex_cb_set(int off, uint16_t cmd, uint32_t link) {
     *(uint16_t*)(ex_cb + off + 0) = 0;
     *(uint16_t*)(ex_cb + off + 2) = cmd;
@@ -1351,8 +1351,8 @@ static void ex_rx_kick(int next) {
     if (ru != 4) {                       /* 4 = ready; 1/2 = stopped */
         ex_st_kick++;
         /* Restart at the next descriptor rather than plain resume: the
-         * card also reopens its receive path, which is what releases
-         * frames that piled up while it was stopped. */
+ * card also reopens its receive path, which is what releases
+ * frames that piled up while it was stopped. */
         ex_cmd(EX_RU_START, ex_rx_slot(next % EX_RX_SLOTS));
     }
 }
@@ -1456,10 +1456,10 @@ static int i8255x_init(uint8_t b, uint8_t d, uint8_t f, nic_t* out) {
     if (ex_cmd(EX_RU_LOAD_BASE, 0) != 0) return -1;
 
     /* Configure: the 22 bytes Intel's own Linux driver writes for this
-     * chip. The bit layout is NOT the obvious one (standard TCB, TX
-     * padding, RX stripping and the retry count all live in packed
-     * bitfields) - getting it wrong makes the card retransmit and the
-     * link crawl, so this follows the reference driver byte for byte. */
+ * chip. The bit layout is NOT the obvious one (standard TCB, TX
+ * padding, RX stripping and the retry count all live in packed
+ * bitfields) - getting it wrong makes the card retransmit and the
+ * link crawl, so this follows the reference driver byte for byte. */
     {
         static const uint8_t cfg[22] = {
             0x16, 0x08, 0x00, 0x00, 0x00, 0x00,  /* size, fifo, ifs  */
@@ -1498,9 +1498,9 @@ static int i8255x_init(uint8_t b, uint8_t d, uint8_t f, nic_t* out) {
     return 0;
 }
 
-/* ------------------------------------------------------------- probe */
+/* probe */
 
-/* ------------------------------------------------------------ registry */
+/* registry */
 /* Every driver here keeps its state in static variables, so each one can drive ONE card;
  * a second card of the same kind is reported but left alone. */
 

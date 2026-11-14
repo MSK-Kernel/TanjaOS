@@ -3,11 +3,11 @@
 #include <stddef.h>
 #include "tanja.h"
 
-/* ifconfig                      show the active interface
- * ifconfig list                 every Ethernet card found, with or without a driver
- * ifconfig use <N>              make card N (see list) the active interface, then run DHCP
- * ifconfig dhcp                 ask a DHCP server again (and forget any saved static setup)
- * ifconfig static <ip>[/bits] [gw <ip>] [dns <ip>]   fixed address, saved in /etc/net.conf (root) */
+/* ifconfig show the active interface
+ * ifconfig list every Ethernet card found, with or without a driver
+ * ifconfig use <N> make card N (see list) the active interface, then run DHCP
+ * ifconfig dhcp ask a DHCP server again (and forget any saved static setup)
+ * ifconfig static <ip>[/bits] [gw <ip>] [dns <ip>] fixed address, saved in /etc/net.conf (root) */
 
 static void print_ip(uint32_t ip) {
     printf("%d.%d.%d.%d", (int)((ip >> 24) & 255), (int)((ip >> 16) & 255),

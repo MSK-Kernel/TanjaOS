@@ -165,7 +165,7 @@ void fault_handler(uint32_t vector, uint32_t err, uint32_t eip,
     }
     if (eip >= 0x100000 && eip < (uint32_t)(uintptr_t)&__kernel_end) {
         /* the faulting instruction bytes: enough to decode the site from
-         * a screenshot alone */
+ * a screenshot alone */
         int b;
         print("code    =");
         for (b = 0; b < 8; b++) {

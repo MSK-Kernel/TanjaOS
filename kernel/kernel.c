@@ -558,7 +558,7 @@ void timer_handler()
     if (tanja_exit_active && !kb_raw_mode && ctrlc_poll()) {
         /* unwinds exactly like exit() / a program fault: back into
  * elf_run, which restores the program break, then the shell
- * prompt continues.  Terminal output matches bash: just ^C.
+ * prompt continues. Terminal output matches bash: just ^C.
  * It is shell/runtime output, not a kernel log line, so it
  * uses the console's default light grey. */
         print("^C\n");
@@ -607,7 +607,7 @@ static void serial_put(char c) {
 }
 
 
-/* ---- minimal ANSI/CSI interpreter ----------------------------------
+/* minimal ANSI/CSI interpreter
  * Real programs speak in escape sequences: busybox ash redraws its input
  * line with ESC[J / ESC[K and cursor moves, `ls --color` emits SGR. The
  * console used to draw those bytes literally, which is where the "[J"
@@ -871,8 +871,8 @@ void print_dec(uint32_t n) {
 void boot_log(const char* msg)
 {
     /* Kernel log lines are the only white text on screen; net.c's
-     * net_log() temporarily switches con_log_color to light grey so
-     * "Internet" logging stands out. */
+ * net_log() temporarily switches con_log_color to light grey so
+ * "Internet" logging stands out. */
     uint16_t save = con_color;
     uint32_t t = get_uptime_ms();
 
@@ -2108,7 +2108,7 @@ static int split_args(char* s, char** tv, int max) {
  * accounts (root only); chmod/chown manage file ownership. They
  * are builtins rather than /bin applets because they need the
  * kernel-internal account table and execute_command(). */
-/* ---------------------------------------------------------------------
+/*
  * Account API for the /bin commands.
  *
  * The account table, the group table and the session are kernel state, so
@@ -2116,7 +2116,7 @@ static int split_args(char* s, char** tv, int max) {
  * groupadd/groupdel/groups, hostname, exit) live in bin/*.c and use the
  * functions below. The kernel keeps the tables and does the validating,
  * the commands keep the CLI, the prompts and the wording.
- * ------------------------------------------------------------------- */
+ */
 
 int acc_cur_uid(void) { return cur_uid; }
 const char* acc_cur_name(void) { return cur_username; }
@@ -2535,11 +2535,11 @@ void kernel_main(uint32_t mb_magic, uint32_t mb_addr)
     boot_log("Kernel starting");
 
     /* Size the Linux compat regions (ld.so, mmap, PIE exe, stack) to the
-     * actual RAM of this machine. mem_lower + mem_upper only describes the
-     * contiguous block above 1 MiB, so it stops at the chipset's PCI/MMIO
-     * hole (~3 GiB on a 4 GiB machine) and cannot see anything above 4 GiB.
-     * The memory map tells the whole truth: it gives the installed size, and
-     * the highest usable address below 4 GiB - all a 32-bit kernel can use. */
+ * actual RAM of this machine. mem_lower + mem_upper only describes the
+ * contiguous block above 1 MiB, so it stops at the chipset's PCI/MMIO
+ * hole (~3 GiB on a 4 GiB machine) and cannot see anything above 4 GiB.
+ * The memory map tells the whole truth: it gives the installed size, and
+ * the highest usable address below 4 GiB - all a 32-bit kernel can use. */
     {
         uint32_t ram_top = 128u << 20;      /* fallback: no multiboot info */
         uint32_t ram_total_mib = 0;
@@ -2593,9 +2593,9 @@ void kernel_main(uint32_t mb_magic, uint32_t mb_addr)
     boot_log("Loading command binaries");
 
     /* /bin is mandatory. A previous boot (or a bad persistent image)
-     * may have saved an empty /bin; the embedded home.tar is the
-     * factory source of the command binaries, so re-seed from it
-     * before giving up. */
+ * may have saved an empty /bin; the embedded home.tar is the
+ * factory source of the command binaries, so re-seed from it
+ * before giving up. */
     extern void fs_seed_home(void);
     if (!fs_directory_exists("/bin") || fs_directory_is_empty("/bin")) {
         boot_log("Restoring /bin from embedded home archive");

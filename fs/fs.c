@@ -241,7 +241,7 @@ static void fpool_free(void* ptr) {
 }
 
 
-/* ---------------------------------------------------------------------
+/*
  * Disk-backed file data.
  *
  * The RAM pool above is what limits how much a machine can store: at
@@ -254,7 +254,7 @@ static void fpool_free(void* ptr) {
  * image and the reserved Storefile region. Small files stay in the pool
  * (fast, zero-copy for exec); big ones - package payloads, Doom, tarballs -
  * use the disk, and capacity becomes the size of the disk.
- * ------------------------------------------------------------------- */
+ */
 extern int      store_data_ready(void);
 extern uint32_t store_data_first_sector(void);
 extern uint32_t store_data_sector_count(void);
@@ -432,7 +432,7 @@ static int dsk_migrate(int idx) {
     return 0;
 }
 
-/* --- one interface the rest of fs.c uses, pool or disk --- */
+/* one interface the rest of fs.c uses, pool or disk */
 static int data_read(int idx, uint32_t off, char* dst, uint32_t len) {
     if (fstart[idx]) return dsk_read_bytes(idx, off, dst, len);
     if (!fdata[idx]) return -1;
@@ -913,7 +913,7 @@ int fs_delete_directory_recursive(const char* path) {
 
     /* rm -rf used to call store_autosave() once per child. Batch the whole
  * tree deletion into one compact Storefile write.
-     */
+ */
     fs_batch_depth++;
 
     char buf[16384];
@@ -1115,11 +1115,11 @@ int fs_prealloc_file(const char* path, uint32_t size)
     fpool_coalesce();
     if (data_resize(idx, size) != 0) return -3;
     /* Logical size stays 0 until appends fill it; remember capacity in fsize
-     * by storing the allocated length. Callers then overwrite via append
-     * which will see oldsz and grow. To avoid a second alloc, set fsize
-     * to the full size now and let the writer fill from offset 0.
-     * We expose the allocated length as the file size; the downloader
-     * overwrites from the start. */
+ * by storing the allocated length. Callers then overwrite via append
+ * which will see oldsz and grow. To avoid a second alloc, set fsize
+ * to the full size now and let the writer fill from offset 0.
+ * We expose the allocated length as the file size; the downloader
+ * overwrites from the start. */
     return 0;
 }
 
@@ -1630,7 +1630,7 @@ uint32_t fs_serialized_size(void) {
     int i;
     for (i = 0; i < MAX_F; i++) {
         /* disk-backed files are already on the disk; only pool bytes are
-         * written into the Storefile image */
+ * written into the Storefile image */
         if (fused[i] && fsize[i] > 0 && !fstart[i])
             need += (uint32_t)fsize[i];
     }
@@ -1852,8 +1852,8 @@ int fs_deserialize_fill(void* ctx, fs_fill_fn fill)
                    | ((uint32_t)tmp4[2] << 16) | ((uint32_t)tmp4[3] << 24);
             if (hole_n > DSK_HOLES) hole_n = DSK_HOLES;
             /* the writer always emits the whole table: read every slot,
-             * even the ones past hole_n, or the config blob that follows
-             * the image lands 64 bytes early */
+ * even the ones past hole_n, or the config blob that follows
+ * the image lands 64 bytes early */
             for (i = 0; i < DSK_HOLES; i++) {
                 uint32_t hs = 0, hb = 0;
                 if (fill(ctx, tmp4, 4) != 0) return -1;
@@ -1911,7 +1911,7 @@ const char* fs_file_data_ptr(const char* path, uint32_t* size_out)
                 if (size_out)
                     *size_out = (uint32_t)(fsize[i] < 0 ? 0 : fsize[i]);
                 /* Bytes on the disk cannot be handed out as a pointer;
-                 * callers fall back to fs_read_file / fs_read_file_range. */
+ * callers fall back to fs_read_file / fs_read_file_range. */
                 return data_on_disk(i) ? 0 : fdata[i];
             }
         }

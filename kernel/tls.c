@@ -5,12 +5,12 @@
  * TLS 1.0-1.2 (no TLS 1.3); modern servers such as GitHub still accept 1.2.
  *
  * Two honest caveats:
- *  - Entropy comes from RDRAND (when the CPU has it) plus TSC / PIT /
- *    RTC jitter. On old CPUs without RDRAND that is weaker than a real
- *    hardware RNG.
- *  - The clock is the CMOS RTC, but never earlier than the kernel's build
- *    date, so a dead RTC battery cannot make certificates look "not yet
- *    valid".
+ * - Entropy comes from RDRAND (when the CPU has it) plus TSC / PIT /
+ * RTC jitter. On old CPUs without RDRAND that is weaker than a real
+ * hardware RNG.
+ * - The clock is the CMOS RTC, but never earlier than the kernel's build
+ * date, so a dead RTC battery cannot make certificates look "not yet
+ * valid".
  */
 #include <stdint.h>
 #include <stddef.h>
@@ -33,7 +33,7 @@ static struct {
     int   err;
 } T;
 
-/* ------------------------------------------------------------- clock */
+/* clock */
 
 static uint8_t cmos(uint8_t reg) { outb(0x70, reg); return inb(0x71); }
 
@@ -70,7 +70,7 @@ static uint32_t rtc_unix(void) {
     return (uint32_t)days_from_civil(year, mon, day) * 86400u + hour * 3600u + min * 60u + sec;
 }
 
-/* ----------------------------------------------------------- entropy */
+/* entropy */
 
 static int has_rdrand(void) {
     uint32_t a = 1, b, c = 0, d;
@@ -113,7 +113,7 @@ static void seed(void) {
     br_ssl_engine_inject_entropy(&T.sc.eng, e, n);
 }
 
-/* ------------------------------------------------------------ errors */
+/* errors */
 
 const char* tls_error_str(void) {
     switch (T.err) {
@@ -140,7 +140,7 @@ const char* tls_error_str(void) {
     return "TLS handshake failed";
 }
 
-/* --------------------------------------------------------------- API */
+/* API */
 
 static int cb_read(void* ctx, unsigned char* d, size_t n)        { (void)ctx; return T.rd(d, n); }
 static int cb_write(void* ctx, const unsigned char* d, size_t n) { (void)ctx; return T.wr(d, n); }

@@ -51,7 +51,7 @@ void main(char* args) {
     /* Find redirection only when it is outside quotes. The old parser
  * treated every '>' inside the message as redirection and also wrote
  * the file twice.
-     */
+ */
     char *redirect = 0;
     int quote = 0;
     char quote_ch = 0;
@@ -114,7 +114,7 @@ void main(char* args) {
     /* Echo should preserve the complete message. The shell line buffer
  * and MAX_FILE_SIZE are the only practical limits; there is no small
  * 512/4096-byte echo buffer anymore.
-     */
+ */
     if (!filename) {
         for (p = args; *p; p++) console_putc(*p);
         if (!no_newline) console_putc('\n');

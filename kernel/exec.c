@@ -51,8 +51,8 @@ static int exec_file_at(const char* path, const char* args,
     const uint8_t* image = exec_buffer;
 
     /* Prefer a zero-copy view of the file. Large packages (Doom is
-     * ~26 MiB) do not fit in the 4 MiB exec buffer; reading them
-     * truncated the ELF and failed with "section table out of bounds". */
+ * ~26 MiB) do not fit in the 4 MiB exec buffer; reading them
+ * truncated the ELF and failed with "section table out of bounds". */
     {
         uint32_t fsz = 0;
         const char* ptr = fs_file_data_ptr(path, &fsz);
@@ -61,15 +61,15 @@ static int exec_file_at(const char* path, const char* args,
             size = fsz;
         } else {
             /* No pointer means the bytes live on the disk (the file did
-             * not fit the RAM pool), so the image has to be read through
-             * the exec buffer. Say so plainly instead of letting the
-             * truncated copy fail later with a confusing ELF error. */
+ * not fit the RAM pool), so the image has to be read through
+ * the exec buffer. Say so plainly instead of letting the
+ * truncated copy fail later with a confusing ELF error. */
             uint32_t real = fs_get_file_size(path);
             if (real > exec_cap - 1) {
                 /* Too big for the exec buffer. If it is a real Linux ELF,
-                 * stream it: the loader reads each segment straight from
-                 * the disk into the address it will run at, so there is no
-                 * copy of the image in RAM and no size limit here. */
+ * stream it: the loader reads each segment straight from
+ * the disk into the address it will run at, so there is no
+ * copy of the image in RAM and no size limit here. */
                 uint8_t hdr[64];
                 uint32_t got = sizeof hdr;
                 if (real < sizeof hdr ||
@@ -108,17 +108,17 @@ static int exec_file_at(const char* path, const char* args,
         uint16_t e_machine = *(uint16_t*)(image + 18);
 
         /* ET_REL i386 objects are TanjaOS applets. Everything else is
-         * subjected to the real ELF rules by the Linux loader, which
-         * diagnoses foreign/malformed images (wrong class, machine,
-         * byte order, broken program headers) instead of silently
-         * treating them as applets. */
+ * subjected to the real ELF rules by the Linux loader, which
+ * diagnoses foreign/malformed images (wrong class, machine,
+ * byte order, broken program headers) instead of silently
+ * treating them as applets. */
         if (e_type == 1 /* ET_REL */ && e_machine == 3 /* EM_386 */)
             return elf_run(image, size, path, args);
         return linux_run(image, size, path, args);
     }
 
     /* Not an ELF and not text: a real kernel reports ENOEXEC ("exec
-     * format error") rather than feeding binary junk to the shell. */
+ * format error") rather than feeding binary junk to the shell. */
     {
         uint32_t lim = size < 128 ? size : 128;
         uint32_t k;
@@ -133,7 +133,7 @@ static int exec_file_at(const char* path, const char* args,
     }
 
     /* Text files are shell scripts. Execute one command per line.
-     * Zero-copy images must not be mutated; use a local scan. */
+ * Zero-copy images must not be mutated; use a local scan. */
     if (image == exec_buffer)
         exec_buffer[size] = 0;
 

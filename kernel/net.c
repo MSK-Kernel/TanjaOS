@@ -79,7 +79,7 @@ extern int  tls_read(void* b, size_t n);
 extern void tls_end(void);
 extern const char* tls_error_str(void);
 
-/* ------------------------------------------------------------ helpers */
+/* helpers */
 
 static inline uint16_t rd16(const uint8_t* p) { return (uint16_t)((p[0] << 8) | p[1]); }
 static inline uint32_t rd32(const uint8_t* p) {
@@ -112,7 +112,7 @@ static void ip_str(uint32_t ip, char* o) {
     o[n] = 0;
 }
 
-/* -------------------------------------------------------------- state */
+/* state */
 
 static nic_t nic;
 static int   nic_ok;
@@ -123,7 +123,7 @@ static uint8_t BCAST[6] = { 0xFF,0xFF,0xFF,0xFF,0xFF,0xFF };
 static uint8_t rxf[2048];
 static uint8_t txf[1600];
 
-/* ---------------------------------------------------------------- ARP */
+/* ARP */
 
 static struct { uint32_t ip; uint8_t mac[6]; int ok; } arp_tab[8];
 static int arp_next;
@@ -192,7 +192,7 @@ static int arp_resolve(uint32_t ip, uint8_t* mac) {
     return -1;
 }
 
-/* --------------------------------------------------------------- IPv4 */
+/* IPv4 */
 
 static uint16_t ip_id;
 
@@ -214,7 +214,7 @@ static int ip_send(uint8_t proto, uint32_t dst, const uint8_t* data, uint32_t le
     return eth_send(mac, 0x0800, pkt, 20 + len);
 }
 
-/* --------------------------------------------------------------- ICMP */
+/* ICMP */
 
 static volatile int ping_got;
 static uint16_t ping_seq;
@@ -234,7 +234,7 @@ static void icmp_in(uint32_t src, const uint8_t* p, uint32_t len) {
     }
 }
 
-/* ---------------------------------------------------------------- UDP */
+/* UDP */
 
 static struct {
     uint16_t port; volatile int ready;
@@ -262,7 +262,7 @@ static void udp_in(uint32_t src, const uint8_t* p, uint32_t len) {
     us.ready = 1;
 }
 
-/* ---------------------------------------------------------------- TCP */
+/* TCP */
 
 #define T_FIN 0x01
 #define T_SYN 0x02
@@ -446,7 +446,7 @@ static void tcp_close(void) {
     tc.state = TS_CLOSED;
 }
 
-/* ------------------------------------------------------------- IP in */
+/* IP in */
 
 static void ip_in(const uint8_t* p, uint32_t len) {
     if (len < 20 || (p[0] >> 4) != 4) return;
@@ -464,7 +464,7 @@ static void ip_in(const uint8_t* p, uint32_t len) {
     }
 }
 
-/* -------------------------------------------------------------- poll */
+/* poll */
 
 static int last_link;
 static uint32_t last_link_check;
@@ -497,7 +497,7 @@ void net_poll(void) {
     }
 }
 
-/* -------------------------------------------------------------- DHCP */
+/* DHCP */
 
 static int dhcp_build(uint8_t* o, uint32_t xid, int type, uint32_t req_ip, uint32_t srv) {
     int n = 0;
@@ -596,7 +596,7 @@ int net_dhcp(void) {
     return rc;
 }
 
-/* --------------------------------------------------------------- DNS */
+/* DNS */
 
 static int parse_dotted(const char* s, uint32_t* ip) {
     uint32_t v = 0; int parts = 0, cur = -1;
@@ -678,7 +678,7 @@ int net_resolve(const char* host, uint32_t* ip) {
     return NET_E_DNS;
 }
 
-/* -------------------------------------------------------------- ping */
+/* ping */
 
 int net_ping(uint32_t ip, int timeout_ms) {
     uint8_t p[40];
@@ -700,7 +700,7 @@ int net_ping(uint32_t ip, int timeout_ms) {
     return -1;
 }
 
-/* -------------------------------------------------------------- HTTP */
+/* HTTP */
 
 static int parse_url(const char* url, char* host, int hcap, uint16_t* port, char* path, int pcap, int* tls) {
     int i = 0;
@@ -928,7 +928,7 @@ int net_http_save(const char* url0, const char* outpath, uint32_t* out_len) {
 
         for (redirects = 0; redirects <= 3; redirects++) {
             /* Must reset per redirect; otherwise a 302 leaves stale
-             * headers and the next request looks like a bad URL. */
+ * headers and the next request looks like a bad URL. */
             hdr_got = 0;
             he = -1;
             if ((rc = parse_url(url, host, sizeof(host), &port, path, sizeof(path), &tls)) != 0) return rc;
@@ -1032,7 +1032,7 @@ int net_http_save(const char* url0, const char* outpath, uint32_t* out_len) {
             }
             if (content_len && last_pct < 0) net_pct(0);
             /* One allocation for the whole file. Repeated append reallocs
-             * fragment the pool and fail part-way through large packages. */
+ * fragment the pool and fail part-way through large packages. */
             if (content_len && total == 0) {
                 if (fs_prealloc_file(outpath, content_len) != 0) {
                     conn_close();
@@ -1104,7 +1104,7 @@ retry:
 
 const char* net_tls_error(void) { return tls_error_str(); }
 
-/* ------------------------------------------------------- init / info */
+/* init / info */
 
 #define MAX_NICS 8
 static nic_found_t nics[MAX_NICS];

@@ -2,9 +2,9 @@
 #include <stddef.h>
 #include "tanja.h"
 
-/* pkg install <name>   fetch <repo>/<name> over HTTP and install the binary
- *                      directly to /usr/bin/<name>.o (no compilation)
- * pkg remove  <name>   delete /usr/bin/<name>.o
+/* pkg install <name> fetch <repo>/<name> over HTTP and install the binary
+ * directly to /usr/bin/<name>.o (no compilation)
+ * pkg remove <name> delete /usr/bin/<name>.o
  *
  * Default source: https://github.com/MSK-Kernel/pkg_<name>/raw/main/<name>
  * (https, certificate checked). Override with $PKG_REPO or /etc/pkg.repo:
@@ -92,8 +92,8 @@ static void do_install(const char* name) {
     if (!fs_directory_exists("/usr/bin")) fs_create_directory("/usr/bin");
 
     /* Stream the package straight to disk. A small receive buffer is
-     * enough, so multi-megabyte packages (Doom) do not need a huge
-     * contiguous malloc. */
+ * enough, so multi-megabyte packages (Doom) do not need a huge
+ * contiguous malloc. */
     if (fs_file_exists(bin)) fs_delete_file(bin);
     st = net_http_save(url, bin, &len);
     if (st < 0) {

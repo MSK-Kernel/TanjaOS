@@ -601,7 +601,7 @@ int elf_run(const uint8_t* image, uint32_t size, const char* path, const char* a
         } else if (sh[i].sh_size >= (256u * 1024u) &&
                    sh[i].sh_offset + sh[i].sh_size <= size) {
             /* Large data (Doom's embedded WAD). Use the file image in
-             * place so we don't need another 26 MiB in the program region. */
+ * place so we don't need another 26 MiB in the program region. */
             sec_addr[i] = (uint32_t)(image + sh[i].sh_offset);
         } else {
             if (sh[i].sh_size > 0) {
@@ -775,9 +775,9 @@ int elf_run(const uint8_t* image, uint32_t size, const char* path, const char* a
         memcpy(save_jmp, tanja_exit_jmp, sizeof save_jmp);
         tanja_exit_active = 1;
         /* Everything this program prints (it calls the kernel's print/
-         * printf/putchar exports) is light grey, so applet output is
-         * distinct from the white kernel log. Restored on every way out:
-         * normal return, exit(), fault or Ctrl+C (both longjmp to here). */
+ * printf/putchar exports) is light grey, so applet output is
+ * distinct from the white kernel log. Restored on every way out:
+ * normal return, exit(), fault or Ctrl+C (both longjmp to here). */
         con_color = VGA_USER_COLOR;
         if (__builtin_setjmp(tanja_exit_jmp)) {
             /* exit(code) was called */

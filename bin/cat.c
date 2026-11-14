@@ -39,7 +39,7 @@ static int cat_one(const char* args) {
     /* Stream the file in chunks instead of copying the whole file into a
  * fixed 4096-byte buffer. This means cat works for every file size
  * the filesystem can store.
-     */
+ */
     static char buffer[4096];
     uint32_t offset = 0;
     uint32_t got = 0;

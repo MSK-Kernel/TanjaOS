@@ -17,7 +17,7 @@ typedef struct {
     uint32_t rx_frames, tx_frames, tx_errors;   /* since boot / last switch */
 } net_info_t;
 
-/* ---- NIC driver ABI (kernel/nic.c, and any future Wi-Fi driver) ---- */
+/* NIC driver ABI (kernel/nic.c, and any future Wi-Fi driver) */
 typedef struct {
     const char* name;
     uint8_t     mac[6];
@@ -40,12 +40,12 @@ typedef struct {
 } nic_found_t;
 int  nic_scan_all(nic_found_t* out, int max);   /* kernel/nic.c: find + start every Ethernet card */
 
-/* ---- kernel-internal ---- */
+/* kernel-internal */
 void net_init(void);              /* probe NIC + DHCP, called once at boot */
 void net_poll(void);              /* pump RX; called from idle loops */
 int  net_attach(const nic_t* n);  /* make this NIC the active interface */
 
-/* ---- program API (exported to /bin programs) ---- */
+/* program API (exported to /bin programs) */
 int  net_get_info(net_info_t* out);
 int  net_dhcp(void);                                   /* 0 = configured */
 

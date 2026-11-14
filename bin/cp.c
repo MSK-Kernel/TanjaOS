@@ -54,8 +54,8 @@ static int cp_copy_file(const char* src, const char* dst) {
     if (fs_file_exists(dst) && fs_delete_file(dst) != 0) return -1;
 
     /* Empty source: create the destination anyway. Copying only while
-     * there are bytes left used to leave nothing behind for a 0-byte
-     * file, so `cp empty.txt copy.txt` silently produced no file. */
+ * there are bytes left used to leave nothing behind for a 0-byte
+ * file, so `cp empty.txt copy.txt` silently produced no file. */
     if (!fs_file_exists(dst) && fs_create_file(dst) != 0) return -1;
 
     while (off < total) {

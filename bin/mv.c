@@ -53,9 +53,9 @@ static int mv_copy_file(const char* src, const char* dst) {
     if (fs_file_exists(dst) && fs_delete_file(dst) != 0) return -1;
 
     /* Create the destination up front. The copy loop only touches it when
-     * there are bytes to write, so an EMPTY source used to leave no
-     * destination at all - and the chmod below then failed with
-     * "mv: cannot create regular file 'x'". */
+ * there are bytes to write, so an EMPTY source used to leave no
+ * destination at all - and the chmod below then failed with
+ * "mv: cannot create regular file 'x'". */
     if (!fs_file_exists(dst) && fs_create_file(dst) != 0) return -1;
 
     while (off < total) {

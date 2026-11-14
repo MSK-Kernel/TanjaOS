@@ -150,16 +150,16 @@ void linux_set_layout(uint32_t kernel_end, uint32_t ram_top)
  * small exe/brk reserve above it. */
     avail = (lx_stack_top > lx_mmap_base) ? (lx_stack_top - lx_mmap_base) : 0;
     /* Leave at least 4 MiB for brk/stack. Never force a window that
-     * would overlap the stack region (that previously caused hangs
-     * when the kernel BSS grew). */
+ * would overlap the stack region (that previously caused hangs
+ * when the kernel BSS grew). */
     win = (avail > (4u << 20)) ? avail - (4u << 20) : 0;
     /* Doom's embedded WAD makes the loaded image ~26 MiB. Allow up to
-     * 40 MiB when the machine has the room. */
+ * 40 MiB when the machine has the room. */
     if (win > (40u << 20)) win = (40u << 20);
     if (win < (4u << 20)) win = (avail > (1u << 20)) ? (avail / 2) : 0;
     /* Keep the window below 0x08000000: every static i386 binary links at
-     * the classic ET_EXEC base 0x08048000, and a window that reached into
-     * that range would overlap (and be wiped by) any such program. */
+ * the classic ET_EXEC base 0x08048000, and a window that reached into
+ * that range would overlap (and be wiped by) any such program. */
     if (lx_mmap_base + win > LX_EXEC_CLASSIC_BASE)
         win = (LX_EXEC_CLASSIC_BASE > lx_mmap_base)
                   ? (LX_EXEC_CLASSIC_BASE - lx_mmap_base) : 0;
@@ -543,7 +543,7 @@ static uint32_t sys_close(uint32_t fd)
     return 0;
 }
 
-/* ---- poll / select ---------------------------------------------------
+/* poll / select
  * busybox ash, less and anything driving a libc select() loop depend on
  * these. There is no scheduler here to wait on, so readiness is derived
  * from the fd table: the keyboard and regular files are always readable,
@@ -641,9 +641,9 @@ static uint32_t sys_read(uint32_t fd, uint8_t* buf, uint32_t count)
         if (!buf || !count) return 0;
         if (!read_line_echo) {
             /* The program turned echo off (ICANON/ECHO clear): it runs its
-             * own line editor, so hand it one key per read like a tty in
-             * raw mode - that way busybox ash, vim and friends echo and
-             * edit while you type instead of printing the line afterwards. */
+ * own line editor, so hand it one key per read like a tty in
+ * raw mode - that way busybox ash, vim and friends echo and
+ * edit while you type instead of printing the line afterwards. */
             int k = get_key();
             if (k == LX_KEY_UP || k == LX_KEY_DOWN ||
                 k == LX_KEY_LEFT || k == LX_KEY_RIGHT) {
@@ -706,9 +706,9 @@ static uint32_t sys_write(uint32_t fd, const uint8_t* buf, uint32_t count)
         /* dup2() may have redirected the console onto a file */
         if (!(lfd[fd].used && lfd[fd].writable && lfd[fd].path[0])) {
             /* Program output goes out in light grey so it is easy to tell
-             * apart from the kernel's white log text. The attribute is put
-             * back afterwards: whatever the program left on screen, the
-             * shell (kernel) keeps printing in white. */
+ * apart from the kernel's white log text. The attribute is put
+ * back afterwards: whatever the program left on screen, the
+ * shell (kernel) keeps printing in white. */
             uint16_t save_color = con_color;
             con_color = VGA_USER_COLOR;
             for (n = 0; n < count; n++)
@@ -1259,9 +1259,9 @@ static uint32_t sys_unlink(const char* path)
 static uint32_t sys_rename(const char* oldp, const char* newp)
 {
     /* Chunked copy: this used to stage the whole file through a static
-     * 32 MiB buffer, which on its own put the kernel's memory image past
-     * a 64 MiB machine. 64 KiB at a time keeps rename working on any file
-     * size without the RAM. */
+ * 32 MiB buffer, which on its own put the kernel's memory image past
+ * a 64 MiB machine. 64 KiB at a time keeps rename working on any file
+ * size without the RAM. */
     static char chunk[65536];
     char obuf[MAX_PATH], nbuf[MAX_PATH];
     const char* p;
@@ -1428,9 +1428,9 @@ void linux_syscall(linux_regs_t* r)
     case 45: r->eax = sys_brk(a1); break;
     case 54:                                                 /* ioctl */
         /* Console fds 0/1/2 answer the tty ioctls a shell needs: a real
-         * termios (canonical + echo, so isatty() and line editing both
-         * behave), a window size, a foreground process group and the
-         * pending-input count. busybox ash checks exactly these. */
+ * termios (canonical + echo, so isatty() and line editing both
+ * behave), a window size, a foreground process group and the
+ * pending-input count. busybox ash checks exactly these. */
         if (a1 > 2) { r->eax = (uint32_t)-ENOTTY_L; break; }
         switch (a2) {
         case 0x5401: {                                   /* TCGETS */
@@ -1450,17 +1450,17 @@ void linux_syscall(linux_regs_t* r)
         }
         case 0x5402: case 0x5403: case 0x5404: {         /* TCSETS/W/F */
             /* Honour the ECHO bit: busybox ash (and any program with its
-             * own line editor) turns echo off, and then echoes itself -
-             * if the console echoed too, every line showed up twice. */
+ * own line editor) turns echo off, and then echoes itself -
+ * if the console echoed too, every line showed up twice. */
             const uint8_t* t = (const uint8_t*)a3;
             if (t) read_line_echo = (*(const uint32_t*)(t + 12) & 0x8) ? 1 : 0;
             r->eax = 0;
             break;
         }
         /* TIOCGPGRP/TIOCSPGRP deliberately stay ENOTTY: this kernel has
-         * no process groups, and a shell that believes it owns the
-         * foreground pgrp spins on kill(0, SIGTTIN) forever. Reporting
-         * "no job control" is the honest answer and busybox copes. */
+ * no process groups, and a shell that believes it owns the
+ * foreground pgrp spins on kill(0, SIGTTIN) forever. Reporting
+ * "no job control" is the honest answer and busybox copes. */
         case 0x5413:                                     /* TIOCGWINSZ */
             if (a3) { *(uint16_t*)(a3) = 25; *(uint16_t*)(a3 + 2) = 80; }
             r->eax = 0;
@@ -1615,7 +1615,7 @@ void linux_syscall(linux_regs_t* r)
 
     default:
         /* quiet, like real Linux: the caller just sees ENOSYS.
-         * (set LINUX_TRACE 1 to log unknown numbers) */
+ * (set LINUX_TRACE 1 to log unknown numbers) */
         if (lx_trace) {
             print("linux: unimplemented syscall ");
             print_dec(nr);
@@ -1627,7 +1627,7 @@ void linux_syscall(linux_regs_t* r)
     lx_log_res[(lx_log_i - 1) % LX_LOG_N] = r->eax;
 }
 
-/* ---- ELF32 loader: conformance helpers -------------------------------
+/* ELF32 loader: conformance helpers
  * The loader used to trust whatever the header claimed. These helpers
  * validate an image the way a kernel has to: correct magic, class, byte
  * order, machine and type, a program header table inside the file, every
@@ -1650,13 +1650,13 @@ static uint32_t lx_page_up(uint32_t v)   { return (v + 4095u) & ~4095u; }
 
 /* header-level checks, shared by the executable and its interpreter */
 
-/* ---------------------------------------------------------------------
+/*
  * Image source: a program image either sits in RAM (the usual case: it
  * fits the file pool and exec hands us a pointer) or lives on the disk
  * (it did not fit the pool). Streaming the disk case means a binary of
  * any size can be loaded - the file is read straight into the addresses
  * it will run at, instead of through the 4 MiB exec buffer.
- * ------------------------------------------------------------------- */
+ */
 typedef struct {
     const uint8_t* mem;    /* image bytes in RAM, or NULL when on disk */
     uint32_t size;
@@ -1827,7 +1827,7 @@ static uint32_t lx_elf_map(const uint8_t* e, const lx_src_t* src, uint32_t size,
     }
 
     /* fresh memory: zero the mapped window (bounded, so a wild header
-     * cannot make us memset gigabytes), or each segment body if huge */
+ * cannot make us memset gigabytes), or each segment body if huge */
     if (lx_page_up(max_end) - lx_page_down(min_start) <= (32u << 20)) {
         memset((void*)lx_page_down(min_start), 0,
                lx_page_up(max_end) - lx_page_down(min_start));
@@ -1846,8 +1846,8 @@ static uint32_t lx_elf_map(const uint8_t* e, const lx_src_t* src, uint32_t size,
         if (ph->p_type != PT_LOAD || !ph->p_memsz) continue;
         if (ph->p_filesz) {
             /* straight into the address the segment will run at: no
-             * whole-image buffer, so a disk-backed binary of any size
-             * loads without needing RAM for both copies */
+ * whole-image buffer, so a disk-backed binary of any size
+ * loads without needing RAM for both copies */
             if (lx_src_read(src, ph->p_offset,
                             (void*)(bias + ph->p_vaddr), ph->p_filesz) != 0) {
                 lx_elf_why = "could not read segment data";
@@ -1920,8 +1920,8 @@ int linux_run(const uint8_t* image, uint32_t size, const char* path,
     int i;
 
     /* image == NULL means the program's bytes are on the disk: stream
-     * them. The header and program header table are staged in RAM so the
-     * validators below can keep working on plain pointers. */
+ * them. The header and program header table are staged in RAM so the
+ * validators below can keep working on plain pointers. */
     src.mem = image;
     src.size = size;
     src.path = path;
@@ -1950,7 +1950,7 @@ int linux_run(const uint8_t* image, uint32_t size, const char* path,
     }
 
     /* ET_DYN (PIE) images carry relative addresses: they get a fixed
-     * load bias above the mmap window. ET_EXEC images load verbatim. */
+ * load bias above the mmap window. ET_EXEC images load verbatim. */
     if (e_type == ET_DYN_L)
         load_bias = lx_exe_base;
 
@@ -2001,7 +2001,7 @@ int linux_run(const uint8_t* image, uint32_t size, const char* path,
     }
 
     /* A fixed-address image must not land on the reserved ABI regions
-     * (ld.so, the mmap window, the brk gap, the stack). */
+ * (ld.so, the mmap window, the brk gap, the stack). */
     if (min_start < lx_mmap_limit && max_end > lx_ld_base) {
         print("elf: image would overlap the loader/mmap area - rebuild it");
         print(" as position-independent (gcc -static-pie)\n");
@@ -2060,7 +2060,7 @@ int linux_run(const uint8_t* image, uint32_t size, const char* path,
         lde     = lx_ld_base + lde_off;
         ld_base = lx_ld_base;
         /* execution begins in the interpreter; it relocates itself
-         * against ld_base, maps the libraries, then jumps to AT_ENTRY */
+ * against ld_base, maps the libraries, then jumps to AT_ENTRY */
         entry   = lde;
     } else if (load_bias) {
         entry = load_bias + entry;   /* static-PIE: bias the entry too */
@@ -2158,8 +2158,8 @@ int linux_run(const uint8_t* image, uint32_t size, const char* path,
         }
 
         /* Environment: real programs (busybox sh above all) read PATH,
-         * HOME, USER, TERM and PWD from envp, and ash prints nothing at
-         * all without a usable environment. */
+ * HOME, USER, TERM and PWD from envp, and ash prints nothing at
+ * all without a usable environment. */
         {
             static char envbuf[512];
             char cwd[MAX_PATH];
@@ -2244,9 +2244,9 @@ int linux_run(const uint8_t* image, uint32_t size, const char* path,
             memcpy(save_jmp, tanja_exit_jmp, sizeof save_jmp);
             tanja_exit_active = 1;
             if (__builtin_setjmp(tanja_exit_jmp)) {
-                /* fault / Ctrl+C unwind.  Normal output stays quiet
-                 * (bash-style); the reason + syscall tail are debug
-                 * info, so only show them with LINUX_TRACE set. */
+                /* fault / Ctrl+C unwind. Normal output stays quiet
+ * (bash-style); the reason + syscall tail are debug
+ * info, so only show them with LINUX_TRACE set. */
                 if (lx_trace) {
                     print("linux: unwind reason ");
                     print_dec(lx_unwind_reason);

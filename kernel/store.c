@@ -275,7 +275,7 @@ void store_autosave(void) {
  * performance fix: mkdir/rm used to rewrite the entire 31 MB maximum
  * filesystem image every time. v4 writes only metadata + active file
  * bytes, then only the sectors containing that compact image.
-     */
+ */
     uint32_t fs_bytes = fs_serialized_size();
     uint32_t payload_bytes = fs_bytes + store_cfg_need;
     uint32_t total_bytes = STORE_HEADER_BYTES + payload_bytes;
@@ -352,8 +352,8 @@ static int has_word(const char* s, const char* w) {
 static int boot_is_livecd(uint32_t mb_magic, uint32_t mb_addr) {
 #ifdef TANJA_LIVECD
     /* A LiveCD image must never touch storage: the stick it was written to
-     * is the boot medium, and a machine running it may have any disk. This
-     * is compiled in, so no boot configuration can turn it back on. */
+ * is the boot medium, and a machine running it may have any disk. This
+ * is compiled in, so no boot configuration can turn it back on. */
     (void)mb_magic; (void)mb_addr;
     return 1;
 #endif
@@ -456,7 +456,7 @@ void store_init(uint32_t mb_magic, uint32_t mb_addr) {
     /* Reserve enough room for the worst-case filesystem, but do NOT read
  * that whole region at boot. The first sector contains the exact
  * compact image length; only that many sectors are read below.
-     */
+ */
     if (disk_sectors > (uint64_t)(store_capacity_sectors +
                                   STORE_RESERVED_TAIL_SECTORS + 32)) {
         store_lba = (uint32_t)(disk_sectors - store_capacity_sectors -
@@ -560,7 +560,7 @@ void store_init(uint32_t mb_magic, uint32_t mb_addr) {
     boot_log("Storefile: persistence enabled, initial state written to disk");
 }
 
-/* ---------------------------------------------------------------------
+/*
  * Raw block access for file data that does not fit the RAM pool.
  *
  * The filesystem keeps small files in RAM and spills large ones (package
@@ -569,7 +569,7 @@ void store_init(uint32_t mb_magic, uint32_t mb_addr) {
  * kernel there - and the reserved Storefile region at the end, so its
  * size is whatever the disk has: a 1 TB disk means 1 TB of files even
  * with 64 MiB of RAM.
- * ------------------------------------------------------------------- */
+ */
 #define STORE_DATA_GUARD_SECTORS 64
 
 int store_data_ready(void) {
