@@ -155,7 +155,7 @@ void linux_set_layout(uint32_t kernel_end, uint32_t ram_top)
     win = (avail > (4u << 20)) ? avail - (4u << 20) : 0;
     /* Doom's embedded WAD makes the loaded image ~26 MiB. Allow up to
  * 40 MiB when the machine has the room. */
-    if (win > (40u << 20)) win = (40u << 20);
+    if (win > (128u << 20)) win = (128u << 20);
     if (win < (4u << 20)) win = (avail > (1u << 20)) ? (avail / 2) : 0;
     /* Keep the window below 0x08000000: every static i386 binary links at
  * the classic ET_EXEC base 0x08048000, and a window that reached into

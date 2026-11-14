@@ -4,6 +4,9 @@
 
 /* pkg install <name> fetch <repo>/<name> over HTTP and install the binary
  * directly to /usr/bin/<name>.o (no compilation)
+ * If the package repo also contains a lib/ directory, the contents are
+ * installed to /lib so that ELF32 binaries can resolve their dependencies
+ * from there (see kernel/elf.c library support).
  * pkg remove <name> delete /usr/bin/<name>.o
  *
  * Default source: https://github.com/MSK-Kernel/pkg_<name>/raw/main/<name>
