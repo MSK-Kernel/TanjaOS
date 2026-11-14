@@ -493,7 +493,6 @@ uint8_t inb(uint16_t port) {
  * blinks noticeably faster than an old laptop. Drive it from the
  * millisecond tick instead, so the rate is the same everywhere. */
 int cursor_blink_on = 1;
-static uint32_t cursor_blink_ms;
 
 void cursor_blink_tick(void);
 
@@ -506,10 +505,15 @@ static void cursor_shape_write(uint8_t start, uint8_t end, int on) {
 }
 
 void cursor_blink_tick(void) {
-    if (boot_ticks - cursor_blink_ms < 500) return;
-    cursor_blink_ms = boot_ticks;
-    cursor_blink_on = !cursor_blink_on;
-    cursor_shape_write(0, 15, cursor_blink_on);
+    /*
+     * Do not software-toggle the VGA cursor. The VGA text-mode
+     * controller already generates the cursor blink. Toggling its
+     * disable bit from the PIT at the same time creates two competing
+     * blink phases and makes the cursor appear irregular.
+     *
+     * Keep the hardware cursor enabled; its blink is now controlled
+     * exclusively by the VGA controller.
+     */
 }
 
 void sync_cursor() {
