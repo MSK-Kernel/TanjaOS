@@ -7,6 +7,37 @@
 #include "fs.h"
 #include "net.h"
 
+/* Account API used by the /bin commands (kernel/kernel.c) */
+extern int acc_cur_uid(void);
+extern const char* acc_cur_name(void);
+extern const char* acc_cur_home(void);
+extern int acc_user_count(void);
+extern int acc_user_find(const char* name);
+extern const char* acc_user_name(int i);
+extern int acc_user_uid(int i);
+extern const char* acc_user_pass(int i);
+extern int acc_user_add(const char* name, const char* pass, int uid);
+extern int acc_user_del(const char* name);
+extern int acc_user_set_name(int i, const char* newname);
+extern int acc_user_set_pass(int i, const char* pass);
+extern int acc_user_set_uid(int i, int uid);
+extern int acc_group_count(void);
+extern int acc_group_find(const char* name);
+extern const char* acc_group_name(int gi);
+extern int acc_group_add(const char* name);
+extern int acc_group_del(int gi);
+extern int acc_group_member_count(int gi);
+extern int acc_group_is_member(int gi, const char* user);
+extern int acc_group_member_add(int gi, const char* user);
+extern int acc_group_member_del(int gi, const char* user);
+extern int acc_group_clear_user(const char* user);
+extern int acc_session_user(const char* name);
+extern void acc_shell_exit(void);
+extern const char* acc_hostname(void);
+extern int acc_set_hostname(const char* h);
+extern int acc_chmod_recursive(const char* path, int mode);
+extern int acc_chown_recursive(const char* path, int uid);
+
 void main(char* args);
 
 extern void print(const char* s);

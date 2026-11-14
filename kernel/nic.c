@@ -1144,6 +1144,360 @@ static int pcnet_init(uint8_t b, uint8_t d, uint8_t f, nic_t* out) {
 }
 static int pcnet_match(uint16_t ven, uint16_t dev) { return ven == 0x1022 && (dev == 0x2000 || dev == 0x2001); }
 
+
+/* ---------------------------------------------------------------------
+ * Intel 8255x / PRO-100 family (i82557, i82558, i82559, 82801 ICH...).
+ *
+ * The board is driven through the SCB window: put an address in the
+ * general pointer, write a command, and the card DMAs a command block
+ * (CU) or a receive frame descriptor list (RU) from memory. Two things
+ * matter for real hardware:
+ *
+ *  - PCI bus mastering must be on, or the CU reads nothing and parks;
+ *  - a command is only accepted once SCBCommand reads back as zero.
+ *
+ * Layout follows Intel's reference driver: CU/RU base loaded as 0, so
+ * every link field is a plain absolute address.
+ * ------------------------------------------------------------------- */
+
+#define EX_CSR_STATUS   0x00    /* 16: CU state bits 7-6, RU state 5-2 */
+#define EX_CSR_CMD      0x02    /* 16: command byte */
+#define EX_CSR_PTR      0x04    /* 32: general pointer */
+#define EX_CSR_PORT     0x08    /* 32: reset / self-test            */
+#define EX_CSR_EEPROM   0x0C    /* 16: 93C46 bit-bang               */
+#define EX_CSR_MDI      0x10    /* 32: MII management               */
+
+#define EX_CU_START     0x10
+#define EX_CU_RESUME    0x20
+#define EX_CU_LOAD_BASE 0x60
+#define EX_RU_START     0x01
+#define EX_RU_RESUME    0x02
+#define EX_RU_LOAD_BASE 0x06
+
+#define EX_CB_NOP       0
+#define EX_CB_IA        1
+#define EX_CB_CONFIG    2
+#define EX_CB_TX        4
+#define EX_CB_S         0x4000   /* suspend after this block */
+#define EX_CB_EL        0x8000   /* end of list              */
+
+#define EX_RX_SLOTS     128   /* headroom: the emulated card overwrites unconsumed slots */
+#define EX_RX_STRIDE    1568     /* 16-byte RFD + 1552-byte buffer */
+#define EX_FRAME_MAX    1600
+
+static uint16_t ex_io;
+static int      ex_is_mmio;
+static uint32_t ex_mmio;
+static int      ex_phy;              /* PHY address that answered */
+static uint32_t ex_st_rx, ex_st_tx, ex_st_txfail, ex_st_kick, ex_st_badst;
+
+static uint8_t ex_cb[128]     __attribute__((aligned(16)));
+static uint8_t ex_frame[EX_FRAME_MAX] __attribute__((aligned(16)));
+static uint8_t ex_rx[EX_RX_SLOTS * EX_RX_STRIDE] __attribute__((aligned(16)));
+
+static uint16_t ex_r16(uint16_t off) {
+    if (ex_is_mmio) return *(volatile uint16_t*)(uintptr_t)(ex_mmio + off);
+    return io_inw(ex_io + off);
+}
+static void ex_w16(uint16_t off, uint16_t v) {
+    if (ex_is_mmio) *(volatile uint16_t*)(uintptr_t)(ex_mmio + off) = v;
+    else io_outw(ex_io + off, v);
+}
+static uint32_t ex_r32(uint16_t off) {
+    if (ex_is_mmio) return *(volatile uint32_t*)(uintptr_t)(ex_mmio + off);
+    return io_inl(ex_io + off);
+}
+static void ex_w32(uint16_t off, uint32_t v) {
+    if (ex_is_mmio) *(volatile uint32_t*)(uintptr_t)(ex_mmio + off) = v;
+    else io_outl(ex_io + off, v);
+}
+static void ex_w8(uint16_t off, uint8_t v) {
+    if (ex_is_mmio) *(volatile uint8_t*)(uintptr_t)(ex_mmio + off) = v;
+    else io_outb(ex_io + off, v);
+}
+static uint8_t ex_r8(uint16_t off) {
+    if (ex_is_mmio) return *(volatile uint8_t*)(uintptr_t)(ex_mmio + off);
+    return io_inb(ex_io + off);
+}
+static void ex_delay(void) { io_inb(0x80); io_inb(0x80); io_inb(0x80); }
+
+/* A command is accepted only when the card has cleared SCBCommand.
+ * Skipping this wait is what makes a card look "dead": every later
+ * command is written into a busy SCB and silently dropped. */
+static int ex_cmd(uint8_t cmd, uint32_t ptr) {
+    int i;
+    for (i = 0; i < 100000; i++) {
+        if ((ex_r16(EX_CSR_CMD) & 0xFF) == 0) break;
+        ex_delay();
+    }
+    if (i >= 100000) return -1;
+    if (cmd != EX_CU_RESUME && cmd != EX_RU_RESUME)
+        ex_w32(EX_CSR_PTR, ptr);
+    ex_w16(EX_CSR_CMD, cmd);
+    return 0;
+}
+
+/* ---- 93C46 EEPROM: word 0..2 hold the factory MAC ------------------ */
+#define EE_CS 0x02
+#define EE_SK 0x01
+#define EE_DI 0x04
+#define EE_DO 0x08
+
+static void ee_bit(int di) {
+    uint8_t base = (uint8_t)(EE_CS | (di ? EE_DI : 0));
+    ex_w8(EX_CSR_EEPROM, base);
+    ex_delay();
+    ex_w8(EX_CSR_EEPROM, (uint8_t)(base | EE_SK));
+    ex_delay();
+    ex_w8(EX_CSR_EEPROM, base);
+    ex_delay();
+}
+
+static uint16_t ee_read(uint8_t addr) {
+    uint16_t v = 0;
+    int b, k;
+
+    ex_w8(EX_CSR_EEPROM, 0x00);
+    ex_delay();
+    ee_bit(1);                            /* start bit  */
+    ee_bit(1); ee_bit(0);                 /* opcode 10 = read */
+    for (b = 5; b >= 0; b--) ee_bit((addr >> b) & 1);
+    for (k = 0; k < 16; k++) {
+        uint8_t base = EE_CS;
+        ex_w8(EX_CSR_EEPROM, (uint8_t)(base | EE_SK));
+        ex_delay();
+        v = (uint16_t)((v << 1) | ((ex_r8(EX_CSR_EEPROM) & EE_DO) ? 1 : 0));
+        ex_w8(EX_CSR_EEPROM, base);
+        ex_delay();
+    }
+    ex_w8(EX_CSR_EEPROM, 0x00);
+    ex_delay();
+    return v;
+}
+
+/* ---- MII (PHY) access: link status ------------------------------- */
+static uint16_t ex_mdio(uint8_t reg) {
+    uint32_t v = (2u << 26) | ((uint32_t)ex_phy << 21) | ((uint32_t)reg << 16);
+    int i;
+    ex_w32(EX_CSR_MDI, v);
+    for (i = 0; i < 1000; i++) {
+        uint32_t r = ex_r32(EX_CSR_MDI);
+        if (r & (1u << 28)) return (uint16_t)(r & 0xFFFF);
+        ex_delay();
+    }
+    return 0;
+}
+
+static int ex_link(void) {
+    if (ex_phy < 0) return 1;             /* no PHY: assume the cable is in */
+    return (ex_mdio(1) & 0x0004) != 0;    /* BMSR: link status */
+}
+
+/* ---- command blocks ----------------------------------------------- */
+static void ex_cb_set(int off, uint16_t cmd, uint32_t link) {
+    *(uint16_t*)(ex_cb + off + 0) = 0;
+    *(uint16_t*)(ex_cb + off + 2) = cmd;
+    *(uint32_t*)(ex_cb + off + 4) = link;
+}
+
+static uint32_t ex_rx_slot(int i) { return (uint32_t)(uintptr_t)(ex_rx + i * EX_RX_STRIDE); }
+
+static void ex_arm_rx(void) {
+    int i;
+    for (i = 0; i < EX_RX_SLOTS; i++) {
+        uint8_t* rfd = ex_rx + i * EX_RX_STRIDE;
+        uint32_t next = ex_rx_slot((i + 1) % EX_RX_SLOTS);
+        *(uint16_t*)(rfd + 0)  = 0;                  /* status      */
+        *(uint16_t*)(rfd + 2)  = 0;                  /* command     */
+        *(uint32_t*)(rfd + 4)  = next;               /* link        */
+        *(uint32_t*)(rfd + 8)  = 0xFFFFFFFFu;        /* no RBD: data follows */
+        *(uint16_t*)(rfd + 12) = 0;                  /* actual size */
+        *(uint16_t*)(rfd + 14) = (uint16_t)(EX_RX_STRIDE - 16);
+    }
+}
+
+static int ex_send(const void* frame, uint32_t len) {
+    int i;
+    if (len < 14 || len > EX_FRAME_MAX) return -1;
+    memcpy(ex_frame, frame, len);
+
+    /* TX CB at 48, its transmit buffer descriptor at 72 */
+    ex_cb_set(48, EX_CB_TX | EX_CB_S, 0);
+    *(uint32_t*)(ex_cb + 48 + 8)  = (uint32_t)(uintptr_t)(ex_cb + 72);
+    *(uint16_t*)(ex_cb + 48 + 12) = 0;
+    *(uint8_t*)(ex_cb + 48 + 14)  = 0;
+    *(uint8_t*)(ex_cb + 48 + 15)  = 1;               /* one TBD */
+    *(uint32_t*)(ex_cb + 72)      = (uint32_t)(uintptr_t)ex_frame;
+    *(uint16_t*)(ex_cb + 76)      = (uint16_t)len;
+    *(uint16_t*)(ex_cb + 78)      = 0x8001;           /* end of TBD list */
+
+    if (ex_cmd(EX_CU_START, (uint32_t)(uintptr_t)(ex_cb + 48)) != 0) return -1;
+
+    /* wait for the CU to leave the active state */
+    for (i = 0; i < 100000; i++) {
+        uint16_t st = ex_r16(EX_CSR_STATUS);
+        if (((st >> 6) & 3) != 2) { ex_st_tx++; return 0; }   /* 2 = active */
+        ex_delay();
+    }
+    return -1;
+}
+
+/* The RU stops itself ("no resources") once it has filled every
+ * descriptor. Without this poke the card goes silent until something
+ * else restarts it, which looks like a download that crawls or stalls. */
+static void ex_rx_kick(int next) {
+    uint16_t st = ex_r16(EX_CSR_STATUS);
+    uint16_t ru = (uint16_t)((st >> 2) & 0x0F);
+    if (ru != 4) {                       /* 4 = ready; 1/2 = stopped */
+        ex_st_kick++;
+        /* Restart at the next descriptor rather than plain resume: the
+         * card also reopens its receive path, which is what releases
+         * frames that piled up while it was stopped. */
+        ex_cmd(EX_RU_START, ex_rx_slot(next % EX_RX_SLOTS));
+    }
+}
+
+static int ex_recv(void* buf, uint32_t cap) {
+    int i;
+    for (i = 0; i < EX_RX_SLOTS; i++) {
+        uint8_t* rfd = ex_rx + i * EX_RX_STRIDE;
+        uint16_t st = *(volatile uint16_t*)(rfd + 0);
+        if (!(st & 0x8000)) continue;                 /* C bit: complete */
+        {
+            uint32_t n = *(uint16_t*)(rfd + 12);
+            if (n > EX_RX_STRIDE - 16) n = EX_RX_STRIDE - 16;
+            if (n > cap) n = cap;
+            memcpy(buf, rfd + 16, n);
+            *(uint16_t*)(rfd + 0)  = 0;               /* re-arm */
+            *(uint16_t*)(rfd + 12) = 0;
+            ex_st_rx++;
+            if ((st & 0x2000) == 0) ex_st_badst++;
+            ex_rx_kick(i + 1);
+            return (int)n;
+        }
+    }
+    return 0;
+}
+
+static int ex_ids[] = {
+    0x1029, 0x1030, 0x1031, 0x1032, 0x1033, 0x1034, 0x1035,
+    0x1036, 0x1038, 0x1039, 0x103A, 0x103B, 0x103C, 0x103D,
+    0x103E, 0x1050, 0x1051, 0x1059, 0x1209, 0x1229, 0x2449,
+    0x2459, 0x27DC, 0
+};
+
+static int i8255x_match(uint16_t ven, uint16_t dev) {
+    int k;
+    if (ven != 0x8086) return 0;
+    for (k = 0; ex_ids[k]; k++) if (ex_ids[k] == dev) return 1;
+    return 0;
+}
+
+static int i8255x_init(uint8_t b, uint8_t d, uint8_t f, nic_t* out) {
+    uint32_t bar0, bar1, cmd;
+    int i;
+
+    pci_enable_path(b);
+    pci_enable(b, d, f);                     /* I/O + memory + bus master */
+    cmd = pci_rd(b, d, f, 0x04);
+    if (!(cmd & 0x00000004)) return -1;       /* DMA still disabled: give up */
+
+    bar0 = pci_rd(b, d, f, 0x10);
+    bar1 = pci_rd(b, d, f, 0x14);
+    ex_is_mmio = 0;
+    if (bar0 & 1) {
+        ex_io = (uint16_t)(bar0 & ~3u);
+    } else if (bar1 & 1) {
+        ex_io = (uint16_t)(bar1 & ~3u);
+    } else if (bar0 & ~0xFu) {
+        ex_mmio = bar0 & ~0xFu;
+        ex_is_mmio = 1;
+    } else {
+        return -1;
+    }
+    if (!ex_is_mmio && !ex_io) return -1;
+
+    /* soft reset, then let the CU/RU settle */
+    ex_w32(EX_CSR_PORT, 0);
+    timer_delay_ms(10);
+    ex_w16(EX_CSR_STATUS, 0xFFFF);           /* acknowledge anything pending */
+    timer_delay_ms(5);
+
+    /* find the PHY (usually 1) and remember it for link checks */
+    ex_phy = -1;
+    for (i = 1; i <= 3; i++) {
+        ex_phy = i;
+        if (ex_mdio(1) != 0 && ex_mdio(1) != 0xFFFF) break;
+        ex_phy = -1;
+    }
+
+    /* MAC: words 0..2 of the 93C46 */
+    {
+        uint16_t w0 = ee_read(0), w1 = ee_read(1), w2 = ee_read(2);
+        out->mac[0] = (uint8_t)(w0 & 0xFF);
+        out->mac[1] = (uint8_t)(w0 >> 8);
+        out->mac[2] = (uint8_t)(w1 & 0xFF);
+        out->mac[3] = (uint8_t)(w1 >> 8);
+        out->mac[4] = (uint8_t)(w2 & 0xFF);
+        out->mac[5] = (uint8_t)(w2 >> 8);
+    }
+    if ((out->mac[0] | out->mac[1] | out->mac[2] | out->mac[3] |
+         out->mac[4] | out->mac[5]) == 0 ||
+        (out->mac[0] & out->mac[1] & out->mac[2] &
+         out->mac[3] & out->mac[4] & out->mac[5]) == 0xFF) {
+        /* unreadable EEPROM: fall back to a locally administered address */
+        out->mac[0] = 0x52; out->mac[1] = 0x54;
+        out->mac[2] = 0x00; out->mac[3] = (uint8_t)(b & 0xFF);
+        out->mac[4] = (uint8_t)(d & 0xFF); out->mac[5] = (uint8_t)(f & 0xFF);
+    }
+
+    /* CU/RU base 0: every link field is then an absolute address */
+    if (ex_cmd(EX_CU_LOAD_BASE, 0) != 0) return -1;
+    if (ex_cmd(EX_RU_LOAD_BASE, 0) != 0) return -1;
+
+    /* Configure: the 22 bytes Intel's own Linux driver writes for this
+     * chip. The bit layout is NOT the obvious one (standard TCB, TX
+     * padding, RX stripping and the retry count all live in packed
+     * bitfields) - getting it wrong makes the card retransmit and the
+     * link crawl, so this follows the reference driver byte for byte. */
+    {
+        static const uint8_t cfg[22] = {
+            0x16, 0x08, 0x00, 0x00, 0x00, 0x00,  /* size, fifo, ifs  */
+            0x32, 0x07, 0x01, 0x00,              /* standard TCB,   */
+                                                 /* discard short,  */
+                                                 /* MII mode        */
+            0x2E, 0x00, 0x60, 0x00, 0xF2, 0x48,  /* preamble, IFS   */
+            0x00, 0x40, 0xF2, 0x82, 0x3F, 0x05   /* pad, fc, filter */
+        };
+        uint8_t* c = ex_cb + 8;
+        memset(ex_cb, 0, sizeof(ex_cb));
+        memcpy(c, cfg, sizeof(cfg));
+
+        ex_cb_set(0, EX_CB_CONFIG | EX_CB_S, 0);
+        if (ex_cmd(EX_CU_START, (uint32_t)(uintptr_t)ex_cb) != 0) return -1;
+        timer_delay_ms(2);
+
+        /* individual address setup */
+        memset(ex_cb + 32, 0, 16);
+        *(uint16_t*)(ex_cb + 32 + 2) = EX_CB_IA | EX_CB_S | EX_CB_EL;
+        memcpy(ex_cb + 32 + 8, out->mac, 6);
+        if (ex_cmd(EX_CU_START, (uint32_t)(uintptr_t)(ex_cb + 32)) != 0) return -1;
+        timer_delay_ms(2);
+    }
+
+    /* receive ring */
+    ex_arm_rx();
+    if (ex_cmd(EX_RU_START, ex_rx_slot(0)) != 0) return -1;
+
+    ex_w16(EX_CSR_STATUS, 0xFFFF);           /* acknowledge, interrupts stay off */
+
+    out->name = "i8255x";
+    out->send = ex_send;
+    out->recv = ex_recv;
+    out->link = ex_link;
+    return 0;
+}
+
 /* ------------------------------------------------------------- probe */
 
 /* ------------------------------------------------------------ registry */
@@ -1177,6 +1531,7 @@ static nic_driver_t drivers[] = {
     { "rtl8169",    rtl8169_match, rtl8169_init, 0 },
     { "ar8132",     ar8132_match,  ar8132_init,  0 },
     { "ne2000",     ne2k_match,    ne2k_init,    0 },
+    { "i8255x",     i8255x_match,  i8255x_init,  0 },
 };
 
 int nic_scan_all(nic_found_t* out, int max) {

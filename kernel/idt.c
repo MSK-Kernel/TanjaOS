@@ -116,8 +116,6 @@ void fault_handler(uint32_t vector, uint32_t err, uint32_t eip,
     asm volatile ("cli");
 
     if ((uint32_t)(uintptr_t)&__kernel_end <= eip && tanja_exit_active) {
-        /* A program fault is reported with the program's own text colour
-         * (light grey), like any other runtime message about a program. */
         print("\nprogram fault: ");
         print(fault_name(vector));
         print(" (eip ");
@@ -145,11 +143,6 @@ void fault_handler(uint32_t vector, uint32_t err, uint32_t eip,
         __builtin_longjmp((void**)tanja_exit_jmp, 1);
     }
 
-    /* A real kernel fault is kernel log text: force white for the dump. */
-    {
-        extern uint16_t con_color;
-        con_color = (0x0F << 8);
-    }
     print("\n\nKERNEL FAULT #");
     fault_print_hex(vector);
     print(" - ");
@@ -159,6 +152,28 @@ void fault_handler(uint32_t vector, uint32_t err, uint32_t eip,
     fault_line("cs      = 0x", cs);
     fault_line("eflags  = 0x", eflags);
     fault_line("err     = 0x", err);
+    if (eip >= 0x100000)
+        fault_line("e-base  = 0x", eip - 0x100000);   /* offset in the kernel */
+    {
+        uint32_t cr0, cr3, cr4;
+        asm volatile ("mov %%cr0, %0" : "=r"(cr0));
+        asm volatile ("mov %%cr3, %0" : "=r"(cr3));
+        asm volatile ("mov %%cr4, %0" : "=r"(cr4));
+        fault_line("cr0     = 0x", cr0);
+        fault_line("cr3     = 0x", cr3);
+        fault_line("cr4     = 0x", cr4);
+    }
+    if (eip >= 0x100000 && eip < (uint32_t)(uintptr_t)&__kernel_end) {
+        /* the faulting instruction bytes: enough to decode the site from
+         * a screenshot alone */
+        int b;
+        print("code    =");
+        for (b = 0; b < 8; b++) {
+            print(" 0x");
+            fault_print_hex(*(volatile const uint8_t*)(eip + b));
+        }
+        print("\n");
+    }
     if (vector == 14) {
         uint32_t cr2;
         asm volatile ("mov %%cr2, %0" : "=r"(cr2));

@@ -488,17 +488,42 @@ uint8_t inb(uint16_t port) {
 
 // CURSOR
 
+/* Cursor blinking. Whether the video hardware blinks the text cursor,
+ * and how fast, is up to the card and the firmware - a modern board
+ * blinks noticeably faster than an old laptop. Drive it from the
+ * millisecond tick instead, so the rate is the same everywhere. */
+int cursor_blink_on = 1;
+static uint32_t cursor_blink_ms;
+
+void cursor_blink_tick(void);
+
+static void cursor_shape_write(uint8_t start, uint8_t end, int on) {
+    outb(0x3D4, 0x0A);
+    outb(0x3D5, (uint8_t)(((inb(0x3D5) & 0xC0) & ~0x20) |
+                          (start & 0x1F) | (on ? 0 : 0x20)));
+    outb(0x3D4, 0x0B);
+    outb(0x3D5, (uint8_t)((inb(0x3D5) & 0xE0) | (end & 0x1F)));
+}
+
+void cursor_blink_tick(void) {
+    if (boot_ticks - cursor_blink_ms < 500) return;
+    cursor_blink_ms = boot_ticks;
+    cursor_blink_on = !cursor_blink_on;
+    cursor_shape_write(0, 15, cursor_blink_on);
+}
+
 void sync_cursor() {
     int max = VGA_WIDTH * VGA_HEIGHT - 1;
     if (cursor < 0) cursor = 0;
     if (cursor > max) cursor = max;
 
-    // 1. Configure Cursor Shape to a Solid Block
-    outb(0x3D4, 0x0A);                   // Select Cursor Start Register
-    outb(0x3D5, (inb(0x3D5) & 0xC0) | 0); // Start at scanline 0 (Top)
-    
-    outb(0x3D4, 0x0B);                   // Select Cursor End Register
-    outb(0x3D5, (inb(0x3D5) & 0xE0) | 15);// End at scanline 15 (Bottom)
+    // 1. Solid block cursor, on/off per the blink phase
+    {
+        uint32_t fl;
+        asm volatile ("pushf; pop %0; cli" : "=r"(fl));
+        cursor_shape_write(0, 15, cursor_blink_on);
+        if (fl & 0x200) asm volatile ("sti");
+    }
 
     // 2. Update Cursor Position
     outb(0x3D4, 0x0F);
@@ -525,6 +550,8 @@ int read_line_echo = 1;
 void timer_handler()
 {
     boot_ticks++;
+
+    cursor_blink_tick();          /* fixed 500 ms on/off, every machine */
 
     outb(0x20, 0x20); // send EOI
 
@@ -2053,18 +2080,6 @@ void login_prompt() {
     }
 }
 
-void cmd_exit(char* args) { (void)args; shell_exit_flag = 1; }
-
-void cmd_hostname(char* args) {
-    if (args && args[0]) {
-        int i = 0;
-        while (i < MAX_HOSTNAME-1 && args[i] && args[i] != ' ') { config.hostname[i] = args[i]; i++; }
-        config.hostname[i] = 0;
-        extern void store_save(void);
-        store_save();
-        print("Hostname updated\n");
-    } else { print(config.hostname); print("\n"); }
-}
 
 /* tiny atoi for flag values (-u 1500) */
 static int atoi_safe(const char* p) {
@@ -2093,531 +2108,168 @@ static int split_args(char* s, char** tv, int max) {
  * accounts (root only); chmod/chown manage file ownership. They
  * are builtins rather than /bin applets because they need the
  * kernel-internal account table and execute_command(). */
+/* ---------------------------------------------------------------------
+ * Account API for the /bin commands.
+ *
+ * The account table, the group table and the session are kernel state, so
+ * the commands that touch them (sudo, su, passwd, useradd/usermod/userdel,
+ * groupadd/groupdel/groups, hostname, exit) live in bin/*.c and use the
+ * functions below. The kernel keeps the tables and does the validating,
+ * the commands keep the CLI, the prompts and the wording.
+ * ------------------------------------------------------------------- */
+
+int acc_cur_uid(void) { return cur_uid; }
+const char* acc_cur_name(void) { return cur_username; }
+const char* acc_cur_home(void) { return cur_home; }
+
+int acc_user_count(void) { return users_count; }
+int acc_user_find(const char* name) { return name ? user_find(name) : -1; }
+const char* acc_user_name(int i) {
+    return (i >= 0 && i < users_count) ? users[i].username : "";
+}
+int acc_user_uid(int i) {
+    return (i >= 0 && i < users_count) ? users[i].uid : -1;
+}
+const char* acc_user_pass(int i) {
+    return (i >= 0 && i < users_count) ? users[i].password : "";
+}
+int acc_user_add(const char* name, const char* pass, int uid) {
+    if (!name || !pass) return -1;
+    return user_add_full(name, pass, uid);
+}
+int acc_user_del(const char* name) { return name ? user_del(name) : -1; }
+
+int acc_user_set_name(int i, const char* newname) {
+    int j;
+    if (i < 0 || i >= users_count || !newname || !newname[0]) return -1;
+    if (user_find(newname) >= 0) return -2;
+    for (j = 0; j < MAX_USERNAME - 1; j++) users[i].username[j] = 0;
+    for (j = 0; newname[j] && j < MAX_USERNAME - 1; j++)
+        users[i].username[j] = newname[j];
+    users[i].username[j] = 0;
+    store_save();
+    return 0;
+}
+
+int acc_user_set_pass(int i, const char* pass) {
+    int j;
+    if (i < 0 || i >= users_count) return -1;
+    for (j = 0; j < MAX_PASSWORD - 1; j++) users[i].password[j] = 0;
+    if (pass) for (j = 0; pass[j] && j < MAX_PASSWORD - 1; j++)
+        users[i].password[j] = pass[j];
+    users[i].password[j] = 0;
+    store_save();
+    return 0;
+}
+
+int acc_user_set_uid(int i, int uid) {
+    int old;
+    if (i < 0 || i >= users_count || uid <= 0) return -1;
+    old = users[i].uid;
+    users[i].uid = uid;
+    if (uid >= next_uid) next_uid = uid + 1;
+    if (old > 0) fs_reassign_uid(old, uid);
+    store_save();
+    return 0;
+}
+
+int acc_group_count(void) { return groups_count; }
+int acc_group_find(const char* name) { return name ? group_find(name) : -1; }
+const char* acc_group_name(int gi) {
+    return (gi >= 0 && gi < groups_count) ? groups[gi].name : "";
+}
+int acc_group_add(const char* name) {
+    int i, dst;
+    if (!name || !name[0]) return -1;
+    if (group_find(name) >= 0) return -2;
+    if (groups_count >= MAX_GROUPS) return -3;
+    dst = groups_count++;
+    for (i = 0; i < MAX_USERNAME - 1; i++) groups[dst].name[i] = 0;
+    for (i = 0; name[i] && i < MAX_USERNAME - 1; i++) groups[dst].name[i] = name[i];
+    groups[dst].count = 0;
+    store_save();
+    return 0;
+}
+int acc_group_del(int gi) {
+    int k;
+    if (gi < 0 || gi >= groups_count) return -1;
+    for (k = gi; k < groups_count - 1; k++) groups[k] = groups[k + 1];
+    groups_count--;
+    groups[groups_count].name[0] = 0;
+    groups[groups_count].count = 0;
+    store_save();
+    return 0;
+}
+int acc_group_member_count(int gi) {
+    return (gi >= 0 && gi < groups_count) ? groups[gi].count : 0;
+}
+int acc_group_is_member(int gi, const char* user) {
+    if (gi < 0 || gi >= groups_count || !user) return 0;
+    return group_has_member(gi, user);
+}
+int acc_group_member_add(int gi, const char* user) {
+    if (gi < 0 || gi >= groups_count || !user) return -1;
+    group_member_add(gi, user);
+    store_save();
+    return 0;
+}
+int acc_group_member_del(int gi, const char* user) {
+    if (gi < 0 || gi >= groups_count || !user) return -1;
+    group_member_remove(gi, user);
+    store_save();
+    return 0;
+}
+int acc_group_clear_user(const char* user) {
+    int gi;
+    if (!user) return -1;
+    for (gi = 0; gi < groups_count; gi++) group_member_remove(gi, user);
+    store_save();
+    return 0;
+}
+
+/* switch the session to `name` (su): becomes that account and cd's home */
+int acc_session_user(const char* name) {
+    int idx = user_find(name);
+    if (idx < 0) return -1;
+    set_session_user(idx);
+    fs_cur_uid = 0;                    /* reachability check as root */
+    if (fs_change_directory(cur_home) != 0) fs_change_directory("/");
+    fs_cur_uid = cur_uid;
+    store_save();
+    return 0;
+}
+
+void acc_shell_exit(void) { shell_exit_flag = 1; }
+
+const char* acc_hostname(void) { return config.hostname; }
+int acc_set_hostname(const char* h) {
+    int i = 0;
+    if (!h) return -1;
+    while (i < MAX_HOSTNAME - 1 && h[i] && h[i] != ' ') { config.hostname[i] = h[i]; i++; }
+    config.hostname[i] = 0;
+    store_save();
+    return 0;
+}
+
+int acc_chmod_recursive(const char* path, int mode) { return fs_chmod_recursive(path, mode); }
+int acc_chown_recursive(const char* path, int uid)   { return fs_chown_recursive(path, uid); }
 void execute_command(const char* cmd_line);
 
-void cmd_sudo(char* args) {
-    if (!args || !args[0]) { print("usage: sudo <command>\n"); return; }
-    if (cur_uid == 0) { execute_command(args); return; }
-    /* sudoers gate: while a "wheel" group has members, only they may
- * sudo (root always may). Without wheel (or with it empty) every
- * user may, like before. */
-    {
-        int w = group_find("wheel");
-        if (w >= 0 && groups[w].count > 0
-            && !group_has_member(w, cur_username)) {
-            print(cur_username);
-            print(" is not in the sudoers file.  This incident will be reported.\n");
-            return;
-        }
-    }
-    /* like real sudo: the prompt asks for the INVOKING user's own
- * password (not root's), verified against their own account,
- * with up to 3 tries */
-    int self = user_find(cur_username);
-    if (self < 0) { print("sudo: unknown account\n"); return; }
-    int tries;
-    for (tries = 0; tries < 3; tries++) {
-        char pw[MAX_PASSWORD];
-        print("[sudo] password for ");
-        print(cur_username);
-        print(": ");
-        read_line_secret(pw, MAX_PASSWORD);
-        if (pw[0] == 0) { print("sudo: no password was provided\n"); return; }
-        if (users[self].password[0] && streq(pw, users[self].password)) {
-            int saved_uid = fs_cur_uid;
-            fs_cur_uid = 0;
-            execute_command(args);
-            fs_cur_uid = saved_uid;
-            return;
-        }
-        if (tries < 2) print("Sorry, try again.\n");
-    }
-    print("sudo: 3 incorrect password attempts\n");
-}
 
-void cmd_useradd(char* args) {
-    if (cur_uid != 0) { print("useradd: only root can add users\n"); return; }
-    char buf[256];
-    char* tv[16];
-    strncpy(buf, args ? args : "", sizeof(buf));
-    int n = split_args(buf, tv, 16);
-    const char* pass = 0;
-    int uid = 0;
-    char* name = 0;
-    int i;
-    for (i = 0; i < n; i++) {
-        if (streq(tv[i], "-p") && i + 1 < n) pass = tv[++i];
-        else if (streq(tv[i], "-u") && i + 1 < n) uid = atoi_safe(tv[++i]);
-        else if (!name) name = tv[i];
-        else { print("usage: useradd [-p password] [-u uid] <name>\n"); return; }
-    }
-    if (!name) { print("usage: useradd [-p password] [-u uid] <name>\n"); return; }
-    if (streq(name, "root")) { print("useradd: user 'root' already exists\n"); return; }
-    if (user_find(name) >= 0) { print("useradd: user '"); print(name); print("' already exists\n"); return; }
-    char pw[MAX_PASSWORD];
-    if (!pass) {
-        print("New password: "); read_line_secret(pw, MAX_PASSWORD);
-        if (!pw[0]) { print("Password cannot be empty\n"); return; }
-        pass = pw;
-    }
-    int r = user_add_full(name, pass, uid);
-    if (r == -1) print("useradd: invalid name\n");
-    else if (r == -2) print("useradd: user table full\n");
-    /* success is silent, like shadow's useradd */
-}
 
-void cmd_userdel(char* args) {
-    if (cur_uid != 0) { print("userdel: only root can delete users\n"); return; }
-    char buf[256];
-    char* tv[16];
-    strncpy(buf, args ? args : "", sizeof(buf));
-    int n = split_args(buf, tv, 16);
-    int rmhome = 0;
-    char* name = 0;
-    int i;
-    for (i = 0; i < n; i++) {
-        if (streq(tv[i], "-r")) rmhome = 1;          /* remove the home dir */
-        else if (tv[i][0] == '-' && tv[i][1]) { print("userdel: unknown option: "); print(tv[i]); print("\n"); return; }
-        else if (!name) name = tv[i];
-        else { print("usage: userdel [-r] <name>\n"); return; }
-    }
-    if (!name) { print("usage: userdel [-r] <name>\n"); return; }
-    if (streq(name, "root")) { print("userdel: cannot delete the 'root' account\n"); return; }
-    if (user_del(name) != 0) { print("userdel: user '"); print(name); print("' does not exist\n"); return; }
-    if (rmhome) {
-        char home[80];
-        int len = 0, k;
-        const char* pre = "/home/";
-        for (k = 0; pre[k] && len < 70; k++) home[len++] = pre[k];
-        for (k = 0; name[k] && len < 78; k++) home[len++] = name[k];
-        home[len] = 0;
-        if (fs_directory_exists(home))
-            fs_delete_directory_recursive(home);
-    }
-    /* success is silent, like shadow's userdel */
-}
 
-void cmd_usermod(char* args) {
-    if (cur_uid != 0) { print("usermod: only root can modify users\n"); return; }
-    char buf[512];
-    char* tv[24];
-    strncpy(buf, args ? args : "", sizeof(buf));
-    int n = split_args(buf, tv, 24);
-    const char* pass = 0;
-    const char* newname = 0;
-    const char* glist = 0;
-    int uid = 0, lock = 0, unlock = 0, append_groups = 0;
-    char* name = 0;
-    int i;
-    for (i = 0; i < n; i++) {
-        if (tv[i][0] != '-' || !tv[i][1]) {
-            /* not a flag: the user name */
-            if (!name) name = tv[i];
-            else { print("usage: usermod [-p pass] [-l new] [-u uid] [-aG groups] [-L] [-U] <name>\n"); return; }
-            continue;
-        }
-        /* combined short flags, like real usermod: -aG wheel, -aGwheel,
- * -LU, -p pass ... */
-        const char* fl = tv[i] + 1;
-        while (*fl) {
-            if (*fl == 'a') { append_groups = 1; fl++; }
-            else if (*fl == 'L') { lock = 1; fl++; }
-            else if (*fl == 'U') { unlock = 1; fl++; }
-            else if (*fl == 'p' || *fl == 'l' || *fl == 'u' || *fl == 'G') {
-                const char* val;
-                if (fl[1]) val = fl + 1;              /* attached: -Gdev */
-                else if (i + 1 < n) val = tv[++i];     /* separate: -G dev */
-                else {
-                    print("usermod: option requires an argument -- '");
-                    print_n(fl, 1); print("'\n");
-                    return;
-                }
-                if (*fl == 'p') pass = val;
-                else if (*fl == 'l') newname = val;
-                else if (*fl == 'u') uid = atoi_safe(val);
-                else glist = val;
-                break;   /* the rest of the token was the value */
-            } else {
-                print("usermod: invalid option -- '");
-                print_n(fl, 1); print("'\n");
-                return;
-            }
-        }
-    }
-    if (!name) { print("usage: usermod [-p pass] [-l new] [-u uid] [-aG groups] [-L] [-U] <name>\n"); return; }
-    if (append_groups && !glist) {
-        print("usermod: -a flag is only allowed with the -G flag\n");
-        return;
-    }
-    /* validate the whole -G list first: all groups must exist */
-    if (glist) {
-        char gb[256];
-        char* gv[16];
-        strncpy(gb, glist, sizeof(gb));
-        /* split on commas by rewriting them in place */
-        {
-            int k;
-            for (k = 0; gb[k]; k++) if (gb[k] == ',') gb[k] = ' ';
-        }
-        int gn = split_args(gb, gv, 16);
-        for (i = 0; i < gn; i++) {
-            if (group_find(gv[i]) < 0) {
-                print("usermod: group '"); print(gv[i]); print("' does not exist\n");
-                return;
-            }
-        }
-    }
-    int idx = user_find(name);
-    if (idx < 0) { print("usermod: user '"); print(name); print("' does not exist\n"); return; }
 
-    int changed = 0;
-    if (newname) {
-        if (streq(newname, "root")) { print("usermod: name 'root' is reserved\n"); return; }
-        if (user_find(newname) >= 0) { print("usermod: user '"); print(newname); print("' already exists\n"); return; }
-        int j = 0;
-        for (j = 0; j < MAX_USERNAME - 1; j++) users[idx].username[j] = 0;
-        for (j = 0; newname[j] && j < MAX_USERNAME - 1; j++) users[idx].username[j] = newname[j];
-        users[idx].username[j] = 0;
-        /* carry group memberships over to the new name */
-        {
-            int gi;
-            for (gi = 0; gi < groups_count; gi++) {
-                if (group_has_member(gi, name))
-                    { group_member_remove(gi, name); group_member_add(gi, newname); }
-            }
-        }
-        changed = 1;
-    }
-    if (pass) {
-        int j = 0;
-        for (j = 0; j < MAX_PASSWORD - 1; j++) users[idx].password[j] = 0;
-        for (j = 0; pass[j] && j < MAX_PASSWORD - 1; j++) users[idx].password[j] = pass[j];
-        users[idx].password[j] = 0;
-        changed = 1;
-    }
-    if (uid > 0) {
-        int old = users[idx].uid;
-        users[idx].uid = uid;
-        if (uid >= next_uid) next_uid = uid + 1;
-        if (old > 0) fs_reassign_uid(old, uid);
-        changed = 1;
-    }
-    if (lock) {
-        if (users[idx].uid == 0) { print("usermod: cannot lock root\n"); return; }
-        if (users[idx].password[0] != '!') {
-            char tmp[MAX_PASSWORD];
-            int j = 0;
-            tmp[j++] = '!';
-            for (j = 0; users[idx].password[j] && j < MAX_PASSWORD - 2; j++)
-                tmp[j + 1] = users[idx].password[j];
-            tmp[j + 1] = 0;
-            strncpy(users[idx].password, tmp, MAX_PASSWORD);
-        }
-        changed = 1;
-    }
-    if (unlock) {
-        if (users[idx].password[0] == '!') {
-            int j;
-            for (j = 0; j < MAX_PASSWORD - 1; j++)
-                users[idx].password[j] = users[idx].password[j + 1];
-            users[idx].password[MAX_PASSWORD - 1] = 0;
-        }
-        changed = 1;
-    }
-    /* supplementary groups: -a appends, plain -G replaces */
-    if (glist) {
-        char gb[256];
-        char* gv[16];
-        strncpy(gb, glist, sizeof(gb));
-        int k, gi;
-        for (k = 0; gb[k]; k++) if (gb[k] == ',') gb[k] = ' ';
-        int gn = split_args(gb, gv, 16);
-        if (!append_groups) {
-            for (gi = 0; gi < groups_count; gi++)
-                group_member_remove(gi, users[idx].username);
-        }
-        for (i = 0; i < gn; i++) {
-            gi = group_find(gv[i]);
-            if (gi >= 0) group_member_add(gi, users[idx].username);
-        }
-        changed = 1;
-    }
-    if (!changed) { print("usermod: no changes specified\n"); return; }
-    /* success is silent, like shadow's usermod */
-    store_save();
-}
 
-void cmd_su(char* args) {
-    /* su [-] [name] - switch the session user. Without a name it
- * goes to root. "-" is the classic login-shell form and behaves
- * the same. root may become anyone without a password; everyone
- * else must give the TARGET user's password (real su rules) -
- * switching to root therefore always asks for root's password.
- * The change lasts until exit logs out; the prompt and ~ follow
- * the new user. */
-    char buf[128];
-    char* tv[8];
-    strncpy(buf, args ? args : "", sizeof(buf));
-    int n = split_args(buf, tv, 8);
-    const char* name = 0;
-    int i;
-    for (i = 0; i < n; i++) {
-        if (streq(tv[i], "-") || streq(tv[i], "-l") || streq(tv[i], "-login"))
-            continue;                     /* login form: same behavior */
-        if (!name) name = tv[i];
-        else { print("usage: su [-] [name]\n"); return; }
-    }
-    if (!name) name = "root";
-    int idx = user_find(name);
-    if (idx < 0) { print("su: user "); print(name); print(" does not exist\n"); return; }
-    /* an empty target password (passwd with a blank new password)
- * needs no prompt, mirroring the login screen */
-    if (fs_cur_uid != 0 && users[idx].password[0]) {
-        char pw[MAX_PASSWORD];
-        print("Password: "); read_line_secret(pw, MAX_PASSWORD);
-        if (!streq(pw, users[idx].password)) {
-            print("su: Authentication failure\n");
-            return;
-        }
-    }
-    set_session_user(idx);
-    fs_cur_uid = 0;                       /* reachability check as root */
-    if (fs_change_directory(cur_home) != 0)
-        fs_change_directory("/");
-    fs_cur_uid = cur_uid;
-}
 
-void cmd_groupadd(char* args) {
-    if (cur_uid != 0) { print("groupadd: only root can create groups\n"); return; }
-    char buf[128];
-    char* tv[4];
-    strncpy(buf, args ? args : "", sizeof(buf));
-    int n = split_args(buf, tv, 4);
-    const char* name = (n > 0) ? tv[0] : 0;
-    if (!name || !name[0]) { print("usage: groupadd <group>\n"); return; }
-    if (group_find(name) >= 0) {
-        print("groupadd: group '"); print(name); print("' already exists\n");
-        return;
-    }
-    if (groups_count >= MAX_GROUPS) { print("groupadd: group table full\n"); return; }
-    {
-        int i, dst = groups_count++;
-        for (i = 0; i < MAX_USERNAME - 1; i++) groups[dst].name[i] = 0;
-        for (i = 0; name[i] && i < MAX_USERNAME - 1; i++) groups[dst].name[i] = name[i];
-        groups[dst].count = 0;
-    }
-    /* success is silent, like shadow's groupadd */
-    store_save();
-}
 
-void cmd_groupdel(char* args) {
-    if (cur_uid != 0) { print("groupdel: only root can delete groups\n"); return; }
-    char buf[128];
-    char* tv[4];
-    strncpy(buf, args ? args : "", sizeof(buf));
-    int n = split_args(buf, tv, 4);
-    const char* name = (n > 0) ? tv[0] : 0;
-    if (!name || !name[0]) { print("usage: groupdel <group>\n"); return; }
-    int gi = group_find(name);
-    if (gi < 0) { print("groupdel: group '"); print(name); print("' does not exist\n"); return; }
-    {
-        int k;
-        for (k = gi; k < groups_count - 1; k++)
-            groups[k] = groups[k + 1];
-        groups_count--;
-        groups[groups_count].name[0] = 0;
-        groups[groups_count].count = 0;
-    }
-    /* success is silent, like shadow's groupdel */
-    store_save();
-}
 
-void cmd_groups(char* args) {
-    char buf[128];
-    char* tv[4];
-    strncpy(buf, args ? args : "", sizeof(buf));
-    int n = split_args(buf, tv, 4);
-    const char* name = (n > 0) ? tv[0] : cur_username;
-    if (user_find(name) < 0) {
-        print("groups: user '"); print(name); print("' does not exist\n");
-        return;
-    }
-    print(name); print(" :");
-    {
-        int gi;
-        for (gi = 0; gi < groups_count; gi++) {
-            if (group_has_member(gi, name)) {
-                print(" "); print(groups[gi].name);
-            }
-        }
-    }
-    print("\n");
-}
 
-void cmd_passwd(char* args) {
-    /* passwd [name] - mirrors util-linux passwd:
- * Changing password for carl.
- * Current password:
- * New password:
- * Retype new password:
- * passwd: password updated successfully
- * A blank new password erases the password (this system's
- * passwordless-account feature, worded like real `passwd -d`). */
-    char buf[128];
-    char* tv[4];
-    strncpy(buf, args ? args : "", sizeof(buf));
-    int n = split_args(buf, tv, 4);
-    const char* name = (n > 0) ? tv[0] : cur_username;
-    int idx = user_find(name);
-    if (idx < 0) { print("passwd: user '"); print(name); print("' does not exist\n"); return; }
-    if (!streq(name, cur_username) && cur_uid != 0) {
-        print("passwd: You may not view or modify password information for ");
-        print(name); print(".\n");
-        return;
-    }
-    print("Changing password for ");
-    print(users[idx].username);
-    print(".\n");
-    /* current password, unless root or the account has none */
-    if (cur_uid != 0 && users[idx].password[0]) {
-        char cur_pw[MAX_PASSWORD];
-        print("Current password: "); read_line_secret(cur_pw, MAX_PASSWORD);
-        if (!streq(cur_pw, users[idx].password)) {
-            print("passwd: Authentication token manipulation error\n");
-            print("passwd: password unchanged\n");
-            return;
-        }
-    }
-    {
-        char pw1[MAX_PASSWORD], pw2[MAX_PASSWORD];
-        int attempt, j;
-        for (attempt = 0; attempt < 2; attempt++) {
-            print("New password: "); read_line_secret(pw1, MAX_PASSWORD);
-            for (j = 0; j < MAX_PASSWORD; j++) users[idx].password[j] = 0;
-            if (!pw1[0]) {
-                /* blank: erase the password (passwordless login) */
-                print("passwd: password erased\n");
-                store_save();
-                return;
-            }
-            print("Retype new password: "); read_line_secret(pw2, MAX_PASSWORD);
-            if (streq(pw1, pw2)) {
-                for (j = 0; pw1[j] && j < MAX_PASSWORD - 1; j++)
-                    users[idx].password[j] = pw1[j];
-                print("passwd: password updated successfully\n");
-                store_save();
-                return;
-            }
-            print("Sorry, passwords do not match.\n");
-        }
-        print("passwd: Authentication token manipulation error\n");
-        print("passwd: password unchanged\n");
-    }
-}
 
-static int parse_octal(const char* p) {
-    int v = 0, i = 0;
-    while (p[i] >= '0' && p[i] <= '7' && i < 4) { v = (v << 3) + (p[i] - '0'); i++; }
-    return (i > 0) ? v : -1;
-}
-
-static void print_octal(int v) {
-    static const char oc[] = "01234567";
-    char b[5];
-    b[0] = oc[(v >> 6) & 7];
-    b[1] = oc[(v >> 3) & 7];
-    b[2] = oc[v & 7];
-    b[3] = 0;
-    print(b);
-}
 
 /* symbolic mode clauses like +x, -x, u+x, go-rwx, a=rw, "u+x,go-w".
  * Applies each clause to `mode` (the file's current mode) and
  * returns the new mode, or -1 on a malformed spec. */
-static int chmod_symbolic(const char* spec, int mode) {
-    if (!spec || !spec[0]) return -1;
-    while (*spec) {
-        int who = 0;                    /* 1=u 2=g 4=o */
-        while (*spec == 'u' || *spec == 'g' || *spec == 'o' || *spec == 'a') {
-            if (*spec == 'u') who |= 1;
-            if (*spec == 'g') who |= 2;
-            if (*spec == 'o') who |= 4;
-            if (*spec == 'a') who |= 7;
-            spec++;
-        }
-        if (!who) who = 7;              /* bare +x applies to all */
-        char op = *spec++;
-        if (op != '+' && op != '-' && op != '=') return -1;
-        int perm = 0;
-        while (*spec == 'r' || *spec == 'w' || *spec == 'x') {
-            if (*spec == 'r') perm |= 4;
-            if (*spec == 'w') perm |= 2;
-            if (*spec == 'x') perm |= 1;
-            spec++;
-        }
-        int mask = 0;
-        if (who & 1) mask |= perm << 6;
-        if (who & 2) mask |= perm << 3;
-        if (who & 4) mask |= perm;
-        if (op == '+') mode |= mask;
-        else if (op == '-') mode &= ~mask;
-        else {
-            int clr = 0;
-            if (who & 1) clr |= 0700;
-            if (who & 2) clr |= 0070;
-            if (who & 4) clr |= 0007;
-            mode = (mode & ~clr) | mask;
-        }
-        if (*spec == ',') spec++;
-        else if (*spec) return -1;
-    }
-    return mode & 0777;
-}
 
-void cmd_chmod(char* args) {
-    char buf[512];
-    char* tv[24];
-    strncpy(buf, args ? args : "", sizeof(buf));
-    int n = split_args(buf, tv, 24);
-    int recursive = 0, i, first = 0;
-    for (i = 0; i < n; i++) {
-        if (streq(tv[i], "-R")) recursive = 1;
-        else { first = i; break; }
-    }
-    if (n - first < 2) { print("usage: chmod [-R] <mode> <file>...\n"); return; }
-    const char* mode = tv[first];
-    for (i = first + 1; i < n; i++) {
-        const char* path = tv[i];
-        int m;
-        if (mode[0] >= '0' && mode[0] <= '7') {
-            m = parse_octal(mode);
-            if (m < 0) { print("chmod: invalid mode: "); print(mode); print("\n"); return; }
-        } else {
-            int cur = fs_get_mode(path);
-            if (cur < 0) {
-                print("chmod: cannot access '"); print(path);
-                print("': No such file or directory\n");
-                continue;
-            }
-            m = chmod_symbolic(mode, cur);
-            if (m < 0) { print("chmod: invalid mode: "); print(mode); print("\n"); return; }
-        }
-        int rc = recursive ? fs_chmod_recursive(path, m) : fs_chmod(path, m);
-        if (rc != 0) {
-            /* GNU wording */
-            if (fs_get_mode(path) < 0)
-                print("chmod: cannot access '"),
-                print(path),
-                print("': No such file or directory\n");
-            else
-                print("chmod: changing permissions of '"),
-                print(path),
-                print("': Operation not permitted\n");
-            continue;
-        }
-        /* success is silent, like GNU chmod */
-    }
-}
 
 /* make sure every account has its home directory with the standard
  * folders (root's /root is seeded by fs_seed_home on every boot;
@@ -2639,39 +2291,6 @@ static void users_ensure_homes(void) {
     }
 }
 
-void cmd_chown(char* args) {
-    /* fs_chown refuses non-root callers; the GNU-style message comes
- * from the failure path below (like real chown's EPERM report) */
-    char buf[512];
-    char* tv[24];
-    strncpy(buf, args ? args : "", sizeof(buf));
-    int n = split_args(buf, tv, 24);
-    int recursive = 0, i, first = 0;
-    for (i = 0; i < n; i++) {
-        if (streq(tv[i], "-R")) recursive = 1;
-        else { first = i; break; }
-    }
-    if (n - first < 2) { print("usage: chown [-R] <user> <file>...\n"); return; }
-    int idx = user_find(tv[first]);
-    if (idx < 0) { print("chown: invalid user: "); print(tv[first]); print("\n"); return; }
-    for (i = first + 1; i < n; i++) {
-        const char* path = tv[i];
-        int r = recursive ? fs_chown_recursive(path, users[idx].uid)
-                          : fs_chown(path, users[idx].uid);
-        if (r != 0) {
-            if (fs_get_mode(path) < 0)
-                print("chown: cannot access '"),
-                print(path),
-                print("': No such file or directory\n");
-            else
-                print("chown: changing ownership of '"),
-                print(path),
-                print("': Operation not permitted\n");
-            continue;
-        }
-        /* success is silent, like GNU chown */
-    }
-}
 
 void print_prompt_path() {
     char cwd[256];
@@ -2999,19 +2618,6 @@ void kernel_main(uint32_t mb_magic, uint32_t mb_addr)
         boot_log(msg);
     }
 
-    register_cmd("exit", cmd_exit);
-    register_cmd("hostname", cmd_hostname);
-    register_cmd("sudo", cmd_sudo);
-    register_cmd("useradd", cmd_useradd);
-    register_cmd("userdel", cmd_userdel);
-    register_cmd("usermod", cmd_usermod);
-    register_cmd("groupadd", cmd_groupadd);
-    register_cmd("groupdel", cmd_groupdel);
-    register_cmd("groups", cmd_groups);
-    register_cmd("su", cmd_su);
-    register_cmd("passwd", cmd_passwd);
-    register_cmd("chmod", cmd_chmod);
-    register_cmd("chown", cmd_chown);
 
     if (!config.is_setup) {
         print("\n");

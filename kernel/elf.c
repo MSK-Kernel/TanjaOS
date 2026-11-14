@@ -9,6 +9,36 @@ extern int printf(const char* fmt, ...);
 extern char* itoa(int value, char* buf, int base);
 extern void print_n(const char* s, uint32_t len);
 
+/* account API (kernel.c) used by the /bin commands */
+extern int acc_cur_uid(void);
+extern const char* acc_cur_name(void);
+extern const char* acc_cur_home(void);
+extern int acc_user_count(void);
+extern int acc_user_find(const char* name);
+extern const char* acc_user_name(int i);
+extern int acc_user_uid(int i);
+extern const char* acc_user_pass(int i);
+extern int acc_user_add(const char* name, const char* pass, int uid);
+extern int acc_user_del(const char* name);
+extern int acc_user_set_name(int i, const char* newname);
+extern int acc_user_set_pass(int i, const char* pass);
+extern int acc_user_set_uid(int i, int uid);
+extern int acc_group_count(void);
+extern int acc_group_find(const char* name);
+extern const char* acc_group_name(int gi);
+extern int acc_group_add(const char* name);
+extern int acc_group_del(int gi);
+extern int acc_group_member_count(int gi);
+extern int acc_group_is_member(int gi, const char* user);
+extern int acc_group_member_add(int gi, const char* user);
+extern int acc_group_member_del(int gi, const char* user);
+extern int acc_group_clear_user(const char* user);
+extern int acc_session_user(const char* name);
+extern void acc_shell_exit(void);
+extern const char* acc_hostname(void);
+extern int acc_set_hostname(const char* h);
+extern int acc_chmod_recursive(const char* path, int mode);
+extern int acc_chown_recursive(const char* path, int uid);
 /* kernel exports available to programs */
 extern void print_color(const char* s, uint16_t color);
 extern void console_putc(char c);
@@ -242,6 +272,35 @@ static const struct tanja_export tanja_exports[] = {
     { "fs_list_directory", (void*)fs_list_directory },
     { "fs_change_directory", (void*)fs_change_directory },
     { "fs_get_current_path", (void*)fs_get_current_path },
+    { "acc_cur_uid", (void*)acc_cur_uid },
+    { "acc_cur_name", (void*)acc_cur_name },
+    { "acc_cur_home", (void*)acc_cur_home },
+    { "acc_user_count", (void*)acc_user_count },
+    { "acc_user_find", (void*)acc_user_find },
+    { "acc_user_name", (void*)acc_user_name },
+    { "acc_user_uid", (void*)acc_user_uid },
+    { "acc_user_pass", (void*)acc_user_pass },
+    { "acc_user_add", (void*)acc_user_add },
+    { "acc_user_del", (void*)acc_user_del },
+    { "acc_user_set_name", (void*)acc_user_set_name },
+    { "acc_user_set_pass", (void*)acc_user_set_pass },
+    { "acc_user_set_uid", (void*)acc_user_set_uid },
+    { "acc_group_count", (void*)acc_group_count },
+    { "acc_group_find", (void*)acc_group_find },
+    { "acc_group_name", (void*)acc_group_name },
+    { "acc_group_add", (void*)acc_group_add },
+    { "acc_group_del", (void*)acc_group_del },
+    { "acc_group_member_count", (void*)acc_group_member_count },
+    { "acc_group_is_member", (void*)acc_group_is_member },
+    { "acc_group_member_add", (void*)acc_group_member_add },
+    { "acc_group_member_del", (void*)acc_group_member_del },
+    { "acc_group_clear_user", (void*)acc_group_clear_user },
+    { "acc_session_user", (void*)acc_session_user },
+    { "acc_shell_exit", (void*)acc_shell_exit },
+    { "acc_hostname", (void*)acc_hostname },
+    { "acc_set_hostname", (void*)acc_set_hostname },
+    { "acc_chmod_recursive", (void*)acc_chmod_recursive },
+    { "acc_chown_recursive", (void*)acc_chown_recursive },
     { "fs_chmod", (void*)fs_chmod },
     { "fs_chown", (void*)fs_chown },
     { "fs_get_mode", (void*)fs_get_mode },
