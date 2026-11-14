@@ -11,11 +11,6 @@ extern kernel_main
 _start:
     cli
 
-; Use OUR segment layout, not whatever the bootloader left behind.
-; Some firmware/GRUB paths (UEFI CSM in particular) hand over with a
-; GDT where the code segment is not at 0x08 - the kernel then put that
-; inherited selector into every IDT gate, and the first interrupt
-; faulted with #GP. Flat 4 GiB segments make the loader irrelevant.
     lgdt [gdt_ptr]
     jmp 0x08:gdt_ready
 
