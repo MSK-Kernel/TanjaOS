@@ -1,29 +1,24 @@
-; setjmp_asm.asm - i386 setjmp/longjmp for the kernel libc.
-; jmp_buf layout (int array, byte offsets):
-;   0: ebx   4: esi   8: edi   12: ebp   16: esp   20: return address
 global setjmp
 global longjmp
 
 section .text
 
-; int setjmp(jmp_buf env)   -- cdecl: [esp]=ret, [esp+4]=env
 setjmp:
-        mov     eax, [esp+4]          ; env pointer
+        mov     eax, [esp+4]
         mov     [eax+0], ebx
         mov     [eax+4], esi
         mov     [eax+8], edi
         mov     [eax+12], ebp
-        lea     ecx, [esp+4]           ; caller esp right after the call
+        lea     ecx, [esp+4]
         mov     [eax+16], ecx
-        mov     ecx, [esp]             ; return address
+        mov     ecx, [esp]
         mov     [eax+20], ecx
         xor     eax, eax
         ret
 
-; void longjmp(jmp_buf env, int val)  -- cdecl, never returns
 longjmp:
-        mov     eax, [esp+4]           ; env
-        mov     ecx, [esp+8]           ; val
+        mov     eax, [esp+4]
+        mov     ecx, [esp+8]
         test    ecx, ecx
         jnz     .have_val
         mov     ecx, 1
@@ -32,10 +27,7 @@ longjmp:
         mov     esi, [eax+4]
         mov     edi, [eax+8]
         mov     ebp, [eax+12]
-        mov     edx, [eax+20]          ; target pc
-        mov     esp, [eax+16]         ; switch stack last
-        mov     eax, ecx               ; setjmp returns val
+        mov     edx, [eax+20]
+        mov     esp, [eax+16] 
+        mov     eax, ecx
         jmp     edx
-
-; Non-allocating note so ld does not assume an executable stack.
-section .note.GNU-stack noalloc noexec nowrite progbits

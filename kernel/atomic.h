@@ -1,15 +1,3 @@
-/* kernel/atomic.h - stdatomic runtime helpers exported to programs.
- *
- * tcc lowers C11 atomics (_Atomic types, __atomic builtins used by
- * /include/stdatomic.h) to calls to __atomic_<op>_<size> helpers, the
- * same set libtcc1/libatomic provide on a hosted system. TanjaOS has
- * no linker, so the kernel itself implements and exports them.
- *
- * Kept as an X-macro list - each entry is X(name, ret, params) - so
- * kernel/elf.c can extern and export every helper without
- * hand-syncing 60+ prototypes; kernel/atomic.c includes this after
- * defining them, so any drift is a compile error.
- */
 #ifndef TANJA_ATOMIC_H
 #define TANJA_ATOMIC_H
 #include <stdint.h>

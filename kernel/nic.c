@@ -1,9 +1,3 @@
-/* nic.c - PCI NIC drivers for TanjaOS (polled, no interrupts).
- *
- * Supported: Intel PRO/1000 and e1000e (legacy descriptors),
- * Realtek RTL8139, and Realtek RTL8168/8169/8111 (most real hardware). Everything runs in
- * ring 0 with no paging, so a buffer's address IS its DMA address.
- */
 #include <stdint.h>
 #include "../include/net.h"
 

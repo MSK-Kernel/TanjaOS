@@ -1,10 +1,3 @@
-/* net.c - TanjaOS network stack (IPv4 over Ethernet, polled).
- *
- * ARP, ICMP echo, UDP, DHCP client, DNS resolver, a single-connection
- * TCP client and a plain-HTTP GET on top of it. There is no TLS, so no
- * https. Everything is driven by net_poll(), which the keyboard idle
- * loop and every blocking call here pump.
- */
 #include <stdint.h>
 #include <stddef.h>
 #include "../include/net.h"

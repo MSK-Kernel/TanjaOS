@@ -1,11 +1,3 @@
-/* libc.h - export list for the TanjaOS kernel C library (kernel/libc.c).
- *
- * X-macro list in the same style as atomic.h: elf.c expands it once
- * for the extern declarations and once for the export table, so every
- * libc symbol stays in one place.
- *
- * Each entry: (name, return type, parameter list)
- */
 #ifndef TANJA_LIBC_H
 #define TANJA_LIBC_H
 

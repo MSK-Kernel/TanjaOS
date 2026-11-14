@@ -1,17 +1,3 @@
-/* tls.c - TLS 1.2 client for TanjaOS, built on BearSSL (tools/bearssl).
- *
- * The server's certificate chain is verified against the Mozilla root
- * store in tls_anchors.h and the host name is checked. BearSSL speaks
- * TLS 1.0-1.2 (no TLS 1.3); modern servers such as GitHub still accept 1.2.
- *
- * Two honest caveats:
- * - Entropy comes from RDRAND (when the CPU has it) plus TSC / PIT /
- * RTC jitter. On old CPUs without RDRAND that is weaker than a real
- * hardware RNG.
- * - The clock is the CMOS RTC, but never earlier than the kernel's build
- * date, so a dead RTC battery cannot make certificates look "not yet
- * valid".
- */
 #include <stdint.h>
 #include <stddef.h>
 #include "bearssl.h"

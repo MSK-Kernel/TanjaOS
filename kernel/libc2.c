@@ -1,13 +1,3 @@
-/* libc.c - the TanjaOS kernel C library (part 2).
- *
- * fd table + FILE streams, POSIX file calls, string extras,
- * strtol family, qsort/bsearch, environment, time, signal stubs,
- * setjmp/longjmp, the x87 math library and program argv.
- *
- * Export list: libc.h. printf/scanf/malloc/exit live in libc.c
- * (part 1).
- */
-
 #include <stdint.h>
 #include <stddef.h>
 #include <stdarg.h>

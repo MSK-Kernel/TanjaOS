@@ -1,14 +1,3 @@
-/* libc.c - the TanjaOS kernel C library (part 1).
- *
- * This file: formatted output (printf family), formatted input
- * (scanf family), memory management (malloc family) and the
- * exit()/atexit() machinery. FILE streams, POSIX fds, time, math
- * and the string extras live in libc2.c; the export list for both
- * is libc.h.
- *
- * Everything here is exported to ELF programs through elf.c.
- */
-
 #include <stdint.h>
 #include <stddef.h>
 #include <stdarg.h>

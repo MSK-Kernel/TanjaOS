@@ -1,21 +1,3 @@
-/* kernel/atomic.c - C11 stdatomic runtime helpers.
- *
- * tcc lowers atomics to calls like __atomic_store_4 / __atomic_load_8
- * (see tccgen.c parse_atomic), the same helpers libtcc1's stdatomic.c
- * and libatomic provide on hosted systems. TanjaOS programs resolve
- * symbols against the kernel export table, so the kernel exports the
- * whole set (table entries in kernel/elf.c, prototypes in atomic.h).
- *
- * TanjaOS is single-CPU and programs run in ring 0, so cli/sti around
- * the access is a complete atomicity guarantee for every width,
- * including the 8-byte ops real i386 hardware cannot do in one
- * instruction. The "memory" clobbers keep the compiler from moving
- * the access outside the cli..sti window.
- *
- * The memory-model parameter is accepted and ignored, matching
- * libatomic: on a single core with interrupts off, every ordering is
- * sequentially consistent.
- */
 #include <stdint.h>
 #include <stddef.h>
 
