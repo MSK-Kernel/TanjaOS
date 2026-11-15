@@ -1,22 +1,4 @@
 #include "../include/vfs.h"
-
-/* TanjaOS devfs
- *
- * The filesystem mounted at /dev. Every block device the VFS has
- * registered (ata0..ata3, ahci0) shows up as a node:
- *
- *     /dev/ata0   /dev/ahci0   ...
- *
- * The nodes are generated from the block-device registry on every call,
- * so there is nothing to keep in sync: a device is in /dev exactly when
- * it is registered with the VFS. lsblk lists /dev, and `mount` accepts
- * either "ata0" or "/dev/ata0".
- *
- * Nodes are root:root 0660 and read-only metadata for now: size, mode
- * and owner work, raw sector read/write through the file API does not
- * (those ops are left NULL, so fs_read_file() etc. fail cleanly).
- */
-
 #define DEVFS_NODE_MODE 0660
 #define DEVFS_DIR_MODE  0755
 
