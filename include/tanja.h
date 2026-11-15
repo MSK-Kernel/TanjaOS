@@ -155,3 +155,10 @@ extern void config_reset(void);
 extern void setup_wizard(void);
 
 #endif
+
+/* VFS mount / block-device API (used by mount and lsblk) */
+extern int vfs_list_bdevs(char* buf, uint32_t* size);
+extern int vfs_list_mounts(char* buf, uint32_t* size);
+extern int vfs_mount(const char* mountpoint, const char* fstype, void* dev, const char* opts);
+extern int vfs_unmount(const char* mountpoint);
+extern void* vfs_find_bdev(const char* name);

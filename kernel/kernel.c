@@ -2590,6 +2590,10 @@ void kernel_main(uint32_t mb_magic, uint32_t mb_addr)
 
     boot_log("Initializing filesystem");
     store_init(mb_magic, mb_addr);
+    {
+        extern void fs_ensure_dev(void);
+        fs_ensure_dev();
+    }
 
     boot_log("Starting network");
     net_init();
@@ -2601,9 +2605,16 @@ void kernel_main(uint32_t mb_magic, uint32_t mb_addr)
  * factory source of the command binaries, so re-seed from it
  * before giving up. */
     extern void fs_seed_home(void);
+    extern void fs_init(void);
     if (!fs_directory_exists("/bin") || fs_directory_is_empty("/bin")) {
         boot_log("Restoring /bin from embedded home archive");
+        /* Re-init so a bad Storefile cannot leave the tables unusable. */
+        fs_init();
         fs_seed_home();
+        {
+            extern void fs_ensure_dev(void);
+            fs_ensure_dev();
+        }
     }
     if (!fs_directory_exists("/bin") || fs_directory_is_empty("/bin"))
         kernel_panic_no_bin();

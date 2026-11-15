@@ -531,6 +531,8 @@ void store_init(uint32_t mb_magic, uint32_t mb_addr) {
                 rd.win_off  = 0;
                 rd.win_len  = 0;
 
+                /* Filesystem tables must exist before deserialize fills them. */
+                fs_init();
                 if (fs_deserialize_fill(&rd, store_rd_fill) == 0 &&
                     store_rd_fill(&rd, store_cfgbuf, store_cfg_need) == 0 &&
                     config_deserialize(store_cfgbuf, store_cfg_need) == 0) {
@@ -538,6 +540,7 @@ void store_init(uint32_t mb_magic, uint32_t mb_addr) {
                     boot_log("Storefile: loaded saved state from disk");
                     return;
                 }
+                boot_log("Storefile: saved image failed validation, starting fresh");
             }
         }
         boot_log("Storefile: saved image failed validation, starting fresh");

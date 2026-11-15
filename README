@@ -178,3 +178,22 @@ regenerate it to refresh the roots). No TLS 1.3. The clock is the CMOS RTC
 (never earlier than the build date); entropy is RDRAND + timing jitter, so
 it is weaker on CPUs without RDRAND.
 Try it locally: 'python3 -m http.server 8000' in a dir of source files on the host.
+
+## Virtual File System (VFS)
+
+TanjaOS now uses a Virtual File System layer (include/vfs.h + fs/vfs.c)
+instead of exposing its in-memory filesystem directly.
+
+- The original ramfs is registered as the root mount via vfs_mount_root()
+  and fully implements the vfs_ops interface (create, read, write, list,
+  exists, size, delete, …).
+- Public fs_* calls resolve the absolute path through vfs_resolve() and
+  dispatch to the mounted filesystem’s ops. No more direct ramfs fallbacks
+  for the converted operations.
+- Additional filesystems can be mounted at arbitrary paths with
+  vfs_mount(mountpoint, &some_ops, superblock).
+- This lets disk filesystems, procfs, or other backends coexist under a
+  single namespace without changing application or libc code.
+
+The VFS is deliberately simple (longest-prefix mount matching, small
+mount table). It can later grow real inode/dentry caching and more ops.

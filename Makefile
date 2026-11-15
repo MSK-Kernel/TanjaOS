@@ -140,13 +140,13 @@ ports/doom/build/doom: $(wildcard ports/doom/*.c ports/doom/Makefile ports/doom/
 	@$(MAKE) --no-print-directory -C ports/doom CC="$(CC)" LD="$(LD)" ARCH_FLAGS="$(filter -m32,$(CFLAGS))"
 
 
-arch/x86/boot/tanja-base: arch/x86/boot/boot.o arch/x86/idt_asm.o $(KERNEL_OBJ) fs/fs.o $(HOME_OBJ) tools/bearssl/libbearssl.a | arch/x86/boot
+arch/x86/boot/tanja-base: arch/x86/boot/boot.o arch/x86/idt_asm.o $(KERNEL_OBJ) fs/fs.o fs/vfs.o fs/devfs.o fs/ramfs.o $(HOME_OBJ) tools/bearssl/libbearssl.a | arch/x86/boot
 	@echo "[LD] Linking..."
 	$(LD) $(LDFLAGS) -o arch/x86/boot/tanja-base \
 		arch/x86/boot/boot.o \
 		arch/x86/idt_asm.o \
 		$(KERNEL_OBJ) \
-		fs/fs.o \
+		fs/fs.o fs/vfs.o fs/devfs.o fs/ramfs.o \
 		$(HOME_OBJ) \
 		tools/bearssl/libbearssl.a \
 		$(shell $(CC) -m32 -print-libgcc-file-name)
@@ -172,3 +172,15 @@ clean:
 	rm -rf .home-stage include/build_id.h tools/bearssl/build tools/bearssl/libbearssl.a
 
 .PHONY: all clean
+
+fs/vfs.o: fs/vfs.c include/vfs.h
+	@echo "[CC] fs/vfs.c"
+	$(CC) $(CFLAGS) -o fs/vfs.o fs/vfs.c
+
+fs/devfs.o: fs/devfs.c include/vfs.h
+	@echo "[CC] fs/devfs.c"
+	$(CC) $(CFLAGS) -o fs/devfs.o fs/devfs.c
+
+fs/ramfs.o: fs/ramfs.c include/ramfs.h include/vfs.h
+	@echo "[CC] fs/ramfs.c"
+	$(CC) $(CFLAGS) -o fs/ramfs.o fs/ramfs.c

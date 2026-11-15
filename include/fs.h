@@ -63,6 +63,7 @@ int find_in_directory(int dir_index, const char* name, fs_type_t type);
 // multiboot module. fs_store_size() tells the caller how big the buffer
 // needs to be; it never changes at runtime.
 uint32_t fs_store_size(void);
+uint32_t fs_serialized_size(void);
 int fs_serialize(uint8_t* buf, uint32_t buf_size);
 int fs_serialize_sink(void* ctx, void (*emit)(void*, const uint8_t*, uint32_t));
 int fs_deserialize(const uint8_t* buf, uint32_t buf_size);

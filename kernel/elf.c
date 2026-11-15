@@ -1,3 +1,4 @@
+#include "../include/vfs.h"
 #include <stdint.h>
 #include <stddef.h>
 #include "../include/fs.h"
@@ -270,6 +271,12 @@ static const struct tanja_export tanja_exports[] = {
     { "fs_file_exists", (void*)fs_file_exists },
     { "fs_directory_exists", (void*)fs_directory_exists },
     { "fs_list_directory", (void*)fs_list_directory },
+    { "vfs_list_bdevs", (void*)vfs_list_bdevs },
+    { "vfs_list_mounts", (void*)vfs_list_mounts },
+    { "vfs_mount", (void*)vfs_mount },
+    { "vfs_unmount", (void*)vfs_unmount },
+    { "vfs_find_bdev", (void*)vfs_find_bdev },
+
     { "fs_change_directory", (void*)fs_change_directory },
     { "fs_get_current_path", (void*)fs_get_current_path },
     { "acc_cur_uid", (void*)acc_cur_uid },
