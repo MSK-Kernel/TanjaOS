@@ -65,9 +65,11 @@ static int get_repo(char* out, int cap) {
 static void no_perm(void) { print("pkg: Permission denied; are you root?\n"); }
 
 
-/* GitHub tree API support for package payload directories.  The package's
- * top-level lib/, usr/, and etc/ trees are mirrored into the system root. */
-#define TREE_CAP (128u * 1024u)
+/* GitHub tree API support for package payload directories. The recursive
+ * Git tree response includes metadata for every entry, so it can be much
+ * larger than the actual files being installed. Keep enough room for normal
+ * package repositories while still bounding memory use. */
+#define TREE_CAP (512u * 1024u)
 static uint8_t tree_json[TREE_CAP];
 
 static int json_string(const char* p, char* out, int cap) {

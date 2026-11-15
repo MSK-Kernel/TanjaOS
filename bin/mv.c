@@ -3,6 +3,9 @@
 #include "tanja.h"
 #include "utf8.h"
 
+extern int fs_cur_uid;
+extern int fs_chown(const char* path, int uid);
+
 static int mv_strlen(const char* s) {
     int n = 0;
     while (s[n]) n++;
@@ -40,33 +43,52 @@ static const char* mv_basename(const char* path) {
 #define MV_CHUNK (64u * 1024u)
 
 static int mv_copy_file(const char* src, const char* dst) {
-
-    /* The filesystem copy API creates files with default permissions. Save
-       and restore the source mode so moving scripts/binaries keeps x bits. */
+    /* mv is a filesystem operation, not an ordinary read by the caller.
+       Temporarily use root while copying so execute-only files (or files
+       without owner read/write bits) can still be moved without losing data.
+       The original owner and mode are restored on the destination. */
+    int saved_uid = fs_cur_uid;
     int source_mode = fs_get_mode(src);
+    int source_owner = fs_get_owner(src);
+    int result = -1;
 
-    /* Chunked copy (same rationale as cp.c): no whole-file buffer. */
     char buffer[MV_CHUNK];
-    uint32_t total = fs_get_file_size(src);
+    uint32_t total;
     uint32_t off = 0;
 
-    if (fs_file_exists(dst) && fs_delete_file(dst) != 0) return -1;
+    fs_cur_uid = 0;
+    total = fs_get_file_size(src);
 
-    /* Create the destination up front. The copy loop only touches it when
- * there are bytes to write, so an EMPTY source used to leave no
- * destination at all - and the chmod below then failed with
- * "mv: cannot create regular file 'x'". */
-    if (!fs_file_exists(dst) && fs_create_file(dst) != 0) return -1;
+    if (fs_file_exists(dst) && fs_delete_file(dst) != 0)
+        goto done;
+
+    if (!fs_file_exists(dst) && fs_create_file(dst) != 0)
+        goto done;
 
     while (off < total) {
         uint32_t n = MV_CHUNK;
+        uint32_t got = 0;
         if (n > total - off) n = total - off;
-        if (fs_read_file_range(src, off, buffer, n, &n) != 0) return -1;
-        if (fs_append_file(dst, buffer, n) != 0) return -1;
-        off += n;
+        if (fs_read_file_range(src, off, buffer, n, &got) != 0 || got != n)
+            goto fail_destination;
+        if (fs_append_file(dst, buffer, got) != 0)
+            goto fail_destination;
+        off += got;
     }
-    if (source_mode >= 0 && fs_chmod(dst, source_mode) != 0) return -1;
-    return 0;
+
+    if (source_owner >= 0 && fs_chown(dst, source_owner) != 0)
+        goto fail_destination;
+    if (source_mode >= 0 && fs_chmod(dst, source_mode) != 0)
+        goto fail_destination;
+
+    result = 0;
+    goto done;
+
+fail_destination:
+    fs_delete_file(dst);
+done:
+    fs_cur_uid = saved_uid;
+    return result;
 }
 
 static int mv_copy_dir(const char* src, const char* dst) {
