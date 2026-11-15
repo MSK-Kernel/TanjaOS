@@ -19,7 +19,6 @@
 #define ENOENT_ 2
 #define EEXIST_ 17
 
-/* ---- kernel exports we use directly ------------------------------ */
 extern void print_n(const char* s, uint32_t len);
 extern void* memcpy(void*, const void*, size_t);
 extern void* memset(void*, int, size_t);
@@ -32,20 +31,16 @@ extern int isdigit(int);
 extern int isxdigit(int);
 extern int tolower(int);
 
-/* ---- provided by tanja_platform.c --------------------------------- */
 extern void tanja_gfx_leave(void);
 extern int  tanja_gfx_active(void);
 extern void tanja_exit(int code) __attribute__((noreturn));
 
-/* ---- provided by the kernel (exported) ----------------------------- */
 extern uint8_t* tanja_wad_base;
 extern uint32_t tanja_wad_size;
 
 int errno;
 
-/* ================================================================== */
 /* malloc: first-fit free list with coalescing, static arena           */
-/* ================================================================== */
 #ifndef HEAP_BYTES
 #define HEAP_BYTES (11u * 1024u * 1024u)
 #endif
@@ -149,9 +144,7 @@ long time(long* t) { if (t) *t = 0; return 0; }
 void exit(int code) { tanja_exit(code); }
 void abort(void) { tanja_exit(-1); }
 
-/* ================================================================== */
 /* stdio                                                               */
-/* ================================================================== */
 typedef struct T_FILE {
     uint8_t* buf;
     uint32_t len, cap, pos;
@@ -338,9 +331,7 @@ int mkdir(const char* path, int mode)
     return fs_create_directory(path);
 }
 
-/* ================================================================== */
 /* printf family                                                       */
-/* ================================================================== */
 typedef struct { char* buf; size_t cap, len; } out_t;
 
 static void out_ch(out_t* o, char c)
@@ -532,9 +523,7 @@ int puts(const char* s) { fputs(s, stdout); fputc('\n', stdout); return 0; }
 int putchar(int c) { return fputc(c, stdout); }
 void perror(const char* s) { fprintf(stderr, "%s: error\n", s); }
 
-/* ================================================================== */
 /* sscanf (%d %i %u %x %o %s %c %[set] %f, widths, %*)                  */
-/* ================================================================== */
 static int digit_val(int c)
 {
     if (c >= '0' && c <= '9') return c - '0';
@@ -644,9 +633,7 @@ double atof(const char* s)
     return neg ? -v : v;
 }
 
-/* ================================================================== */
 /* 64-bit division helpers (gcc emits these on i386)                    */
-/* ================================================================== */
 uint64_t __udivmoddi4(uint64_t n, uint64_t d, uint64_t* rem)
 {
     uint64_t q = 0, r = 0;

@@ -78,9 +78,7 @@ enum {
    at caller side (for interfacing with non-TCC compilers) */
 #define PROMOTE_RET
 
-/******************************************************/
 #else /* ! TARGET_DEFS_ONLY */
-/******************************************************/
 #define USING_GLOBALS
 #include "tcc.h"
 
@@ -1322,6 +1320,4 @@ ST_FUNC void gen_vla_alloc(CType *type, int align) {
 }
 
 /* end of X86 code generator */
-/*************************************************************/
 #endif
-/*************************************************************/

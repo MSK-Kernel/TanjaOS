@@ -4,7 +4,6 @@
    intrinsic with gcc.  However tcc in order to compile
    itself needs this function */
 
-/* ------------------------------------------------------------- */
 #if defined __arm__
 
 #ifdef __TINYC__
@@ -53,14 +52,12 @@ void __clear_cache(void *beginning, void *end)
     syscall(__ARM_NR_cacheflush, beginning, end, 0);
 }
 
-/* ------------------------------------------------------------- */
 #elif defined __aarch64__
 void __clear_cache(void *beg, void *end)
 {
     __arm64_clear_cache(beg, end);
 }
 
-/* ------------------------------------------------------------- */
 #elif defined __riscv
 void __clear_cache(void *beg, void *end)
 {

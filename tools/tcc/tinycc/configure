@@ -733,7 +733,6 @@ echo "@set VERSION $version" > config.texi
 
 rm -f $TMPN* $CONFTEST
 
-# ---------------------------------------------------------------------------
 # build tree in object directory if source path is different from current one
 
 use_cp=
@@ -765,4 +764,3 @@ if test "$source_path_used" = "yes" ; then
   done
 fi
 
-# ---------------------------------------------------------------------------

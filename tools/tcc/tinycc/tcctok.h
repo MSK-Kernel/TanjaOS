@@ -1,4 +1,3 @@
-/*********************************************************************/
 /* keywords */
      DEF(TOK_IF, "if")
      DEF(TOK_ELSE, "else")
@@ -69,7 +68,6 @@
      DEF(TOK_TYPEOF3, "__typeof__")
      DEF(TOK_LABEL, "__label__")
 
-/*********************************************************************/
 /* the following are not keywords. They are included to ease parsing */
 /* preprocessor only */
      DEF(TOK_DEFINE, "define")
@@ -370,7 +368,6 @@
 #endif
 
 
-/*********************************************************************/
 /* Tiny Assembler */
 #define DEF_ASM(x) DEF(TOK_ASM_ ## x, #x)
 #define DEF_ASMDIR(x) DEF(TOK_ASMDIR_ ## x, "." #x)

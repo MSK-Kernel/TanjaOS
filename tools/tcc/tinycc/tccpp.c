@@ -24,7 +24,6 @@
 /* #define to 1 to enable (see parse_pp_string()) */
 #define ACCEPT_LF_IN_STRINGS 0
 
-/********************************************************/
 /* global variables */
 
 ST_DATA int tok_flags;
@@ -41,7 +40,6 @@ ST_DATA int tok_ident;
 ST_DATA TokenSym **table_ident;
 ST_DATA int pp_expr;
 
-/* ------------------------------------------------------------------------- */
 
 static TokenSym *hash_ident[TOK_HASH_SIZE];
 static char token_buf[STRING_MAX_SIZE + 1];
@@ -112,7 +110,6 @@ ST_FUNC void expect(const char *msg)
     tcc_error("%s expected", msg);
 }
 
-/* ------------------------------------------------------------------------- */
 /* Custom allocator for tiny objects */
 
 #define USE_TAL
@@ -166,7 +163,6 @@ typedef struct tal_header_t {
 #define TAL_ALIGN(size) \
     (((size) + (sizeof (size_t) - 1)) & ~(sizeof (size_t) - 1))
 
-/* ------------------------------------------------------------------------- */
 
 static TinyAlloc *tal_new(TinyAlloc **pal, unsigned size)
 {
@@ -322,7 +318,6 @@ static void *tal_realloc_impl(TinyAlloc **pal, void *p, unsigned size TAL_DEBUG_
 
 #endif /* USE_TAL */
 
-/* ------------------------------------------------------------------------- */
 /* CString handling */
 static void cstr_realloc(CString *cstr, int new_size)
 {
@@ -458,7 +453,6 @@ static void add_char(CString *cstr, int c)
     }
 }
 
-/* ------------------------------------------------------------------------- */
 /* allocate a new token */
 static TokenSym *tok_alloc_new(TokenSym **pts, const char *str, int len)
 {
@@ -3562,7 +3556,6 @@ ST_INLN void unget_tok(int last_tok)
     tok = last_tok;
 }
 
-/* ------------------------------------------------------------------------- */
 /* init preprocessor */
 
 static const char * const target_os_defs =
@@ -3787,7 +3780,6 @@ ST_FUNC void tccpp_delete(TCCState *s)
     tal_delete(&tokstr_alloc);
 }
 
-/* ------------------------------------------------------------------------- */
 /* tcc -E [-P[1]] [-dD} support */
 
 static int pp_need_space(int a, int b);
@@ -3981,4 +3973,3 @@ ST_FUNC int tcc_preprocess(TCCState *s1)
     return 0;
 }
 
-/* ------------------------------------------------------------------------- */

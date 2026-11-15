@@ -1,4 +1,3 @@
-/* ------------------------------------------------------------------ */
 /* ARM64 (AArch64) assembler token definitions for TCC                */
 
 /* General purpose registers - 64-bit */
@@ -556,9 +555,7 @@
  DEF_ASM(ld4)
  DEF_ASM(st4)
 
-/* ------------------------------------------------------------------ */
 /* ARM64 instruction opcode constants and encoding helpers           */
-/* ------------------------------------------------------------------ */
 
 /* Data processing - immediate */
 #define ARM64_ADD_IMM     0x11000000U
@@ -734,9 +731,7 @@
 #define ARM64_ANDS_IMM    0x72000000U
 #define ARM64_ORR_IMM     0x320003E0U  /* ORR immediate alias with Rn = XZR/WZR */
 
-/* ------------------------------------------------------------------ */
 /* ARM64 instruction encoding helper macros                           */
-/* ------------------------------------------------------------------ */
 
 /* Register field encodings */
 #define ARM64_RD(r)     ((uint32_t)(r) & 0x1FU)

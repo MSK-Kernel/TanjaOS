@@ -1,4 +1,3 @@
-# --------------------------------------------------------------------------
 #
 # Tiny C Compiler Makefile
 #
@@ -123,7 +122,6 @@ DEF-x86_64-NetBSD  = $(DEF-x86_64) -DTARGETOS_NetBSD
 DEF-x86_64-OpenBSD = $(DEF-x86_64) -DTARGETOS_OpenBSD
 
 ifeq ($(INCLUDED),no)
-# --------------------------------------------------------------------------
 # running top Makefile
 
 PROGS = tcc$(EXESUF)
@@ -157,7 +155,6 @@ ifdef CONFIG_cross
 all : cross
 endif
 
-# --------------------------------------------
 T = $(or $(CROSS_TARGET),$(NATIVE_TARGET))
 X = $(if $(CROSS_TARGET),$(CROSS_TARGET)-)
 
@@ -339,7 +336,6 @@ WHICH = sh -c 'command -v $1'
 run-if = $(if $(shell $(call WHICH,$1)),$S $1 $2,@echo "(skipping $@ - no $1)")
 S = $(if $(findstring yes,$(SILENT)),@$(info * $@))
 
-# --------------------------------------------------------------------------
 # documentation and man page
 tcc-doc.html: tcc-doc.texi
 	$(call run-if,makeinfo,--no-split --html --number-sections -o $@ $<)
@@ -355,7 +351,6 @@ tcc.1 : tcc-doc.pod
 
 doc : $(TCCDOCS)
 
-# --------------------------------------------------------------------------
 # install
 
 INSTALL = install -m 644
@@ -431,7 +426,6 @@ INSTALLBIN = cp
 endif
 endif
 
-# --------------------------------------------------------------------------
 # other stuff
 
 TAGFILES = *.[ch] include/*.h lib/*.[chS]
@@ -533,5 +527,4 @@ help:
 	@echo "      TRIPLET-i386 = i686-linux-gnu"
 	@echo "   (*) tcc replaces {B} by 'tccdir' and {R} by 'CONFIG_SYSROOT'"
 
-# --------------------------------------------------------------------------
 endif # ($(INCLUDED),no)

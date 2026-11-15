@@ -1,4 +1,3 @@
-/* ---------------------------------------------- */
 /* get_pc_thunk.S */
 
 #ifdef __leading_underscore
@@ -7,7 +6,6 @@
 # define _(s) s
 #endif
 
-/* ---------------------------------------------- */
         .text
 
         .globl _(__x86.get_pc_thunk.ax)

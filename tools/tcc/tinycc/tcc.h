@@ -138,7 +138,6 @@ extern long double strtold (const char *__nptr, char **__endptr);
 # define PATHSEP ":"
 #endif
 
-/* -------------------------------------------- */
 
 /* parser debug */
 /* #define PARSE_DEBUG */
@@ -250,7 +249,6 @@ extern long double strtold (const char *__nptr, char **__endptr);
 # define CONFIG_TCC_SEMLOCK 1
 #endif
 
-/* ------------ path configuration ------------ */
 
 #ifndef CONFIG_SYSROOT
 # define CONFIG_SYSROOT ""
@@ -328,14 +326,12 @@ extern long double strtold (const char *__nptr, char **__endptr);
 # define CONFIG_TCC_CROSSPREFIX ""
 #endif
 
-/* -------------------------------------------- */
 
 #include "libtcc.h"
 #include "elf.h"
 #include "stab.h"
 #include "dwarf.h"
 
-/* -------------------------------------------- */
 
 #ifndef PUB_FUNC /* functions used by tcc.c but not in libtcc.h */
 # define PUB_FUNC
@@ -360,7 +356,6 @@ extern long double strtold (const char *__nptr, char **__endptr);
 # define inline
 #endif
 
-/* -------------------------------------------- */
 /* include the target specific definitions */
 
 #define TARGET_DEFS_ONLY
@@ -392,7 +387,6 @@ extern long double strtold (const char *__nptr, char **__endptr);
 #endif
 #undef TARGET_DEFS_ONLY
 
-/* -------------------------------------------- */
 
 #if PTR_SIZE == 8
 # define ELFCLASSW ELFCLASS64
@@ -419,7 +413,6 @@ extern long double strtold (const char *__nptr, char **__endptr);
 # define LONG_SIZE 4
 #endif
 
-/* -------------------------------------------- */
 
 #define INCLUDE_STACK_SIZE  32
 #define IFDEF_STACK_SIZE    64
@@ -591,7 +584,6 @@ typedef struct DLLReference {
     char name[1];
 } DLLReference;
 
-/* -------------------------------------------------- */
 
 #define SYM_STRUCT     0x40000000 /* struct/union/enum symbol space */
 #define SYM_FIELD      0x20000000 /* struct/union field symbol space */
@@ -1206,7 +1198,6 @@ enum tcc_token {
 /* keywords: tok >= TOK_IDENT && tok < TOK_UIDENT */
 #define TOK_UIDENT TOK_DEFINE
 
-/* ------------ libtcc.c ------------ */
 
 ST_DATA struct TCCState *tcc_state;
 ST_DATA void** stk_data;
@@ -1337,7 +1328,6 @@ ST_FUNC int normalized_PATHCMP(const char *f1, const char *f2);
 #define OPT_M32 32
 #define OPT_M64 64
 
-/* ------------ tccpp.c ------------ */
 
 ST_DATA struct BufferedFile *file;
 ST_DATA int tok;
@@ -1427,7 +1417,6 @@ static inline int toup(int c) {
     return (c >= 'a' && c <= 'z') ? c - 'a' + 'A' : c;
 }
 
-/* ------------ tccgen.c ------------ */
 
 #define SYM_POOL_NB (8192 / sizeof(Sym))
 
@@ -1529,7 +1518,6 @@ ST_DATA int func_bound_add_epilog;
 #endif
 ST_FUNC Sym *gfunc_set_param(Sym *s, int c, int byref);
 
-/* ------------ tccelf.c ------------ */
 
 #define TCC_OUTPUT_FORMAT_ELF    0 /* default output format: ELF */
 #define TCC_OUTPUT_FORMAT_BINARY 1 /* binary image output */
@@ -1599,7 +1587,6 @@ ST_FUNC void tccelf_add_crtend(TCCState *s1);
 ST_FUNC void tcc_add_runtime(TCCState *s1);
 #endif
 
-/* ------------ xxx-link.c ------------ */
 
 #ifndef TCC_TARGET_PE
 ST_FUNC int code_reloc (int reloc_type);
@@ -1623,7 +1610,6 @@ ST_FUNC void build_got_entries(TCCState *s1, int got_sym); /* in tccelf.c */
 
 ST_FUNC void relocate(TCCState *s1, ElfW_Rel *rel, int type, unsigned char *ptr, addr_t addr, addr_t val);
 
-/* ------------ xxx-gen.c ------------ */
 ST_DATA const char * const target_machine_defs;
 ST_DATA const int reg_classes[NB_REGS];
 
@@ -1677,7 +1663,6 @@ static inline void write64le(unsigned char *p, uint64_t x) {
 static inline void add64le(unsigned char *p, int64_t x) {
     write64le(p, read64le(p) + x);
 }
-/* ------------ i386-gen.c ------------ */
 #if defined TCC_TARGET_I386 || defined TCC_TARGET_X86_64 || defined TCC_TARGET_ARM
 ST_FUNC void g(int c);
 ST_FUNC void gen_le16(int c);
@@ -1690,7 +1675,6 @@ ST_FUNC void gen_cvt_csti(int t);
 ST_FUNC void gen_increment_tcov (SValue *sv);
 #endif
 
-/* ------------ x86_64-gen.c ------------ */
 #ifdef TCC_TARGET_X86_64
 ST_FUNC void gen_opl(int op);
 #ifdef TCC_TARGET_PE
@@ -1700,7 +1684,6 @@ ST_FUNC void gen_cvt_sxtw(void);
 ST_FUNC void gen_cvt_csti(int t);
 #endif
 
-/* ------------ arm-gen.c ------------ */
 #ifdef TCC_TARGET_ARM
 #if defined(TCC_ARM_EABI) && !defined(CONFIG_TCC_ELFINTERP)
 PUB_FUNC const char *default_elfinterp(struct TCCState *s);
@@ -1709,7 +1692,6 @@ ST_FUNC void arm_init(struct TCCState *s);
 ST_FUNC void gen_increment_tcov (SValue *sv);
 #endif
 
-/* ------------ arm64-gen.c ------------ */
 #ifdef TCC_TARGET_ARM64
 ST_FUNC void gen_opl(int op);
 ST_FUNC void gfunc_return(CType *func_type);
@@ -1721,7 +1703,6 @@ ST_FUNC void gen_cvt_csti(int t);
 ST_FUNC void gen_increment_tcov (SValue *sv);
 #endif
 
-/* ------------ riscv64-gen.c ------------ */
 #ifdef TCC_TARGET_RISCV64
 ST_FUNC void gen_opl(int op);
 ST_FUNC void gen_va_start(void);
@@ -1732,17 +1713,14 @@ ST_FUNC void gen_increment_tcov (SValue *sv);
 ST_FUNC void gen_clear_cache(void);
 #endif
 
-/* ------------ c67-gen.c ------------ */
 #ifdef TCC_TARGET_C67
 #endif
 
-/* ------------ tcccoff.c ------------ */
 #ifdef TCC_TARGET_COFF
 ST_FUNC int tcc_output_coff(TCCState *s1, FILE *f);
 ST_FUNC int tcc_load_coff(TCCState * s1, int fd);
 #endif
 
-/* ------------ tccasm.c ------------ */
 ST_FUNC void asm_instr(void);
 ST_FUNC void asm_global_instr(void);
 ST_FUNC int tcc_assemble(TCCState *s1, int do_preprocess);
@@ -1754,7 +1732,6 @@ ST_FUNC int asm_int_expr(TCCState *s1);
 #if PTR_SIZE == 8
 ST_FUNC void gen_expr64(ExprValue *pe);
 #endif
-/* ------------ i386-asm.c ------------ */
 ST_FUNC void gen_expr32(ExprValue *pe);
 ST_FUNC void asm_opcode(TCCState *s1, int opcode);
 ST_FUNC int asm_parse_regvar(int t);
@@ -1764,7 +1741,6 @@ ST_FUNC void asm_gen_code(ASMOperand *operands, int nb_operands, int nb_outputs,
 ST_FUNC void asm_clobber(uint8_t *clobber_regs, const char *str);
 #endif
 
-/* ------------ tccpe.c -------------- */
 #ifdef TCC_TARGET_PE
 ST_FUNC int pe_load_file(struct TCCState *s1, int fd, const char *filename);
 ST_FUNC int pe_output_file(TCCState * s1, const char *filename);
@@ -1783,7 +1759,6 @@ PUB_FUNC int tcc_get_dllexports(const char *filename, char **pp);
 #endif
 #define ST_ASM_SET 0x04
 
-/* ------------ tccmacho.c ----------------- */
 #ifdef TCC_TARGET_MACHO
 ST_FUNC int macho_output_file(TCCState * s1, const char *filename);
 ST_FUNC int macho_load_dll(TCCState *s1, int fd, const char *filename, int lev);
@@ -1793,7 +1768,6 @@ ST_FUNC void tcc_add_macos_sdkpath(TCCState* s);
 ST_FUNC char* macho_tbd_soname(int fd);
 #endif
 #endif
-/* ------------ tccrun.c ----------------- */
 #ifdef TCC_IS_NATIVE
 #ifdef CONFIG_TCC_STATIC
 #define RTLD_LAZY       0x001
@@ -1809,7 +1783,6 @@ ST_FUNC void *dlsym(void *handle, const char *symbol);
 ST_FUNC void tcc_run_free(TCCState *s1);
 #endif
 
-/* ------------ tcctools.c ----------------- */
 #if 0 /* included in tcc.c */
 ST_FUNC int tcc_tool_ar(TCCState *s, int argc, char **argv);
 #ifdef TCC_TARGET_PE
@@ -1819,7 +1792,6 @@ ST_FUNC int tcc_tool_cross(TCCState *s, char **argv, int option);
 ST_FUNC int gen_makedeps(TCCState *s, const char *target, const char *filename);
 #endif
 
-/* ------------ tccdbg.c ------------ */
 
 ST_FUNC void tcc_debug_new(TCCState *s);
 
@@ -1926,7 +1898,6 @@ dwarf_read_sleb128(unsigned char **ln, unsigned char *end)
 # define R_DATA_32DW R_DATA_32
 #endif
 
-/********************************************************/
 #if CONFIG_TCC_SEMLOCK
 #if defined _WIN32
 typedef struct { volatile LONG init; CRITICAL_SECTION cs; } TCCSem;
@@ -1975,14 +1946,12 @@ static inline void post_sem(TCCSem *p) {
 #define POST_SEM(p)
 #endif
 
-/********************************************************/
 #undef ST_DATA
 #if ONE_SOURCE
 #define ST_DATA static
 #else
 #define ST_DATA
 #endif
-/********************************************************/
 
 #define text_section        TCC_STATE_VAR(text_section)
 #define data_section        TCC_STATE_VAR(data_section)
@@ -2010,7 +1979,6 @@ PUB_FUNC void tcc_exit_state(TCCState *s1);
     tcc_state->warn_num = offsetof(TCCState, sw) \
     - offsetof(TCCState, warn_none), _tcc_warning))
 
-/********************************************************/
 #endif /* _TCC_H */
 
 #undef TCC_STATE_VAR

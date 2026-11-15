@@ -1,4 +1,3 @@
-/*************************************************************/
 /*
  *  RISCV64 assembler for TCC
  *
@@ -14,9 +13,7 @@ ST_FUNC void g(int c);
 ST_FUNC void gen_le16(int c);
 ST_FUNC void gen_le32(int c);
 
-/*************************************************************/
 #else
-/*************************************************************/
 #define USING_GLOBALS
 #include "tcc.h"
 
@@ -2662,7 +2659,6 @@ ST_FUNC int asm_parse_regvar (int t)
     return t - TOK_ASM_ft0 + 32; // Use higher 32 for floating point
 }
 
-/*************************************************************/
 /* C extension */
 
 /* caller: Add funct6, funct2 into opcode */
@@ -3055,5 +3051,4 @@ static void asm_emit_css(int token, uint16_t opcode, const Operand *rs2, const O
     }
 }
 
-/*************************************************************/
 #endif /* ndef TARGET_DEFS_ONLY */

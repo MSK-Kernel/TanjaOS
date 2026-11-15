@@ -197,7 +197,6 @@ int vfs_list_mounts(char* buf, uint32_t* size) {
     return VFS_OK;
 }
 
-/* ---------- Block devices ---------- */
 
 int vfs_register_bdev(struct vfs_bdev* dev) {
     if (!dev || bdev_count >= VFS_MAX_BDEVS) return VFS_EINVAL;

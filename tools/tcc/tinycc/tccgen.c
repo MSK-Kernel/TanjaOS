@@ -21,7 +21,6 @@
 #define USING_GLOBALS
 #include "tcc.h"
 
-/********************************************************/
 /* global variables */
 
 /* loc : local variable index
@@ -163,7 +162,6 @@ static void cast_error(CType *st, CType *dt);
 static void end_switch(void);
 static void do_Static_assert(void);
 
-/* ------------------------------------------------------------------------- */
 /* Automagical code suppression */
 
 /* Clear 'nocode_wanted' at forward label if it was used */
@@ -203,7 +201,6 @@ static int gjmp_acs(int t)
 /* These are #undef'd at the end of this file */
 #define gjmp_addr gjmp_addr_acs
 #define gjmp gjmp_acs
-/* ------------------------------------------------------------------------- */
 
 ST_INLN int is_float(int t)
 {
@@ -374,7 +371,6 @@ static void ptype(const char *msg, CType *type, int v)
 }
 #endif
 
-/* ------------------------------------------------------------------------- */
 /* initialize vstack and types.  This must be done also for tcc -E */
 ST_FUNC void tccgen_init(TCCState *s1)
 {
@@ -456,7 +452,6 @@ ST_FUNC void tccgen_finish(TCCState *s1)
     sym_free_first = NULL;
 }
 
-/* ------------------------------------------------------------------------- */
 ST_FUNC ElfSym *elfsym(Sym *s)
 {
   if (!s || !s->c)
@@ -507,7 +502,6 @@ ST_FUNC void update_storage(Sym *sym)
 #endif
 }
 
-/* ------------------------------------------------------------------------- */
 /* update sym->c so that it points to an external symbol in section
    'section' with value 'value' */
 
@@ -624,7 +618,6 @@ ST_FUNC void greloc(Section *s, Sym *sym, unsigned long offset, int type)
 }
 #endif
 
-/* ------------------------------------------------------------------------- */
 /* symbol allocator */
 static Sym *__sym_malloc(void)
 {
@@ -860,7 +853,6 @@ ST_FUNC void label_pop(Sym **ptop, Sym *slast, int keep)
         *ptop = slast;
 }
 
-/* ------------------------------------------------------------------------- */
 static void vcheck_cmp(void)
 {
     /* cannot let cpu flags if other instruction are generated. Also
@@ -1024,7 +1016,6 @@ ST_FUNC void vrev(int n)
         tmp = vtop[i], vtop[i] = vtop[n], vtop[n] = tmp;
 }
 
-/* ------------------------------------------------------------------------- */
 /* vtop->r = VT_CMP means CPU-flags have been set from comparison or test. */
 
 /* called from generators to set the result from relational ops  */
@@ -1113,7 +1104,6 @@ static void gen_test_zero(int op)
     }
 }
 
-/* ------------------------------------------------------------------------- */
 /* push a symbol value of TYPE */
 ST_FUNC void vpushsym(CType *type, Sym *sym)
 {
@@ -6854,7 +6844,6 @@ ST_FUNC int expr_const(void)
     return c;
 }
 
-/* ------------------------------------------------------------------------- */
 /* return from function */
 
 #ifndef TCC_TARGET_ARM64
@@ -6938,7 +6927,6 @@ static void check_func_return(void)
     }
 }
 
-/* ------------------------------------------------------------------------- */
 /* switch/case */
 
 static int case_cmp(uint64_t a, uint64_t b)
@@ -7019,7 +7007,6 @@ static void end_switch(void)
     tcc_free(sw);
 }
 
-/* ------------------------------------------------------------------------- */
 /* __attribute__((cleanup(fn))) */
 
 /* protect symbol lvalues from further modification  */
@@ -7101,7 +7088,6 @@ static void block_cleanup(struct scope *o)
     try_call_scope_cleanup(o->cl.s);
 }
 
-/* ------------------------------------------------------------------------- */
 /* VLA */
 
 static void vla_restore(int loc)
@@ -7120,7 +7106,6 @@ static void vla_leave(struct scope *o)
       vla_restore(v->vla.locorig);
 }
 
-/* ------------------------------------------------------------------------- */
 /* local scopes */
 
 static void new_scope(struct scope *o)
@@ -7187,7 +7172,6 @@ static void prev_scope_s(struct scope *o)
     --local_scope;
 }
 
-/* ------------------------------------------------------------------------- */
 /* call block from 'for do while' loops */
 
 static void lblock(int *bsym, int *csym)
@@ -9043,7 +9027,5 @@ static int decl(int l)
     return 0;
 }
 
-/* ------------------------------------------------------------------------- */
 #undef gjmp_addr
 #undef gjmp
-/* ------------------------------------------------------------------------- */

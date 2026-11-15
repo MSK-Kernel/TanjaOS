@@ -220,7 +220,6 @@
     to this constant. */
 #define BR_ERR_SEND_FATAL_ALERT      512
 
-/* ===================================================================== */
 
 /**
  * \brief Decryption engine for SSL.
@@ -349,7 +348,6 @@ typedef struct {
 /** \brief Static, constant vtable for the no-encryption engine. */
 extern const br_sslrec_out_class br_sslrec_out_clear_vtable;
 
-/* ===================================================================== */
 
 /**
  * \brief Record decryption engine class, for CBC mode.
@@ -487,7 +485,6 @@ typedef struct {
  */
 extern const br_sslrec_out_cbc_class br_sslrec_out_cbc_vtable;
 
-/* ===================================================================== */
 
 /**
  * \brief Record decryption engine class, for GCM mode.
@@ -594,7 +591,6 @@ extern const br_sslrec_in_gcm_class br_sslrec_in_gcm_vtable;
  */
 extern const br_sslrec_out_gcm_class br_sslrec_out_gcm_vtable;
 
-/* ===================================================================== */
 
 /**
  * \brief Record decryption engine class, for ChaCha20+Poly1305.
@@ -694,7 +690,6 @@ extern const br_sslrec_in_chapol_class br_sslrec_in_chapol_vtable;
  */
 extern const br_sslrec_out_chapol_class br_sslrec_out_chapol_vtable;
 
-/* ===================================================================== */
 
 /**
  * \brief Type for session parameters, to be saved for session resumption.
@@ -3470,7 +3465,6 @@ br_ssl_server_set_cache(br_ssl_server_context *cc,
  */
 int br_ssl_server_reset(br_ssl_server_context *cc);
 
-/* ===================================================================== */
 
 /*
  * Context for the simplified I/O context. The transport medium is accessed
@@ -3692,7 +3686,6 @@ int br_sslio_flush(br_sslio_context *cc);
  */
 int br_sslio_close(br_sslio_context *cc);
 
-/* ===================================================================== */
 
 /*
  * Symbolic constants for cipher suites.

@@ -1142,7 +1142,6 @@ ST_FUNC int tcc_assemble(TCCState *s1, int do_preprocess)
     return ret;
 }
 
-/********************************************************************/
 /* GCC inline asm support */
 
 /* assemble the string 'str' in the current C compilation unit without
@@ -1506,7 +1505,6 @@ ST_FUNC void asm_global_instr(void)
     nocode_wanted = saved_nocode_wanted;
 }
 
-/********************************************************/
 #else
 ST_FUNC int tcc_assemble(TCCState *s1, int do_preprocess)
 {

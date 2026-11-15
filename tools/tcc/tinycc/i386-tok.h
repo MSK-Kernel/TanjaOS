@@ -1,4 +1,3 @@
-/* ------------------------------------------------------------------ */
 /* WARNING: relative order of tokens is important. */
 
 #define DEF_BWL(x) \
@@ -76,7 +75,6 @@
  DEF_ASM(x ## nle ## suffix) \
  DEF_ASM(x ## g ## suffix)
 
-/* ------------------------------------------------------------------ */
 /* register */
  DEF_ASM(al)
  DEF_ASM(cl)

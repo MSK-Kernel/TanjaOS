@@ -841,7 +841,6 @@ int isid(int c)
     return (c >= 'a' & c <= 'z') | (c >= 'A' & c <= 'Z') | c == '_';
 }
 
-/**********************/
 
 int vstack[10], *vstack_ptr;
 
@@ -1203,7 +1202,6 @@ void char_short_test()
     printf("promote multicast (unsigned)(char) "LONG_LONG_FORMAT"\n", var4);
 }
 
-/******************/
 
 typedef struct Sym {
     int v;

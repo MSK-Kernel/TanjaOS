@@ -33,7 +33,6 @@ typedef enum {
     VFS_ENOTDIR = -8
 } vfs_err_t;
 
-/* ---------- Block device ---------- */
 
 struct vfs_bdev {
     char name[32];              /* e.g. "ata0", "ahci0" */
@@ -45,7 +44,6 @@ struct vfs_bdev {
     void* private;
 };
 
-/* ---------- Filesystem operations (vnode-style) ---------- */
 
 struct vfs_ops {
     const char* name;           /* "ramfs", "tmpfs", "devfs", ... */
@@ -77,7 +75,6 @@ struct vfs_ops {
     void (*unmount)(void* sb);
 };
 
-/* ---------- Mount ---------- */
 
 struct vfs_mount {
     char mountpoint[VFS_PATH_MAX];
@@ -89,7 +86,6 @@ struct vfs_mount {
     int flags;
 };
 
-/* ---------- VFS core ---------- */
 
 void vfs_init(void);
 
@@ -111,7 +107,6 @@ struct vfs_mount* vfs_resolve(const char* abs_path, char* rel_buf);
    (newline-separated "mountpoint fstype device" lines). */
 int vfs_list_mounts(char* buf, uint32_t* size);
 
-/* ---------- Block devices ---------- */
 
 int vfs_register_bdev(struct vfs_bdev* dev);
 struct vfs_bdev* vfs_find_bdev(const char* name);

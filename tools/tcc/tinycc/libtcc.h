@@ -9,12 +9,10 @@
 extern "C" {
 #endif
 
-/*****************************/
 /* set custom allocator for all allocations (optional), NULL for default. */
 typedef void *TCCReallocFunc(void *ptr, unsigned long size);
 LIBTCCAPI void tcc_set_realloc(TCCReallocFunc *my_realloc);
 
-/*****************************/
 typedef struct TCCState TCCState;
 
 /* create a new TCC compilation context */
@@ -33,7 +31,6 @@ LIBTCCAPI void tcc_set_error_func(TCCState *s, void *error_opaque, TCCErrorFunc 
 /* set options as from command line (multiple supported) */
 LIBTCCAPI int tcc_set_options(TCCState *s, const char *str);
 
-/*****************************/
 /* preprocessor */
 
 /* add include path */
@@ -48,7 +45,6 @@ LIBTCCAPI void tcc_define_symbol(TCCState *s, const char *sym, const char *value
 /* undefine preprocess symbol 'sym' */
 LIBTCCAPI void tcc_undefine_symbol(TCCState *s, const char *sym);
 
-/*****************************/
 /* compiling */
 
 /* add a file (C file, dll, object, library, ld script). Return -1 if error. */
@@ -60,7 +56,6 @@ LIBTCCAPI int tcc_compile_string(TCCState *s, const char *buf);
 /* Tip: to have more specific errors/warnings from tcc_compile_string(),
    you can prefix the string with "#line <num> \"<filename>\"\n" */
 
-/*****************************/
 /* linking commands */
 
 /* set output type. MUST BE CALLED before any compilation */

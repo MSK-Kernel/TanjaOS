@@ -1,4 +1,3 @@
-/* ------------------------------------------------------------- */
 /* stubs for calling bcheck functions from a dll. */
 
 #include <windows.h>

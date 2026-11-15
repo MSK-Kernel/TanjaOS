@@ -503,7 +503,6 @@ static void* tanja_export_lookup(const char* name)
     return 0;
 }
 
-/* --- Library dependency support for easier porting --- */
 /* When a binary needs a symbol not in the kernel, look in /lib for .o files
  * (populated by pkg from a package's lib/ folder) and load them into the
  * program region so their symbols can be used. This makes porting utilities

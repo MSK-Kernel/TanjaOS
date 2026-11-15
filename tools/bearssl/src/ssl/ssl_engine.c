@@ -75,14 +75,12 @@
 #pragma comment(lib, "advapi32")
 #endif
 
-/* ==================================================================== */
 /*
  * This part of the file does the low-level record management.
  */
 
 /*
  * IMPLEMENTATION NOTES
- * ====================
  *
  * In this file, we designate by "input" (and the "i" letter) the "recv"
  * operations: incoming records from the peer, from which payload data
@@ -125,7 +123,6 @@
  *
  *
  * Failed mode:
- * ------------
  *
  * I/O failed for some reason (invalid received data, not enough room
  * for the next record...). No I/O may ever occur again for this context,
@@ -134,7 +131,6 @@
  *
  *
  * Input mode:
- * -----------
  *
  *  ixa   index within ibuf[] for the currently read data
  *  ixb   maximum index within ibuf[] for the currently read data
@@ -177,7 +173,6 @@
  *
  *
  * Output mode:
- * ------------
  *
  *  oxa   index within obuf[] for the currently accumulated data
  *  oxb   maximum index within obuf[] for record data
@@ -199,7 +194,6 @@
  *
  *
  * Modes:
- * ------
  *
  * The state register iomode contains one of the following values:
  *
@@ -220,7 +214,6 @@
  *
  *
  * Misc:
- * -----
  *
  * 'max_frag_len' is the maximum plaintext size for an outgoing record.
  * By default, it is set to the maximum value that fits in the provided
@@ -236,7 +229,6 @@
  *
  *
  * Offsets and lengths:
- * --------------------
  *
  * When sending fragments with TLS-1.1+, the maximum overhead is:
  *   5 bytes for the record header
@@ -978,7 +970,6 @@ const br_sslrec_out_class br_sslrec_out_clear_vtable = {
 		&clear_encrypt
 };
 
-/* ==================================================================== */
 /*
  * In this part of the file, we handle the various record types, and
  * communications with the handshake processor.
@@ -986,7 +977,6 @@ const br_sslrec_out_class br_sslrec_out_clear_vtable = {
 
 /*
  * IMPLEMENTATION NOTES
- * ====================
  *
  * The handshake processor is written in T0 and runs as a coroutine.
  * It receives the contents of all records except application data, and

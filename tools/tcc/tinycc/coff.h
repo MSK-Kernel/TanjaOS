@@ -1,11 +1,7 @@
-/**************************************************************************/
 /*  COFF.H                                                                */
 /*     COFF data structures and related definitions used by the linker    */
-/**************************************************************************/
 
-/*------------------------------------------------------------------------*/
 /*  COFF FILE HEADER                                                      */
-/*------------------------------------------------------------------------*/
 struct filehdr {
         unsigned short  f_magic;        /* magic number */
         unsigned short  f_nscns;        /* number of sections */
@@ -17,9 +13,7 @@ struct filehdr {
         unsigned short  f_TargetID;     /* for C6x = 0x0099 */
         };
 
-/*------------------------------------------------------------------------*/
 /*  File header flags                                                     */
-/*------------------------------------------------------------------------*/
 #define  F_RELFLG   0x01       /* relocation info stripped from file       */
 #define  F_EXEC     0x02       /* file is executable (no unresolved refs)  */
 #define  F_LNNO     0x04       /* line numbers stripped from file          */
@@ -42,17 +36,13 @@ struct filehdr {
 
 #define COFF_C67_MAGIC 0x00c2
 
-/*------------------------------------------------------------------------*/
 /*  Macros to recognize magic numbers                                     */
-/*------------------------------------------------------------------------*/
 #define ISMAGIC(x)      (((unsigned short)(x))==(unsigned short)magic)
 #define ISARCHIVE(x)    ((((unsigned short)(x))==(unsigned short)ARTYPE))
 #define BADMAGIC(x)     (((unsigned short)(x) & 0x8080) && !ISMAGIC(x))
 
 
-/*------------------------------------------------------------------------*/
 /*  OPTIONAL FILE HEADER                                                  */
-/*------------------------------------------------------------------------*/
 typedef struct aouthdr {
         short   magic;          /* see magic.h                          */
         short   vstamp;         /* version stamp                        */
@@ -66,20 +56,17 @@ typedef struct aouthdr {
 
 #define AOUTSZ  sizeof(AOUTHDR)
 
-/*----------------------------------------------------------------------*/
 /*      When a UNIX aout header is to be built in the optional header,  */
 /*      the following magic numbers can appear in that header:          */ 
 /*                                                                      */
 /*              AOUT1MAGIC : default : readonly sharable text segment   */
 /*              AOUT2MAGIC:          : writable text segment            */
 /*              PAGEMAGIC  :         : configured for paging            */
-/*----------------------------------------------------------------------*/
 #define AOUT1MAGIC 0410
 #define AOUT2MAGIC 0407
 #define PAGEMAGIC  0413
 
 
-/*------------------------------------------------------------------------*/
 /*  COMMON ARCHIVE FILE STRUCTURES                                        */
 /*                                                                        */
 /*       ARCHIVE File Organization:                                       */
@@ -108,7 +95,6 @@ typedef struct aouthdr {
 /*       |               Member Contents               |                  */
 /*       |_____________________________________________|                  */
 /*                                                                        */
-/*------------------------------------------------------------------------*/
 
 #define COFF_ARMAG   "!<arch>\n"
 #define SARMAG  8
@@ -126,9 +112,7 @@ struct ar_hdr           /* archive file member header - printable ascii */
 };
 
 
-/*------------------------------------------------------------------------*/
 /*  SECTION HEADER                                                        */
-/*------------------------------------------------------------------------*/
 struct scnhdr {
         char            s_name[8];      /* section name */
         long            s_paddr;        /* physical address */
@@ -147,18 +131,14 @@ struct scnhdr {
 #define SCNHDR  struct scnhdr
 #define SCNHSZ  sizeof(SCNHDR)
 
-/*------------------------------------------------------------------------*/
 /* Define constants for names of "special" sections                       */
-/*------------------------------------------------------------------------*/
 /* #define _TEXT    ".text" */
 #define _DATA    ".data"
 #define _BSS     ".bss"
 #define _CINIT   ".cinit"
 #define _TV      ".tv"
 
-/*------------------------------------------------------------------------*/
 /* The low 4 bits of s_flags is used as a section "type"                  */
-/*------------------------------------------------------------------------*/
 #define STYP_REG    0x00  /* "regular" : allocated, relocated, loaded */
 #define STYP_DSECT  0x01  /* "dummy"   : not allocated, relocated, not loaded */
 #define STYP_NOLOAD 0x02  /* "noload"  : allocated, relocated, not loaded */
@@ -177,9 +157,7 @@ struct scnhdr {
 #define ALIGNSIZE(x) (1 << ((x & ALIGN_MASK) >> 8))
 
 
-/*------------------------------------------------------------------------*/
 /*  RELOCATION ENTRIES                                                    */
-/*------------------------------------------------------------------------*/
 struct reloc
 {
    long            r_vaddr;        /* (virtual) address of reference */
@@ -191,9 +169,7 @@ struct reloc
 #define RELOC   struct reloc
 #define RELSZ   10                 /* sizeof(RELOC) */
 
-/*--------------------------------------------------------------------------*/
 /*   define all relocation types                                            */
-/*--------------------------------------------------------------------------*/
 
 #define R_ABS           0         /* absolute address - no relocation       */
 #define R_DIR16         01        /* UNUSED                                 */
@@ -217,9 +193,7 @@ struct reloc
 #define R_REL13        052        /* DSP: 13 bits, direct                   */
 
 
-/*------------------------------------------------------------------------*/
 /*  LINE NUMBER ENTRIES                                                   */
-/*------------------------------------------------------------------------*/
 struct lineno
 {
         union
@@ -235,9 +209,7 @@ struct lineno
 #define LINESZ  6       /* sizeof(LINENO) */
 
 
-/*------------------------------------------------------------------------*/
 /*   STORAGE CLASSES                                                      */
-/*------------------------------------------------------------------------*/
 #define  C_EFCN          -1    /* physical end of function */
 #define  C_NULL          0
 #define  C_AUTO          1     /* automatic variable */
@@ -268,9 +240,7 @@ struct lineno
 #define  C_HIDDEN        106   /* special storage class for external */
                                /* symbols in dmert public libraries  */
 
-/*------------------------------------------------------------------------*/
 /*  SYMBOL TABLE ENTRIES                                                  */
-/*------------------------------------------------------------------------*/
 
 #define  SYMNMLEN   8      /*  Number of characters in a symbol name */
 #define  FILNMLEN   14     /*  Number of characters in a file name */
@@ -301,11 +271,9 @@ struct syment
 #define n_zeroes        _n._n_n._n_zeroes
 #define n_offset        _n._n_n._n_offset
 
-/*------------------------------------------------------------------------*/
 /* Relocatable symbols have a section number of the                       */
 /* section in which they are defined.  Otherwise, section                 */
 /* numbers have the following meanings:                                   */
-/*------------------------------------------------------------------------*/
 #define  N_UNDEF  0                     /* undefined symbol */
 #define  N_ABS    -1                    /* value of symbol is absolute */
 #define  N_DEBUG  -2                    /* special debugging symbol  */
@@ -313,10 +281,8 @@ struct syment
 #define  P_TV     (unsigned short)-4    /* needs transfer vector (postload) */
 
 
-/*------------------------------------------------------------------------*/
 /* The fundamental type of a symbol packed into the low                   */
 /* 4 bits of the word.                                                    */
-/*------------------------------------------------------------------------*/
 #define  _EF    ".ef"
 
 #define  T_NULL     0          /* no type info */
@@ -336,9 +302,7 @@ struct syment
 #define  T_UINT     14         /* unsigned integer */
 #define  T_ULONG    15         /* unsigned long */
 
-/*------------------------------------------------------------------------*/
 /* derived types are:                                                     */
-/*------------------------------------------------------------------------*/
 #define  DT_NON      0          /* no derived type */
 #define  DT_PTR      1          /* pointer */
 #define  DT_FCN      2          /* function */
@@ -348,9 +312,7 @@ struct syment
        ((basic) | ((d1) <<  4) | ((d2) <<  6) | ((d3) <<  8) |\
                   ((d4) << 10) | ((d5) << 12) | ((d6) << 14))
 
-/*------------------------------------------------------------------------*/
 /* type packing constants and macros                                      */
-/*------------------------------------------------------------------------*/
 #define  N_BTMASK_COFF     017
 #define  N_TMASK_COFF      060
 #define  N_TMASK1_COFF     0300
@@ -371,9 +333,7 @@ struct syment
 #define  DECREF_COFF(x) ((((x)>>N_TSHIFT_COFF)&~N_BTMASK_COFF)|((x)&N_BTMASK_COFF))
 
 
-/*------------------------------------------------------------------------*/
 /*  AUXILIARY SYMBOL ENTRY                                                */
-/*------------------------------------------------------------------------*/
 union auxent
 {
 	struct
@@ -420,9 +380,7 @@ union auxent
 #define AUXENT  union auxent
 #define AUXESZ  18      /* sizeof(AUXENT) */
 
-/*------------------------------------------------------------------------*/
 /*  NAMES OF "SPECIAL" SYMBOLS                                            */
-/*------------------------------------------------------------------------*/
 #define _STEXT          ".text"
 #define _ETEXT          "etext"
 #define _SDATA          ".data"
@@ -431,9 +389,7 @@ union auxent
 #define _END            "end"
 #define _CINITPTR       "cinit"
 
-/*--------------------------------------------------------------------------*/
 /*  ENTRY POINT SYMBOLS                                                     */
-/*--------------------------------------------------------------------------*/
 #define _START          "_start"
 #define _MAIN           "_main"
     /*  _CSTART         "_c_int00"          (defined in params.h)  */

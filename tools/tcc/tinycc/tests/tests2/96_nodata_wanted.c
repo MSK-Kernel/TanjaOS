@@ -1,4 +1,3 @@
-/*****************************************************************************/
 /* test 'nodata_wanted' data output suppression */
 
 #if defined test_static_data_error

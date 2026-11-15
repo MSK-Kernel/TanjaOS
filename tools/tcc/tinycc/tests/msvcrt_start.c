@@ -1,4 +1,3 @@
-/* ------------------------------------------------------------- */
 /* minimal startup with runtime linker to msvcrt */
 
 #if 0

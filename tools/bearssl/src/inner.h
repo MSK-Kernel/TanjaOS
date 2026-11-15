@@ -96,7 +96,6 @@
 #endif
 #endif
 
-/* ==================================================================== */
 /*
  * Encoding/decoding functions.
  *
@@ -262,7 +261,6 @@ br_swap32(uint32_t x)
 	return (x << 16) | (x >> 16);
 }
 
-/* ==================================================================== */
 /*
  * Support code for hash functions.
  */
@@ -303,7 +301,6 @@ br_multihash_copyimpl(br_multihash_context *dst,
 	memcpy(dst->impl, src->impl, sizeof src->impl);
 }
 
-/* ==================================================================== */
 /*
  * Constant-time primitives. These functions manipulate 32-bit values in
  * order to provide constant-time comparisons and multiplexers.
@@ -311,7 +308,6 @@ br_multihash_copyimpl(br_multihash_context *dst,
  * Boolean values (the "ctl" bits) MUST have value 0 or 1.
  *
  * Implementation notes:
- * =====================
  *
  * The uintN_t types are unsigned and with width exactly N bits; the C
  * standard guarantees that computations are performed modulo 2^N, and
@@ -642,11 +638,9 @@ br_div(uint32_t hi, uint32_t lo, uint32_t d)
 	return br_divrem(hi, lo, d, &r);
 }
 
-/* ==================================================================== */
 
 /*
  * Integers 'i32'
- * --------------
  *
  * The 'i32' functions implement computations on big integers using
  * an internal representation as an array of 32-bit integers. For
@@ -857,11 +851,9 @@ void br_i32_montymul(uint32_t *d, const uint32_t *x, const uint32_t *y,
 void br_i32_modpow(uint32_t *x, const unsigned char *e, size_t elen,
 	const uint32_t *m, uint32_t m0i, uint32_t *t1, uint32_t *t2);
 
-/* ==================================================================== */
 
 /*
  * Integers 'i31'
- * --------------
  *
  * The 'i31' functions implement computations on big integers using
  * an internal representation as an array of 32-bit integers. For
@@ -1066,7 +1058,6 @@ void br_i31_modpow(uint32_t *x, const unsigned char *e, size_t elen,
  */
 void br_i31_mulacc(uint32_t *d, const uint32_t *a, const uint32_t *b);
 
-/* ==================================================================== */
 
 static inline void
 br_i15_zero(uint16_t *x, uint16_t bit_len)
@@ -1113,7 +1104,6 @@ void br_i15_reduce(uint16_t *x, const uint16_t *a, const uint16_t *m);
 
 void br_i15_mulacc(uint16_t *d, const uint16_t *a, const uint16_t *b);
 
-/* ==================================================================== */
 
 static inline size_t
 br_digest_size(const br_hash_class *digest_class)
@@ -1135,7 +1125,6 @@ size_t br_digest_size_by_ID(int digest_id);
  */
 const unsigned char *br_digest_OID(int digest_id, size_t *len);
 
-/* ==================================================================== */
 /*
  * DES support functions.
  */
@@ -1192,7 +1181,6 @@ void br_des_tab_process_block(unsigned num_rounds,
 void br_des_ct_process_block(unsigned num_rounds,
 	const uint32_t *skey, void *block);
 
-/* ==================================================================== */
 /*
  * AES support functions.
  */
@@ -1412,7 +1400,6 @@ unsigned br_aes_ct64_keysched(uint64_t *comp_skey,
 void br_aes_ct64_skey_expand(uint64_t *skey,
 	unsigned num_rounds, const uint64_t *comp_skey);
 
-/* ==================================================================== */
 /*
  * RSA.
  */
@@ -1435,7 +1422,6 @@ uint32_t br_rsa_pkcs1_sig_unpad(const unsigned char *sig, size_t sig_len,
 	const unsigned char *hash_oid, size_t hash_len,
 	unsigned char *hash_out);
 
-/* ==================================================================== */
 /*
  * Elliptic curves.
  */
@@ -1499,7 +1485,6 @@ void br_ecdsa_i31_bits2int(uint32_t *x,
 void br_ecdsa_i15_bits2int(uint16_t *x,
 	const void *src, size_t len, uint32_t ebitlen);
 
-/* ==================================================================== */
 /*
  * SSL/TLS support functions.
  */
@@ -1701,6 +1686,5 @@ void br_ssl_hs_server_run(void *ctx);
  */
 int br_ssl_choose_hash(unsigned bf);
 
-/* ==================================================================== */
 
 #endif

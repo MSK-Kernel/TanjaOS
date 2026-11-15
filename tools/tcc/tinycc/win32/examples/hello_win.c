@@ -22,7 +22,6 @@ void CenterWindow(HWND hWnd);
 //              process windows messages.
 //
 //  Arguments:  same as always.
-//----------------------------------------------------------------------------
 
 LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 {
@@ -77,7 +76,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 //
 //  Synopsis:   standard entrypoint for GUI Win32 apps
 //
-//----------------------------------------------------------------------------
 int APIENTRY WinMain(
         HINSTANCE hInstance,
         HINSTANCE hPrevInstance,

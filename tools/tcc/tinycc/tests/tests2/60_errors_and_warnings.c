@@ -220,7 +220,6 @@ struct z {  _Static_assert(0); }
 #elif defined test_incomplete_array_array
   int t[][3]; // gr: not an error, see below
 
-/******************************************************************/
 #elif defined test_extern_array
 int iii[] = { 1,2,3 };
 extern int iii[];
@@ -233,7 +232,6 @@ extern int x[2];
 extern int x[];
 int x[3];
 
-/******************************************************************/
 #elif defined test_func_1 \
  || defined test_func_2 \
  || defined test_func_3 \
@@ -263,7 +261,6 @@ int hello(int a)
 #endif
 { printf("%s: a = %d\n", __FUNCTION__, a); return 0; }
 
-/******************************************************************/
 #elif defined test_var_1 \
    || defined test_var_2 \
    || defined test_var_3
@@ -318,7 +315,6 @@ void f2() {
 struct yyy y, *yy;
 struct zzz { int z; } z, *zz;
 
-/******************************************************************/
 #elif defined test_long_double_type_for_win32
 
 int main()
@@ -341,7 +337,6 @@ int main()
     printf("%sn\n", S(\\));
 }
 
-/******************************************************************/
 #elif defined test_var_array
 
 static struct var_len { int i; const char str[]; } var_array[] =
@@ -363,7 +358,6 @@ struct A { int a; char b[]; };
 struct A a = { 1, "1" };
 struct B { struct A a; };
 struct B b = { { 1, "1" } };
-/******************************************************************/
 #elif defined test_default_int_type
 n; // warn
 f(); // don't warn
@@ -374,7 +368,6 @@ n[sizeof({3;})]; // crashed in block() due to missing local scope
 #elif defined test_invalid_tokckill
 f(){"12"3;} // second const token killed the value of the first
 
-/******************************************************************/
 #elif defined test_duplicate_member
 struct S {
   int a, a;
@@ -393,7 +386,6 @@ struct S2 {
   };
 };
 
-/******************************************************************/
 #elif defined test_conflicting_array_definition
 extern int array[2];
 int array[] = { 1, 2, 3 };
@@ -452,7 +444,6 @@ int main()
 int f() { ({ return 78; }); }
 int main() { return f(); }
 
-/******************************************************************/
 
 #elif defined test_illegal_unicode
 int main() {

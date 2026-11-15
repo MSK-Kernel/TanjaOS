@@ -1,4 +1,3 @@
-/* ---------------------------------------------- */
 /* alloca-bt.S */
 
 #ifdef __leading_underscore
@@ -7,7 +6,6 @@
 # define _(s) s
 #endif
 
-/* ---------------------------------------------- */
 #if defined __i386__
 
 .globl _(__bound_alloca)
@@ -49,7 +47,6 @@ p6:
     push    %edx
     ret
 
-/* ---------------------------------------------- */
 #elif defined __x86_64__
 
 .globl _(__bound_alloca)
@@ -92,7 +89,6 @@ p3:
     ret
 #endif
 
-/* ---------------------------------------------- */
 #elif defined __arm__
 
 .globl _(__bound_alloca)
@@ -108,7 +104,6 @@ _(__bound_alloca):
     mov r0, sp
     mov pc, lr
 
-/* ---------------------------------------------- */
 #elif defined __aarch64__ || defined __arm64__
 
 .globl _(__bound_alloca)
@@ -176,7 +171,6 @@ p100:
     ret                 // Return to caller
 #endif
 
-/* ---------------------------------------------- */
 #elif defined __riscv
 
 .globl _(__bound_alloca)
@@ -196,5 +190,4 @@ _(__bound_alloca):
     add    a0, sp, zero
     ret
 
-/* ---------------------------------------------- */
 #endif

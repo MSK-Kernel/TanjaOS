@@ -1,4 +1,3 @@
-// =============================================
 // crt1.c
 
 // _UNICODE for tchar.h, UNICODE for API
@@ -67,7 +66,6 @@ void _tstart(void)
     exit(ret);
 }
 
-// =============================================
 // for 'tcc -run ,,,'
 
 __attribute__((weak)) extern int __run_on_exit();
@@ -101,4 +99,3 @@ int _runtmain(int argc, /* as tcc passed in */ char **argv)
     return ret;
 }
 
-// =============================================

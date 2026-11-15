@@ -1,4 +1,3 @@
-/* ------------------------------------------------------------- */
 /* for linking rt_printline and the signal/exception handler
    from tccrun.c into executables. */
 

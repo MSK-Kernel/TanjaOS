@@ -232,13 +232,11 @@ void M_ExtractFileBase(char *path, char *dest)
     }
 }
 
-//---------------------------------------------------------------------------
 //
 // PROC M_ForceUppercase
 //
 // Change string to uppercase.
 //
-//---------------------------------------------------------------------------
 
 void M_ForceUppercase(char *text)
 {

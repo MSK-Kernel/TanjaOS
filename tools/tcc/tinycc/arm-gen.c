@@ -136,9 +136,7 @@ enum {
 #define ARM_SOFTFP_FLOAT 0
 #define ARM_HARD_FLOAT 1
 
-/******************************************************/
 #else /* ! TARGET_DEFS_ONLY */
-/******************************************************/
 #define USING_GLOBALS
 #include "tcc.h"
 
@@ -235,7 +233,6 @@ static int regmask(int r) {
   return reg_classes[r]&~(RC_INT|RC_FLOAT);
 }
 
-/******************************************************/
 
 void o(uint32_t i)
 {
@@ -2370,6 +2367,4 @@ ST_FUNC void gen_vla_alloc(CType *type, int align) {
 }
 
 /* end of ARM code generator */
-/*************************************************************/
 #endif
-/*************************************************************/

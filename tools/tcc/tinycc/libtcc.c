@@ -66,7 +66,6 @@
 
 #include "tcc.h"
 
-/********************************************************/
 /* global variables */
 
 /* XXX: get rid of this ASAP (or maybe not) */
@@ -78,7 +77,6 @@ ST_DATA int nb_stk_data;
 /* option -d<num> (for general development purposes) */
 ST_DATA int g_debug;
 
-/********************************************************/
 #ifdef _WIN32
 ST_FUNC char *normalize_slashes(char *path)
 {
@@ -133,7 +131,6 @@ PUB_FUNC int tcc_fclose(FILE *f) {
     return fclose(f);
 }
 #endif
-/********************************************************/
 
 PUB_FUNC void tcc_enter_state(TCCState *s1)
 {
@@ -151,7 +148,6 @@ PUB_FUNC void tcc_exit_state(TCCState *s1)
     POST_SEM(&tcc_compile_sem);
 }
 
-/********************************************************/
 /* copy a string and truncate it. */
 ST_FUNC char *pstrcpy(char *buf, size_t buf_size, const char *s)
 {
@@ -235,7 +231,6 @@ static void tcc_concat_str(char **pp, const char *str, int sep)
     strcpy(*pp + l, str);
 }
 
-/********************************************************/
 /* memory management */
 
 /* we'll need the actual versions for a minute */
@@ -510,7 +505,6 @@ ST_FUNC int normalized_PATHCMP(const char *f1, const char *f2)
     return ret;
 }
 
-/********************************************************/
 /* dynarrays */
 
 ST_FUNC void dynarray_add(void *ptab, int *nb_ptr, void *data)
@@ -614,7 +608,6 @@ static void tcc_split_path(TCCState *s, void *p_ary, int *p_nb_ary, const char *
     } while (*p);
 }
 
-/********************************************************/
 /* warning / error */
 
 /* warn_... option bits */
@@ -753,7 +746,6 @@ PUB_FUNC void tcc_warning_direct(const char *fmt, ...)
 }
 
 
-/********************************************************/
 /* I/O layer */
 
 ST_FUNC void tcc_open_bf(TCCState *s1, const char *filename, int initlen)
@@ -1360,7 +1352,6 @@ ST_FUNC void tcc_add_pragma_libs(TCCState *s1)
         tcc_add_library(s1, s1->pragma_libs[i]);
 }
 
-/********************************************************/
 /* options parser */
 
 static int strstart(const char *val, const char **str)

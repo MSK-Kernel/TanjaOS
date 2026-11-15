@@ -14,7 +14,6 @@ int fs_cur_uid = 0;
 int fs_errno = 0;
 uint32_t fs_seed_skipped = 0;
 
-/* ---------- pool / init (delegated to the ramfs backend) ---------- */
 
 void fs_set_pool(void* base, uint32_t bytes) {
     ramfs_set_pool(base, bytes);
@@ -65,7 +64,6 @@ void fs_ensure_dev(void) {
     fs_cur_uid = saved_uid;
 }
 
-/* ---------- path helpers still needed by a few callers ---------- */
 
 void fs_get_current_path(char* path) {
     /* cwd lives in the ramfs backend for now; expose a simple getter.
@@ -74,7 +72,6 @@ void fs_get_current_path(char* path) {
     if (path) ramfs_get_cwd(path);
 }
 
-/* ---------- pure VFS dispatchers ---------- */
 
 static struct vfs_mount* resolve(const char* path, char* rel) {
     if (!path || !path[0]) return 0;

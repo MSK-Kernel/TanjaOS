@@ -35,9 +35,7 @@ extern byte *I_VideoBuffer;     /* i_video.c (CMAP256 build) */
 extern float mouse_acceleration;    /* i_video.c: 2.0, as in vanilla/Chocolate Doom */
 extern int   mouse_threshold;       /* i_video.c: 10 */
 
-/* ================================================================== */
 /* VGA register access                                                 */
-/* ================================================================== */
 #define VGA_MEM ((volatile uint8_t*)0xA0000)
 
 static void seq_w(int i, uint8_t v) { outb(0x3C4, (uint8_t)i); outb(0x3C5, v); }
@@ -186,9 +184,7 @@ void tanja_gfx_leave(void)
 
 int tanja_gfx_active(void) { return gfx_on; }
 
-/* ================================================================== */
 /* doomgeneric platform interface                                      */
-/* ================================================================== */
 static void poll_ps2(void);
 
 pixel_t* tanja_get_screen_buffer(void) { return (pixel_t*)I_VideoBuffer; }
@@ -246,7 +242,6 @@ void DG_SleepMs(uint32_t ms)
 uint32_t DG_GetTicksMs(void)       { return get_uptime_ms(); }
 void DG_SetWindowTitle(const char* t) { (void)t; }
 
-/* ---- keyboard: PS/2 set-1 scancodes -> Doom key codes --------------- */
 static const uint8_t sc_to_doom[0x59] = {
     /* 00 */ 0, KEY_ESCAPE, '1', '2', '3', '4', '5', '6',
     /* 08 */ '7', '8', '9', '0', KEY_MINUS, KEY_EQUALS, KEY_BACKSPACE, KEY_TAB,
@@ -287,7 +282,6 @@ static int ext_to_doom(uint8_t sc)
 static int kb_ext;      /* saw an 0xE0 prefix */
 static int kb_skip;     /* bytes of the Pause sequence still to swallow */
 
-/* ---- PS/2 controller: keyboard + mouse share ports 0x60/0x64 --------- */
 static int kbc_wait_write(void)
 {
     int i;
@@ -473,9 +467,7 @@ int DG_GetKey(int* pressed, unsigned char* key)
     return 0;
 }
 
-/* ================================================================== */
 /* entry point / exit                                                  */
-/* ================================================================== */
 #ifndef TANJA_IWAD_NAME
 #define TANJA_IWAD_NAME "freedoom1.wad"
 #endif

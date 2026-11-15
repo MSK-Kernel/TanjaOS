@@ -215,7 +215,6 @@ long long __fixsfdi(float a);
 unsigned long long __fixunssfdi(float a);
 
 
-/* --- signals (stubs: TanjaOS has none; only tcc -run touches these) --- */
 typedef int sig_atomic_t;
 typedef struct { unsigned int val; } sigset_t;
 typedef struct siginfo { int si_signo; int si_code; void *si_addr; } siginfo_t;
@@ -246,7 +245,6 @@ int sigemptyset(sigset_t *set);
 int sigfillset(sigset_t *set);
 int sigprocmask(int how, const sigset_t *set, sigset_t *oldset);
 
-/* --- misc --- */
 struct timeval { long tv_sec; long tv_usec; };
 struct timezone { int tz_minuteswest; int tz_dsttime; };
 int gettimeofday(struct timeval *tv, struct timezone *tz);

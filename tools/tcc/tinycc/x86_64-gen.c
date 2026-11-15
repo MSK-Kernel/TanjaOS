@@ -111,9 +111,7 @@ enum {
 #define TCC_TARGET_NATIVE_STRUCT_COPY
 ST_FUNC void gen_struct_copy(int size);
 
-/******************************************************/
 #else /* ! TARGET_DEFS_ONLY */
-/******************************************************/
 #define USING_GLOBALS
 #include "tcc.h"
 #include <assert.h>
@@ -2274,6 +2272,4 @@ ST_FUNC void gen_struct_copy(int size)
 }
 
 /* end of x86-64 code generator */
-/*************************************************************/
 #endif /* ! TARGET_DEFS_ONLY */
-/******************************************************/

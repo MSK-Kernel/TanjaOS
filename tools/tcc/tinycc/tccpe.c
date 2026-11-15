@@ -99,7 +99,6 @@
 
 #ifndef IMAGE_NT_SIGNATURE
 /* cross compiler: windows.h was not included */
-/* ----------------------------------------------------------- */
 /* definitions below are from winnt.h */
 
 typedef unsigned char BYTE;
@@ -297,9 +296,7 @@ typedef struct _IMAGE_BASE_RELOCATION {
 
 #pragma pack(pop)
 
-/* ----------------------------------------------------------- */
 #endif /* ndef IMAGE_NT_SIGNATURE */
-/* ----------------------------------------------------------- */
 
 #ifndef IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE
   /* allow self-host build with tcc 0.9.27 - doesn't have this in winnt.h */
@@ -341,7 +338,6 @@ struct pe_rsrc_reloc {
 };
 #pragma pack(pop)
 
-/* ------------------------------------------------------------- */
 /* internal temporary structures */
 
 enum {
@@ -437,7 +433,6 @@ struct pe_info {
 #define PE_EXE 3
 #define PE_RUN 4
 
-/* --------------------------------------------*/
 
 static const char *pe_export_name(TCCState *s1, ElfW(Sym) *sym)
 {
@@ -517,7 +512,6 @@ static void pe_fpad(struct pe_info *pe, DWORD new_pos)
     pe->pos = new_pos;
 }
 
-/*----------------------------------------------------------------------------*/
 /* some DWARF support with COFF symbol/string table for gdb */
 
 #pragma pack(push, 1)
@@ -607,7 +601,6 @@ static void pe_create_pdb(TCCState *s1, const char *exename)
     }
 }
 
-/*----------------------------------------------------------------------------*/
 static int pe_write(struct pe_info *pe)
 {
     static const struct pe_header pe_template = {
@@ -867,7 +860,6 @@ static int pe_write(struct pe_info *pe)
     return 0;
 }
 
-/*----------------------------------------------------------------------------*/
 
 static struct import_symbol *pe_add_import(struct pe_info *pe, int sym_index)
 {
@@ -910,7 +902,6 @@ static void pe_free_imports(struct pe_info *pe)
     dynarray_reset(&pe->imp_info, &pe->imp_count);
 }
 
-/*----------------------------------------------------------------------------*/
 static void pe_build_imports(struct pe_info *pe)
 {
     int thk_ptr, ent_ptr, dll_ptr, sym_cnt, i;
@@ -1008,7 +999,6 @@ static void pe_build_imports(struct pe_info *pe)
     }
 }
 
-/* ------------------------------------------------------------- */
 
 struct pe_sort_sym
 {
@@ -1123,7 +1113,6 @@ static void pe_build_exports(struct pe_info *pe)
         fclose(op);
 }
 
-/* ------------------------------------------------------------- */
 static void pe_build_reloc (struct pe_info *pe)
 {
     DWORD offset, block_ptr, sh_addr, addr;
@@ -1190,7 +1179,6 @@ static void pe_build_reloc (struct pe_info *pe)
     }
 }
 
-/* ------------------------------------------------------------- */
 static void pe_build_tls(struct pe_info *pe, Section *s)
 {
     TCCState *s1 = pe->s1;
@@ -1225,7 +1213,6 @@ static void pe_build_tls(struct pe_info *pe, Section *s)
     s1->tls_end = s1->tls_start;
 }
 
-/* ------------------------------------------------------------- */
 static int pe_section_class(Section *s)
 {
     int type, flags;
@@ -1390,7 +1377,6 @@ add_section:
     return 0;
 }
 
-/*----------------------------------------------------------------------------*/
 static int pe_check_symbols(struct pe_info *pe)
 {
     int sym_index, sym_end;
@@ -1513,7 +1499,6 @@ static int pe_check_symbols(struct pe_info *pe)
     return ret;
 }
 
-/*----------------------------------------------------------------------------*/
 #if PE_PRINT_SECTIONS
 static void pe_print_section(FILE * f, Section * s)
 {
@@ -1652,7 +1637,6 @@ static void pe_print_sections(TCCState *s1, const char *fname)
 }
 #endif
 
-/* ------------------------------------------------------------- */
 
 ST_FUNC int pe_putimport(TCCState *s1, int dllindex, const char *name, addr_t value)
 {
@@ -1673,7 +1657,6 @@ static int read_mem(int fd, unsigned offset, void *buffer, unsigned len)
     return len == read(fd, buffer, len);
 }
 
-/* ------------------------------------------------------------- */
 
 static int get_dllexports(int fd, char **pp)
 {
@@ -1809,7 +1792,6 @@ quit:
     return ret;
 }
 
-/* ------------------------------------------------------------- */
 
 static char *trimfront(char *p)
 {
@@ -1901,7 +1883,6 @@ quit:
     return ret;
 }
 
-/* ------------------------------------------------------------- */
 
 static int pe_load_dll(TCCState *s1, int fd, const char *filename)
 {
@@ -1942,7 +1923,6 @@ PUB_FUNC int tcc_get_dllexports(const char *filename, char **pp)
     return ret;
 }
 
-/* ------------------------------------------------------------- */
 #ifdef TCC_TARGET_X86_64
 static unsigned pe_add_unwind_info(TCCState *s1)
 {
@@ -2080,7 +2060,6 @@ ST_FUNC void pe_add_unwind_data(unsigned start, unsigned end, unsigned stack)
     put_elf_reloc(symtab_section, pd, o + 4, R_XXX_RELATIVE, s1->uw_xsym);
 }
 #endif
-/* ------------------------------------------------------------- */
 #if defined(TCC_TARGET_X86_64) || defined(TCC_TARGET_ARM64)
 #define PE_STDSYM(n,s) n
 #else
@@ -2301,4 +2280,3 @@ done:
     return s1->nb_errors ? -1 : 0;
 }
 
-/* ------------------------------------------------------------- */

@@ -45,7 +45,6 @@ int main_1(){
     return 0;
 }
 
-/* --------------------------------------------- */
 int main_2()
 {
   char c = 'a';
@@ -61,7 +60,6 @@ void func1(char c)
 
 struct st { int a; };
 
-/* --------------------------------------------- */
 int main_3()
 {
   struct st func(void);
@@ -76,7 +74,6 @@ struct st func(void)
   return st;
 }
 
-/* --------------------------------------------- */
 /* func* 'md' must not be shadowed by param 'md' */
 static void f4(char *(*md)(char *md))
 {
@@ -95,7 +92,6 @@ int main_4()
     return 0;
 }
 
-/* --------------------------------------------- */
 int a5[3], b5[];
 int f5(void);
 int main_5()
@@ -111,7 +107,6 @@ int f5(void)
 }
 int b5[3];
 
-/* --------------------------------------------- */
 static int f6(int);
 int i6 = 11;
 
@@ -136,7 +131,6 @@ int f6(int x)
     return x;
 }
 
-/* --------------------------------------------- */
 
 #if defined __TINYC__ \
     ? !defined __leading_underscore \
@@ -172,7 +166,6 @@ int main_7()
 
 struct xx7 z7 = { 0, 34 };
 
-/* --------------------------------------------- */
 int main()
 {
     main_1();

@@ -23,7 +23,6 @@
 /* Define this to get some debug output during relocation processing.  */
 #undef DEBUG_RELOC
 
-/********************************************************/
 /* global variables */
 
 /* elf version information */
@@ -55,7 +54,6 @@ static const char rdata[] = ".rdata";
 static const char rdata[] = ".data.ro";
 #endif
 
-/* ------------------------------------------------------------------------- */
 
 ST_FUNC void tccelf_new(TCCState *s)
 {
@@ -372,7 +370,6 @@ ST_FUNC Section *find_section(TCCState *s1, const char *name)
     return new_section(s1, name, SHT_PROGBITS, SHF_ALLOC);
 }
 
-/* ------------------------------------------------------------------------- */
 
 ST_FUNC int put_elf_str(Section *s, const char *sym)
 {

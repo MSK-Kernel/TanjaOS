@@ -73,7 +73,6 @@ typedef struct GFuncContext {
     int func_call; /* func call type (FUNC_STDCALL or FUNC_CDECL) */
 } GFuncContext;
 
-/******************************************************/
 /* opcode definitions */
 
 #define IL_OP_PREFIX 0xFE
@@ -90,7 +89,6 @@ char *il_opcodes_str[] = {
 #undef OP
 };
 
-/******************************************************/
 
 /* arguments variable numbers start from there */
 #define ARG_BASE 0x70000000
@@ -653,5 +651,4 @@ void gen_cvt_ftof(int t)
 }
 
 /* end of CIL code generator */
-/*************************************************************/
 

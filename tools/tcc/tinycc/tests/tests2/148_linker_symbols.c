@@ -7,7 +7,6 @@ int printf(const char *, ...);
 #define O 100
 #define SO 200
 
-/* ------------------------------------------------------ */
 #if TEST-O == 1
 extern char etext[], _etext[];
 extern char edata[], _edata[];
@@ -29,7 +28,6 @@ int main(void)
     assert(check_linker_symbols() == 0);
 }
 
-/* ------------------------------------------------------ */
 #elif TEST-SO == 2
 extern char etext[], edata[], end[];
 void get_dso_end(char **p)
@@ -55,7 +53,6 @@ int main(void)
     assert(p[2] == _end)   || printf("-- %p %p\n", p[2], _end);
 }
 
-/* ------------------------------------------------------ */
 #elif TEST-MAIN == 3
 
 int etext(void) { return 1; }
@@ -67,7 +64,6 @@ int main(void)
     assert(etext() + edata() + end() == 6);
 }
 
-/* ------------------------------------------------------ */
 #elif TEST-SO == 4
 unsigned char copy_reloc_data[257];
 
@@ -86,7 +82,6 @@ int main(void)
     assert(copy_reloc_data[256] == 42);
 }
 
-/* ------------------------------------------------------ */
 #elif TEST-O == 5
 void __attribute__((section(".text.linker_test"), noinline, used))
 linker_test_text(void)
@@ -126,7 +121,6 @@ int main(void)
     assert(linker_test_bss[256] == 42);
 }
 
-/* ------------------------------------------------------ */
 #elif TEST-SO == 6
 int end;
 int eight = 8;
@@ -149,5 +143,4 @@ int main()
     assert(sum == 24) || printf("-- %d + %d + %d = %d\n", end, eight, nine, sum);
 }
 
-/* ------------------------------------------------------ */
 #endif

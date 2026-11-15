@@ -77,7 +77,6 @@ void br_x509_minimal_run(void *t0ctx);
 
 /*
  * Implementation Notes
- * --------------------
  *
  * The C code pushes the data by chunks; all decoding is done in the
  * T0 code. The cert_length value is set to the certificate length when

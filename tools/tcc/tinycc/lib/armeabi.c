@@ -547,7 +547,6 @@ __aeabi_memset (void *s, size_t n, int c)
     return memset (s, c, n);
 }
 
-/* ***************************************************************** */
 #if UIDIVMOD_ASM
 #include <config.h>
 __asm__(
@@ -638,5 +637,4 @@ __asm__(
 #endif
 );
 #endif /* UIDIVMOD_ASM */
-/* ***************************************************************** */
 #endif

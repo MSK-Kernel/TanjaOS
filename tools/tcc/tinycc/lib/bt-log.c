@@ -1,4 +1,3 @@
-/* ------------------------------------------------------------- */
 /* function to get a stack backtrace on demand with a message */
 
 #include <stdarg.h>

@@ -1,4 +1,3 @@
-/* -------------------------------------------------------------- */
 /*
  *  TCC - Tiny C Compiler
  *
@@ -6,7 +5,6 @@
  *
  */
 
-/* -------------------------------------------------------------- */
 /*
  * This program is for making libtcc1.a without ar
  * tiny_libmaker - tiny elf lib maker
@@ -336,7 +334,6 @@ the_end:
     return ret;
 }
 
-/* -------------------------------------------------------------- */
 /*
  * tiny_impdef creates an export definition file (.def) from a dll
  * on MS-Windows. Usage: tiny_impdef library.dll [-o outputfile]"
@@ -462,7 +459,6 @@ the_end:
 
 #endif /* TCC_TARGET_PE */
 
-/* -------------------------------------------------------------- */
 /*
  *  TCC - Tiny C Compiler
  *
@@ -570,7 +566,6 @@ ST_FUNC int tcc_tool_cross(char **argv, int target)
 }
 
 #endif /* TCC_TARGET_I386 && TCC_TARGET_X86_64 */
-/* -------------------------------------------------------------- */
 /* enable commandline wildcard expansion (tcc -o x.exe *.c) */
 
 #ifdef _WIN32
@@ -580,7 +575,6 @@ const int _dowildcard = 1;
 #endif
 #endif
 
-/* -------------------------------------------------------------- */
 /* generate xxx.d file */
 
 static char *escape_target_dep(const char *s) {
@@ -648,4 +642,3 @@ ST_FUNC int gen_makedeps(TCCState *s1, const char *target, const char *filename)
     return 0;
 }
 
-/* -------------------------------------------------------------- */

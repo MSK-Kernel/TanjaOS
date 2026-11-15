@@ -71,7 +71,6 @@ static void rt_post_sem(void) { POST_SEM(&rt_sem); }
 static int rt_get_caller_pc(addr_t *paddr, rt_frame *f, int level);
 static void rt_exit(rt_frame *f, int code);
 
-/* ------------------------------------------------------------- */
 /* defined when included from lib/bt-exe.c */
 #ifndef CONFIG_TCC_BACKTRACE_ONLY
 
@@ -147,7 +146,6 @@ static int rt_mem(TCCState *s1, int size)
     return ptr_diff;
 }
 
-/* ------------------------------------------------------------- */
 /* Do all relocations (needed before using tcc_get_symbol())
    Returns -1 on error. */
 
@@ -271,7 +269,6 @@ LIBTCCAPI int tcc_run(TCCState *s1, int argc, char **argv)
     return ret;
 }
 
-/* ------------------------------------------------------------- */
 /* remove all STB_LOCAL symbols */
 static void cleanup_symbols(TCCState *s1)
 {
@@ -308,7 +305,6 @@ static void cleanup_sections(TCCState *s1)
     } while (++p, f);
 }
 
-/* ------------------------------------------------------------- */
 /* 0 = .text rwx  other rwx (memory >= 2 pages a 4096 bytes) */
 /* 1 = .text rx   other rw (memory >= 3 pages) */
 /* 2 = .text rx  .rdata ro  .data/.bss rw (memory >= 4 pages) */
@@ -465,7 +461,6 @@ redo:
     goto redo;
 }
 
-/* ------------------------------------------------------------- */
 /* allow to run code in memory */
 
 static int protect_pages(void *ptr, unsigned long length, int mode)
@@ -648,14 +643,12 @@ static void rt_exit(rt_frame *f, int code)
     exit(code);
 }
 
-/* ------------------------------------------------------------- */
 #else // if defined CONFIG_TCC_BACKTRACE_ONLY
 static void rt_exit(rt_frame *f, int code)
 {
     exit(code);
 }
 #endif //ndef CONFIG_TCC_BACKTRACE_ONLY
-/* ------------------------------------------------------------- */
 #ifdef CONFIG_TCC_BACKTRACE
 
 static int rt_vprintf(const char *fmt, va_list ap)
@@ -803,7 +796,6 @@ found:
     return func_addr;
 }
 
-/* ------------------------------------------------------------- */
 /* rt_printline - dwarf version */
 
 #define DIR_TABLE_SIZE	(64)
@@ -1103,7 +1095,6 @@ found:
     bi->func_pc = func_addr;
     return (addr_t)func_addr;
 }
-/* ------------------------------------------------------------- */
 #ifndef CONFIG_TCC_BACKTRACE_ONLY
 static
 #endif
@@ -1211,7 +1202,6 @@ static int rt_error(rt_frame *f, const char *fmt, ...)
     return ret;
 }
 
-/* ------------------------------------------------------------- */
 
 #ifndef _WIN32
 # include <signal.h>
@@ -1315,7 +1305,6 @@ static void rt_getcontext(ucontext_t *uc, rt_frame *rc)
 #endif
 }
 
-/* ------------------------------------------------------------- */
 #ifndef _WIN32
 /* signal handler for fatal errors */
 static void sig_error(int signum, siginfo_t *siginf, void *puc)
@@ -1437,7 +1426,6 @@ static void set_exception_handler(void)
 
 #endif
 
-/* ------------------------------------------------------------- */
 /* return the PC at frame level 'level'. Return negative if not found */
 #if defined(__i386__) || defined(__x86_64__)
 static int rt_get_caller_pc(addr_t *paddr, rt_frame *rc, int level)
@@ -1534,7 +1522,6 @@ static int rt_get_caller_pc(addr_t *paddr, rt_frame *f, int level)
     return 0;
 }
 #endif /* CONFIG_TCC_BACKTRACE */
-/* ------------------------------------------------------------- */
 #ifdef CONFIG_TCC_STATIC
 
 /* dummy function for profiling */
@@ -1585,4 +1572,3 @@ ST_FUNC void *dlsym(void *handle, const char *symbol)
 
 #endif /* CONFIG_TCC_STATIC */
 #endif /* TCC_IS_NATIVE */
-/* ------------------------------------------------------------- */

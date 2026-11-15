@@ -1,4 +1,3 @@
-/* ------------------------------------------------------------------ */
 /* WARNING: relative order of tokens is important.                    */
 
 /* register */

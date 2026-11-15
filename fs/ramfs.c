@@ -1604,7 +1604,6 @@ static const char* fs_file_data_ptr(const char* path, uint32_t* size_out)
 }
 
 
-/* ========== VFS integration: ramfs backend callbacks ========== */
 
 static int ramfs_dir_exists(void* sb, const char* path);
 
@@ -2036,7 +2035,6 @@ struct vfs_ops ramfs_ops = {
 };
 
 
-/* ========== Public ramfs backend API ========== */
 
 void ramfs_init(void) {
     /* Initialize the in-memory tables and root directory.

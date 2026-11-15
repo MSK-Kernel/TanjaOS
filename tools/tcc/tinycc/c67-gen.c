@@ -110,9 +110,7 @@ enum {
 
 #undef CONFIG_TCC_BCHECK
 
-/******************************************************/
 #else /* ! TARGET_DEFS_ONLY */
-/******************************************************/
 #define USING_GLOBALS
 #include "tcc.h"
 
@@ -175,7 +173,6 @@ do {\
        tcc_error("internal compiler error file at %s:%d", __FILE__, __LINE__);\
 } while (0)
 
-/******************************************************/
 static unsigned long func_sub_sp_offset;
 static int func_ret_sub;
 
@@ -2538,6 +2535,4 @@ ST_FUNC void gen_vla_alloc(CType *type, int align) {
 }
 
 /* end of C67 code generator */
-/*************************************************************/
 #endif
-/*************************************************************/

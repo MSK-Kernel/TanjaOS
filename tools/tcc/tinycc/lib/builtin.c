@@ -7,7 +7,6 @@
 #define	BUILTINN(x)	"__tcc_builtin_" # x
 #endif
 
-/* ---------------------------------------------- */
 /* This file implements:
  * __builtin_ffs
  * __builtin_clz

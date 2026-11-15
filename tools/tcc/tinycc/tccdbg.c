@@ -307,7 +307,6 @@ static const unsigned char dwarf_line_opcodes[] = {
     0 ,1 ,1 ,1 ,1 ,0 ,0 ,0 ,1 ,0 ,0 ,1
 };
 
-/* ------------------------------------------------------------------------- */
 /* debug state */
 
 #define N_STR_HASH (251)
@@ -430,7 +429,6 @@ struct _tccdbg {
 
 #define	FDE_ENCODING        (DW_EH_PE_udata4 | DW_EH_PE_signed | DW_EH_PE_pcrel)
 
-/* ------------------------------------------------------------------------- */
 static int put_stabs(TCCState *s1, const char *str, int type, int other,
     int desc, unsigned long value);
 
@@ -546,7 +544,6 @@ static void put_stabn(TCCState *s1, int type, int other, int desc, int value)
     put_stabs(s1, NULL, type, other, desc, value);
 }
 
-/* ------------------------------------------------------------------------- */
 #define	dwarf_data1(s,data) \
 	(*(uint8_t*)section_ptr_add((s), 1) = (data))
 #define	dwarf_data2(s,data) \
@@ -2506,7 +2503,6 @@ ST_FUNC void tcc_debug_typedef(TCCState *s1, Sym *sym)
     }
 }
 
-/* ------------------------------------------------------------------------- */
 /* for section layout see lib/tcov.c */
 
 ST_FUNC void tcc_tcov_block_end(TCCState *s1, int line);
@@ -2653,7 +2649,6 @@ ST_FUNC void tcc_tcov_reset_ind(TCCState *s1)
     tcov_data.ind = 0;
 }
 
-/* ------------------------------------------------------------------------- */
 #undef last_line_num
 #undef new_file
 #undef section_sym
