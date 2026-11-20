@@ -6,6 +6,9 @@
 extern int fs_cur_uid;
 extern int fs_chown(const char* path, int uid);
 
+extern void* malloc(unsigned int n);
+extern void  free(void* p);
+
 static int mv_strlen(const char* s) {
     int n = 0;
     while (s[n]) n++;
@@ -91,22 +94,22 @@ done:
     return result;
 }
 
-static int mv_copy_dir(const char* src, const char* dst) {
+static int mv_copy_dir(const char* src, const char* dst);
+static int mv_copy_dir_impl(const char* src, const char* dst, char* buf) {
 
     if (!fs_directory_exists(dst)) {
         if (fs_create_directory(dst) != 0) return -1;
         { int mode = fs_get_mode(src); if (mode >= 0) fs_chmod(dst, mode); }
     }
 
-    char buf[4096];
     uint32_t size = 0;
     if (fs_list_directory(src, buf, &size) != 0) return -1;
 
     int i = 0;
     while (i < (int)size) {
-        char entry[128];
+        char entry[256];
         int j = 0;
-        while (i < (int)size && buf[i] != '\n' && j < 127) { entry[j++] = buf[i++]; }
+        while (i < (int)size && buf[i] != '\n' && j < 255) { entry[j++] = buf[i++]; }
         entry[j] = 0;
         if (i < (int)size && buf[i] == '\n') i++;
         if (j == 0) continue;
@@ -128,18 +131,30 @@ static int mv_copy_dir(const char* src, const char* dst) {
     return 0;
 }
 
-// Deletes everything inside src (files + subdirs, depth-first), then src itself.
-static int mv_remove_tree(const char* src) {
+static int mv_copy_dir(const char* src, const char* dst) {
+    /* heap, not stack: listings can be up to 16 KB (merged ISO dirs) and
+       the kernel stack is only 64 KB, with recursion on top */
+    char* buf = (char*)malloc(16384);
+    int rc;
+    if (!buf) return -1;
+    rc = mv_copy_dir_impl(src, dst, buf);
+    free(buf);
+    return rc;
+}
 
-    char buf[4096];
+
+// Deletes everything inside src (files + subdirs, depth-first), then src itself.
+static int mv_remove_tree(const char* src);
+static int mv_remove_tree_impl(const char* src, char* buf) {
+
     uint32_t size = 0;
     if (fs_list_directory(src, buf, &size) != 0) return -1;
 
     int i = 0;
     while (i < (int)size) {
-        char entry[128];
+        char entry[256];
         int j = 0;
-        while (i < (int)size && buf[i] != '\n' && j < 127) { entry[j++] = buf[i++]; }
+        while (i < (int)size && buf[i] != '\n' && j < 255) { entry[j++] = buf[i++]; }
         entry[j] = 0;
         if (i < (int)size && buf[i] == '\n') i++;
         if (j == 0) continue;
@@ -159,6 +174,18 @@ static int mv_remove_tree(const char* src) {
 
     return fs_delete_directory(src);
 }
+
+static int mv_remove_tree(const char* src) {
+    /* heap, not stack: listings can be up to 16 KB (merged ISO dirs) and
+       the kernel stack is only 64 KB, with recursion on top */
+    char* buf = (char*)malloc(16384);
+    int rc;
+    if (!buf) return -1;
+    rc = mv_remove_tree_impl(src, buf);
+    free(buf);
+    return rc;
+}
+
 
 void main(char* args) {
 

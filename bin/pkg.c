@@ -3,7 +3,8 @@
 #include "tanja.h"
 
 /* pkg install <name> fetches a package executable when present and installs
- * repository payload trees (lib/, usr/, etc/) into the matching system paths.
+ * repository payload trees (lib/, usr/, etc/, boot/) into the matching system
+ * paths. A boot/ folder in the repo lands in /boot.
  * Executables are installed directly to /usr/bin/<name>.o (no compilation).
  * If the package repo also contains a lib/ directory, the contents are
  * installed to /lib so that ELF32 binaries can resolve their dependencies
@@ -98,7 +99,7 @@ static int json_string(const char* p, char* out, int cap) {
 static int safe_repo_path(const char* p) {
     int i;
     if (!(strncmp(p, "lib/", 4) == 0 || strncmp(p, "usr/", 4) == 0 ||
-          strncmp(p, "etc/", 4) == 0)) return 0;
+          strncmp(p, "etc/", 4) == 0 || strncmp(p, "boot/", 5) == 0)) return 0;
     for (i = 0; p[i]; i++) {
         char c = p[i];
         if (!(isalnum(c) || c == '/' || c == '.' || c == '_' || c == '-' || c == '+')) return 0;
@@ -186,7 +187,7 @@ static int install_repo_trees(const char* name) {
 }
 
 /* Remove only files recorded by this package. Prune empty directories
-   without ever removing the system roots /lib, /usr, or /etc. */
+   without ever removing the system roots /lib, /usr, /etc, or /boot. */
 static void prune_payload_dirs(const char* file) {
     char dir[256];
     int i, n = strlen(file);
@@ -195,7 +196,8 @@ static void prune_payload_dirs(const char* file) {
     for (i = n - 1; i >= 0; i--) if (dir[i] == '/') { dir[i] = 0; break; }
     while (i > 0 && dir[0]) {
         if (strcmp(dir, "/lib") == 0 || strcmp(dir, "/usr") == 0 ||
-            strcmp(dir, "/etc") == 0 || strcmp(dir, "/" ) == 0) break;
+            strcmp(dir, "/etc") == 0 || strcmp(dir, "/boot") == 0 ||
+            strcmp(dir, "/" ) == 0) break;
         /* fs_delete_directory() already refuses non-empty directories.
            Use its return value instead of requiring a separate ELF export. */
         if (!fs_directory_exists(dir)) break;
@@ -264,12 +266,14 @@ static int remove_payload_manifest(const char* manifest) {
         if (pos < size && contents[pos] == '\n') pos++;
         path[n] = 0;
         if (!n) continue;
-        /* Manifest entries must remain inside the three package roots. */
+        /* Manifest entries must remain inside the package roots. */
         if (!(strncmp(path, "/lib/", 5) == 0 || strncmp(path, "/usr/", 5) == 0 ||
-              strncmp(path, "/etc/", 5) == 0)) continue;
+              strncmp(path, "/etc/", 5) == 0 || strncmp(path, "/boot/", 6) == 0)) continue;
         if (payload_owned_by_other(path, manifest)) continue;
         if (fs_file_exists(path)) {
-            if (fs_delete_file(path) == 0) {
+            /* revert, not delete: a payload file that replaced a file on the
+               boot ISO must bring the original back, not hide it */
+            if (fs_revert_file(path) == 0) {
                 removed++;
                 prune_payload_dirs(path);
             } else {
@@ -392,7 +396,7 @@ static void do_remove(const char* name) {
         fs_delete_file(manifest);
     }
     fs_delete_file(marker);
-    printf("removed %s\n");
+    printf("removed %s\n", name);
 }
 
 void main(char* args) {

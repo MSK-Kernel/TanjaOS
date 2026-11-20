@@ -258,6 +258,7 @@ static const struct tanja_export tanja_exports[] = {
     { "fs_create_file", (void*)fs_create_file },
     { "fs_create_directory", (void*)fs_create_directory },
     { "fs_delete_file", (void*)fs_delete_file },
+    { "fs_revert_file", (void*)fs_revert_file },
     { "fs_delete_directory", (void*)fs_delete_directory },
     { "fs_delete_directory_recursive", (void*)fs_delete_directory_recursive },
     { "fs_write_file", (void*)fs_write_file },

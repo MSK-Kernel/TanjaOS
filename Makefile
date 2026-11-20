@@ -31,7 +31,7 @@ BUILD_TS := $(shell date +%s)
 # the disk by the installer, and kernel/store.c keeps the persistent region
 # clear of it via STORE_FRONT_RESERVE_SECTORS (8 MiB). Warn here if the
 # kernel image alone grows into that budget.
-BOOT_IMAGE_BUDGET_MIB = 7
+BOOT_IMAGE_BUDGET_MIB = 10
 BOOT_IMAGE_BUDGET_BYTES = $(shell echo $$(($(BOOT_IMAGE_BUDGET_MIB) * 1024 * 1024)))
 
 include/build_id.h: $(wildcard kernel/*.c) $(wildcard fs/*.c) $(BIN_SRC) $(wildcard include/*.h) home.tar
@@ -140,13 +140,13 @@ ports/doom/build/doom: $(wildcard ports/doom/*.c ports/doom/Makefile ports/doom/
 	@$(MAKE) --no-print-directory -C ports/doom CC="$(CC)" LD="$(LD)" ARCH_FLAGS="$(filter -m32,$(CFLAGS))"
 
 
-arch/x86/boot/tanja-base: arch/x86/boot/boot.o arch/x86/idt_asm.o $(KERNEL_OBJ) fs/fs.o fs/vfs.o fs/devfs.o fs/ramfs.o $(HOME_OBJ) tools/bearssl/libbearssl.a | arch/x86/boot
+arch/x86/boot/tanja-base: arch/x86/boot/boot.o arch/x86/idt_asm.o $(KERNEL_OBJ) fs/fs.o fs/vfs.o fs/devfs.o fs/ramfs.o fs/iso9660.o fs/overlay.o $(HOME_OBJ) tools/bearssl/libbearssl.a | arch/x86/boot
 	@echo "[LD] Linking..."
 	$(LD) $(LDFLAGS) -o arch/x86/boot/tanja-base \
 		arch/x86/boot/boot.o \
 		arch/x86/idt_asm.o \
 		$(KERNEL_OBJ) \
-		fs/fs.o fs/vfs.o fs/devfs.o fs/ramfs.o \
+		fs/fs.o fs/vfs.o fs/devfs.o fs/ramfs.o fs/iso9660.o fs/overlay.o \
 		$(HOME_OBJ) \
 		tools/bearssl/libbearssl.a \
 		$(shell $(CC) -m32 -print-libgcc-file-name)
@@ -184,3 +184,11 @@ fs/devfs.o: fs/devfs.c include/vfs.h
 fs/ramfs.o: fs/ramfs.c include/ramfs.h include/vfs.h
 	@echo "[CC] fs/ramfs.c"
 	$(CC) $(CFLAGS) -o fs/ramfs.o fs/ramfs.c
+
+fs/iso9660.o: fs/iso9660.c include/iso9660.h include/vfs.h
+	@echo "[CC] fs/iso9660.c"
+	$(CC) $(CFLAGS) -o fs/iso9660.o fs/iso9660.c
+
+fs/overlay.o: fs/overlay.c include/overlay.h include/iso9660.h include/ramfs.h include/vfs.h
+	@echo "[CC] fs/overlay.c"
+	$(CC) $(CFLAGS) -o fs/overlay.o fs/overlay.c

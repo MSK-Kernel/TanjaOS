@@ -677,17 +677,36 @@ static int ne2k_match(uint16_t ven, uint16_t dev) {
     return ven == 0x10EC && (dev == 0x8029 || dev == 0x8028);
 }
 
-/* atheros AR8132 */
-/* Attansic L2C / Atheros AR8132 (PCI 1969:1062). Common on ASUS Eee PC.
- * Polled, one TX ring + one RX free ring + one RX return ring.
- * RX buffers must be <= 1536 or the chip locks up. */
+/* atheros AR8132 / AR8131 */
+/* Attansic L2C / L1C (PCI 1969:1062 AR8132 fast ethernet, 1969:1063 AR8131
+ * gigabit). Common on ASUS Eee PC. Polled: one TX ring, one RX free ring and
+ * one RX return ring. RX buffers must be <= 1536 or the chip locks up.
+ *
+ * Bring-up follows the Atheros atl1c reference flow. The parts that matter
+ * on real hardware (and that QEMU never exercises, because it has no such
+ * chip) are:
+ *   - the PHY is powered/reset through GPHY_CTRL and then started over
+ *     MDIO (auto-negotiation); until that happens the link LED stays dark
+ *   - link state and speed/duplex come from the PHY (MII BMSR / PSSR), and
+ *     the MAC is only started with the negotiated speed once the link is up
+ *   - the burned-in MAC address is read BEFORE the soft reset and written
+ *     back afterwards (reset clears the station address registers)
+ *   - the TX producer/consumer indexes are 16-bit registers at 0x15F2 and
+ *     0x15F6 (0x15F0/0x15F4 belong to the unused high-priority queue)
+ */
 
+#define A_PMCTRL   0x12F8
+#define A_LTSSM    0x12FC
 #define A_MASTER   0x1400
+#define A_GPHY     0x140C
+#define A_IDLE     0x1410
 #define A_MDIO     0x1414
-#define A_PHYSTAT  0x1418
 #define A_MACCFG   0x1480
 #define A_PAR0     0x1488
 #define A_PAR1     0x148C
+#define A_MTU      0x149C
+#define A_WOL      0x14A0
+#define A_LOADPTR  0x1534
 #define A_RXHI     0x1540
 #define A_TXHI     0x1544
 #define A_RD0      0x1550
@@ -697,9 +716,16 @@ static int ne2k_match(uint16_t ven, uint16_t dev) {
 #define A_RRDCNT   0x1578
 #define A_TDL      0x1580
 #define A_TDCNT    0x1584
-#define A_M_RDPROD 0x15E0
-#define A_M_TDPROD 0x15F0
-#define A_M_TDCONS 0x15F4
+#define A_TXQ      0x1590
+#define A_RXQ      0x15A0
+#define A_DMA      0x15C0
+#define A_SMBTMR   0x15C4
+#define A_M_RDPROD 0x15E0          /* 32-bit, low 16 = RFD producer */
+#define A_M_TDPROD 0x15F2          /* 16-bit, normal-priority TPD producer */
+#define A_M_TDCONS 0x15F6          /* 16-bit, normal-priority TPD consumer */
+#define A_ISR      0x1600
+#define A_IMR      0x1604
+#define A_CLKGATE  0x1814
 
 #define A_N 16
 #define A_BUFSZ 1536
@@ -715,18 +741,170 @@ static uint8_t a_rxbuf[A_N][A_BUFSZ] __attribute__((aligned(16)));
 static uint8_t a_txbuf[A_N][A_BUFSZ] __attribute__((aligned(16)));
 static volatile uint8_t* a_mmio;
 static int a_rx_cur, a_tx_cur;
+static int a_up;                    /* link up and MAC running */
+static int a_gigabit;               /* AR8131 */
 
 static inline uint32_t ar(uint32_t o) { return *(volatile uint32_t*)(a_mmio + o); }
 static inline void aw(uint32_t o, uint32_t v) { *(volatile uint32_t*)(a_mmio + o) = v; }
+static inline uint16_t ar16(uint32_t o) { return *(volatile uint16_t*)(a_mmio + o); }
+static inline void aw16(uint32_t o, uint16_t v) { *(volatile uint16_t*)(a_mmio + o) = v; }
 
-static int a_link(void) { return (ar(A_PHYSTAT) & 1) != 0; }
+/* ~1 us per posted read on PCIe; good enough for the short PHY delays */
+static void a_udelay(int us) { int i; for (i = 0; i < us; i++) (void)ar(A_MASTER); }
+
+static void a_hex(char* out, uint32_t v, int digits) {
+    int i;
+    for (i = 0; i < digits; i++) {
+        uint32_t n = (v >> (4 * (digits - 1 - i))) & 0xF;
+        out[i] = (char)(n < 10 ? '0' + n : 'a' + n - 10);
+    }
+    out[digits] = 0;
+}
+
+/* ---- MDIO ---- */
+
+#define AM_BUSY   (1u << 27)
+#define AM_START  (1u << 23)
+#define AM_SPRES  (1u << 22)
+#define AM_READ   (1u << 21)
+
+static int a_mdio_idle(void) {
+    int i;
+    for (i = 0; i < 200; i++) {
+        if (!(ar(A_MDIO) & AM_BUSY)) return 0;
+        a_udelay(10);
+    }
+    return -1;
+}
+
+static int a_phy_read(uint32_t reg, uint16_t* val) {
+    aw(A_MDIO, 0);                                   /* stop PHY auto-polling */
+    if (a_mdio_idle()) return -1;
+    aw(A_MDIO, AM_SPRES | AM_START | AM_READ | ((reg & 0x1F) << 16));
+    if (a_mdio_idle()) return -1;
+    *val = (uint16_t)(ar(A_MDIO) & 0xFFFF);
+    return 0;
+}
+
+static int a_phy_write(uint32_t reg, uint16_t val) {
+    aw(A_MDIO, 0);
+    if (a_mdio_idle()) return -1;
+    aw(A_MDIO, AM_SPRES | AM_START | ((reg & 0x1F) << 16) | val);
+    return a_mdio_idle();
+}
+
+/* PHY debug port: address in reg 0x1D, data in reg 0x1E */
+static int a_phy_dbg_write(uint16_t addr, uint16_t val) {
+    if (a_phy_write(0x1D, addr)) return -1;
+    return a_phy_write(0x1E, val);
+}
+
+/* ---- MAC ---- */
+
+#define A_IDLE_RXMAC 0x1u
+#define A_IDLE_TXMAC 0x2u
+#define A_IDLE_RXQ   0x4u
+#define A_IDLE_TXQ   0x8u
+
+static int a_wait_idle(uint32_t mask) {
+    int i;
+    for (i = 0; i < 100; i++) {
+        if (!(ar(A_IDLE) & mask)) return 0;
+        timer_delay_ms(1);
+    }
+    return -1;
+}
+
+static void a_stop_mac(void) {
+    aw(A_RXQ, ar(A_RXQ) & ~(1u << 31));
+    aw(A_TXQ, ar(A_TXQ) & ~(1u << 5));
+    a_wait_idle(A_IDLE_RXQ | A_IDLE_TXQ);
+    aw(A_MACCFG, ar(A_MACCFG) & ~3u);
+    a_wait_idle(A_IDLE_RXMAC | A_IDLE_TXMAC);
+}
+
+/* power-management bits for the L1C/L2C family, ASPM L0s/L1 left off */
+static void a_pm_setup(int link_up) {
+    uint32_t v = ar(A_PMCTRL);
+    const uint32_t L1_EN = 1u << 3, L0S_EN = 1u << 12, CHK = 1u << 30;
+    const uint32_t CLK_SWH = 1u << 13, PD_EX = 1u << 6;
+    const uint32_t S_L1 = 1u << 4, S_PLL = 1u << 5, S_BUFS = 1u << 7;
+    v &= ~(L1_EN | L0S_EN | CHK);
+    v &= ~(0xFu << 16);                              /* L1 entry timer = 0 */
+    if (link_up) {
+        v |= S_L1 | S_PLL | S_BUFS;
+        v &= ~(PD_EX | CLK_SWH);
+    } else {
+        v |= CLK_SWH;
+        v &= ~(S_L1 | S_PLL | S_BUFS);
+    }
+    aw(A_PMCTRL, v);
+}
+
+static void a_mac_start(int speed, int full) {
+    uint32_t mac = ar(A_MACCFG);
+    mac |= (1u << 0) | (1u << 1) |            /* TX / RX enable */
+           (1u << 2) | (1u << 3) |            /* TX / RX flow control */
+           (1u << 6) | (1u << 7) |            /* add CRC, pad */
+           (1u << 26) | (1u << 28) |          /* broadcast, single pause */
+           (1u << 29);                        /* CRC32 hash */
+    if (full) mac |= (1u << 5); else mac &= ~(1u << 5);
+    mac &= ~(3u << 20);
+    mac |= ((speed == 1000 ? 2u : 1u) << 20); /* speed field */
+    mac &= ~(0xFu << 10);
+    mac |= (7u << 10);                        /* preamble length */
+    aw(A_TXQ, ar(A_TXQ) | (1u << 5));
+    aw(A_RXQ, ar(A_RXQ) | (1u << 31));
+    aw(A_MACCFG, mac);
+}
+
+static int a_link(void) {
+    uint16_t bmsr = 0, pssr = 0;
+    int up;
+    if (a_phy_read(1, &bmsr) || a_phy_read(1, &bmsr)) return a_up;   /* latched bit: read twice */
+    up = (bmsr & 0x0004) != 0;
+
+    if (up && !a_up) {
+        int speed, full;
+        if (a_phy_read(0x11, &pssr)) return 0;
+        if (!(pssr & 0x0800)) return 0;               /* speed/duplex not resolved yet */
+        switch (pssr & 0xC000) {
+            case 0x8000: speed = 1000; break;
+            case 0x4000: speed = 100;  break;
+            default:     speed = 10;   break;
+        }
+        full = (pssr & 0x2000) != 0;
+        a_pm_setup(1);
+        a_mac_start(speed, full);
+        a_up = 1;
+        {
+            extern void boot_log(const char* s);
+            char msg[64];
+            const char* p = speed == 1000 ? "ar8132: link up 1000 Mb/s " :
+                            speed == 100  ? "ar8132: link up 100 Mb/s " :
+                                            "ar8132: link up 10 Mb/s ";
+            int n = 0, k;
+            for (k = 0; p[k]; k++) msg[n++] = p[k];
+            p = full ? "full duplex" : "half duplex";
+            for (k = 0; p[k]; k++) msg[n++] = p[k];
+            msg[n] = 0;
+            boot_log(msg);
+        }
+    } else if (!up && a_up) {
+        a_stop_mac();
+        a_pm_setup(0);
+        a_up = 0;
+    }
+    return a_up;
+}
 
 static int a_send(const void* frame, uint32_t len) {
     if (len > 1514) return -1;
+    if (!a_up) return -1;
     int i = a_tx_cur;
     uint32_t t0 = get_uptime_ms();
     /* wait until the consumer has passed this slot */
-    while (((ar(A_M_TDCONS) & 0xFFFF) % A_N) == (uint32_t)((i + 1) % A_N)) {
+    while ((uint32_t)(ar16(A_M_TDCONS) % A_N) == (uint32_t)((i + 1) % A_N)) {
         if (get_uptime_ms() - t0 > 200) return -1;
     }
     if (len < 60) {
@@ -737,11 +915,11 @@ static int a_send(const void* frame, uint32_t len) {
         memcpy(a_txbuf[i], frame, len);
     }
     a_tx[i].addr = (uint64_t)(uint32_t)a_txbuf[i];
-    a_tx[i].len = len & 0x3FFF;
-    a_tx[i].flags = 0x80000000u;          /* EOP */
+    a_tx[i].len = len & 0xFFFF;
+    a_tx[i].flags = 0x80000000u | (1u << 17);   /* EOP | ethernet frame (not 802.3) */
     asm volatile ("" ::: "memory");
     a_tx_cur = (i + 1) % A_N;
-    aw(A_M_TDPROD, (uint32_t)a_tx_cur);
+    aw16(A_M_TDPROD, (uint16_t)a_tx_cur);
     return 0;
 }
 
@@ -756,34 +934,136 @@ static int a_recv(void* buf, uint32_t cap) {
     a_rx[i].addr = (uint64_t)(uint32_t)a_rxbuf[i];
     asm volatile ("" ::: "memory");
     a_rx_cur = (i + 1) % A_N;
-    aw(A_M_RDPROD, (uint32_t)a_rx_cur);
+    aw(A_M_RDPROD, (uint32_t)i);          /* slot i is free again: producer = i */
     return good ? (int)len : 0;
 }
 
+/* PCIe: the chip needs a >=512 byte max read request; ASPM stays off */
+static int a_pcie_setup(uint8_t b, uint8_t d, uint8_t f) {
+    uint32_t st = pci_rd(b, d, f, 0x04);
+    uint8_t ptr;
+    int guard = 0, dmar = 2;
+    if (!(st & 0x00100000)) return dmar;              /* no capability list */
+    ptr = pci_rd(b, d, f, 0x34) & 0xFC;
+    while (ptr && guard++ < 48) {
+        uint32_t hdr = pci_rd(b, d, f, ptr);
+        if ((hdr & 0xFF) == 0x10) {                   /* PCI Express */
+            uint32_t devctl = pci_rd(b, d, f, ptr + 8);
+            uint32_t mrrs = (devctl >> 12) & 7;
+            if (mrrs < 2) { devctl = (devctl & ~(7u << 12)) | (2u << 12); mrrs = 2; }
+            pci_wr(b, d, f, ptr + 8, devctl);
+            {   /* link control: ASPM L0s/L1 off */
+                uint32_t lc = pci_rd(b, d, f, ptr + 0x10);
+                pci_wr(b, d, f, ptr + 0x10, lc & ~3u);
+            }
+            dmar = mrrs > 3 ? 3 : (int)mrrs;
+            break;
+        }
+        ptr = (hdr >> 8) & 0xFC;
+    }
+    return dmar;
+}
+
 static int ar8132_init(uint8_t b, uint8_t d, uint8_t f, nic_t* out) {
+    extern void boot_log(const char* s);
+    uint16_t id = pci_rd(b, d, f, 0x00) >> 16;
     pci_enable_path(b);
     pci_enable(b, d, f);
     uint32_t bar = pci_bar_mmio(b, d, f, 0x10);
     if (!bar) return -1;
     a_mmio = (volatile uint8_t*)bar;
+    a_gigabit = (id == 0x1063);
+    a_up = 0;
 
-    aw(A_MASTER, ar(A_MASTER) | 1u);       /* soft reset */
-    {
-        uint32_t t0 = get_uptime_ms();
-        while (ar(A_MASTER) & 1u)
-            if (get_uptime_ms() - t0 > 100) break;
-    }
-    timer_delay_ms(10);
+    int dmar = a_pcie_setup(b, d, f);
 
+    /* The burned-in MAC address: read it now, before the reset clears it.
+     * PAR0 = mac[2..5], PAR1 = mac[0..1]. */
     uint32_t lo = ar(A_PAR0), hi = ar(A_PAR1);
-    /* PAR0 is mac[2..5] big-endian-ish: low dword = mac2<<24|mac3<<16|mac4<<8|mac5 */
     out->mac[2] = lo >> 24; out->mac[3] = lo >> 16;
     out->mac[4] = lo >> 8;  out->mac[5] = lo;
     out->mac[0] = hi >> 8;  out->mac[1] = hi;
     if ((out->mac[0] | out->mac[1] | out->mac[2] |
-         out->mac[3] | out->mac[4] | out->mac[5]) == 0)
-        return -1;
+         out->mac[3] | out->mac[4] | out->mac[5]) == 0 ||
+        (out->mac[0] & 1)) {
+        /* no usable address (blank EEPROM): make a locally administered one
+         * rather than leaving the machine without networking */
+        uint32_t t = get_uptime_ms() ^ (lo * 2654435761u);
+        out->mac[0] = 0x02; out->mac[1] = 0x54;
+        out->mac[2] = t >> 24; out->mac[3] = t >> 16;
+        out->mac[4] = t >> 8;  out->mac[5] = t;
+    }
 
+    /* clear wake-on-LAN state, PCIe LTSSM write-order bit */
+    aw(A_WOL, 0);
+    aw(A_LTSSM, ar(A_LTSSM) & ~0x1000u);
+    a_pm_setup(0);
+
+    /* soft-reset the MAC and DMA */
+    a_stop_mac();
+    {
+        uint32_t m = ar(A_MASTER) | (1u << 6);           /* OOB disable */
+        aw(A_MASTER, m | 1u);
+        (void)ar(A_MASTER);
+        timer_delay_ms(10);
+        a_wait_idle(0xF);                                /* best effort: keep going if it stays busy */
+        aw(A_MASTER, m);
+    }
+    aw(A_MACCFG, ar(A_MACCFG) | (1u << 30));             /* driver controls speed/duplex */
+
+    /* station address registers were cleared by the reset */
+    aw(A_PAR0, ((uint32_t)out->mac[2] << 24) | ((uint32_t)out->mac[3] << 16) |
+               ((uint32_t)out->mac[4] << 8)  |  (uint32_t)out->mac[5]);
+    aw(A_PAR1, ((uint32_t)out->mac[0] << 8) | out->mac[1]);
+
+    /* ---- PHY: power up, reset, start auto-negotiation ---- */
+    {
+        uint32_t g = ar(A_GPHY);
+        const uint32_t EXT_RESET = 1u << 0, IDDQ = 1u << 7, GATE25 = 1u << 5,
+                       PWDOWN = 1u << 14, CLS = (1u << 2) | (1u << 17) | (1u << 13),
+                       ANA_RST = 1u << 12, HIB_PULSE = 1u << 11, HIB_EN = 1u << 10;
+        g &= ~(EXT_RESET | IDDQ | GATE25 | PWDOWN | CLS);
+        g |= ANA_RST | HIB_EN | HIB_PULSE;
+        aw(A_GPHY, g);
+        (void)ar(A_GPHY);
+        a_udelay(10);
+        aw(A_GPHY, g | EXT_RESET);                       /* release the PHY from reset */
+        (void)ar(A_GPHY);
+        a_udelay(800);
+        timer_delay_ms(2);
+    }
+
+    uint16_t phy1 = 0, phy2 = 0, bmsr = 0;
+    int phy_ok = (a_phy_read(2, &phy1) == 0 && a_phy_read(3, &phy2) == 0);
+    {
+        char msg[96], h[8];
+        const char* s = phy_ok ? "ar8132: phy id " : "ar8132: PHY NOT RESPONDING (id ";
+        int n = 0, k;
+        for (k = 0; s[k]; k++) msg[n++] = s[k];
+        a_hex(h, phy1, 4); for (k = 0; k < 4; k++) msg[n++] = h[k];
+        msg[n++] = ':';
+        a_hex(h, phy2, 4); for (k = 0; k < 4; k++) msg[n++] = h[k];
+        if (!phy_ok) msg[n++] = ')';
+        msg[n] = 0;
+        boot_log(msg);
+    }
+    if (phy_ok) {
+        /* power saving / analog tuning, as in the reference driver */
+        a_phy_dbg_write(0x29, 0x36DD);                   /* legacy power saving */
+        a_phy_dbg_write(0x04, 0x88BB);                   /* hibernate echo adjust */
+        a_phy_dbg_write(0x00, 0x02EF);
+        a_phy_dbg_write(0x05, 0x2C46);
+        a_phy_dbg_write(0x12, 0x4C04);
+        a_phy_dbg_write(0x36, 0xE12C | 0x80);
+        a_phy_write(0x12, 0x0C00);                       /* PHY interrupt mask: link up/down */
+
+        a_phy_write(4, 0x0DE1);                          /* advertise 10/100 half+full, pause */
+        a_phy_write(9, a_gigabit ? 0x0300 : 0x0000);     /* 1000BASE-T only on AR8131 */
+        a_phy_write(0, 0x8000 | 0x1000 | 0x0200);        /* reset + autoneg enable + restart */
+        a_phy_read(1, &bmsr);
+    }
+
+    /* ---- descriptor rings ---- */
     int i;
     for (i = 0; i < A_N; i++) {
         a_rx[i].addr = (uint64_t)(uint32_t)a_rxbuf[i];
@@ -793,6 +1073,10 @@ static int ar8132_init(uint8_t b, uint8_t d, uint8_t f, nic_t* out) {
     }
     a_rx_cur = a_tx_cur = 0;
 
+    aw(A_ISR, 0xFFFFFFFFu);                              /* polled: no interrupts */
+    aw(A_IMR, 0);
+    aw(A_CLKGATE, 0);
+    aw(A_SMBTMR, 200000);
     aw(A_RXHI, 0);
     aw(A_TXHI, 0);
     aw(A_RD0, (uint32_t)a_rx);
@@ -802,13 +1086,17 @@ static int ar8132_init(uint8_t b, uint8_t d, uint8_t f, nic_t* out) {
     aw(A_RRDCNT, A_N);
     aw(A_TDL, (uint32_t)a_tx);
     aw(A_TDCNT, A_N);
-    aw(A_M_RDPROD, 0);
-    aw(A_M_TDPROD, 0);
+    aw16(A_M_TDPROD, 0);
+    aw(A_LOADPTR, 1);                                    /* latch the ring base addresses */
+    aw(A_MTU, 1500 + 14 + 4 + 4);
+    /* TX queue: 5 TPDs/burst, enhanced mode, 802.3 length, IP options; TXF burst 0x200 */
+    aw(A_TXQ, 5u | (1u << 6) | (1u << 7) | (1u << 4) | (0x200u << 16));
+    /* RX queue: 8 RFDs/burst; gigabit parts limit ASPM throughput to 100M */
+    aw(A_RXQ, (8u << 20) | (a_gigabit ? 3u : 0u));
+    /* DMA: out-of-order read, TPD/data priority, read block = max read request */
+    aw(A_DMA, 4u | (1u << 10) | ((uint32_t)dmar << 4) | (4u << 16) | (15u << 11));
+    aw(A_M_RDPROD, A_N - 1);                             /* hand RX buffers to the chip */
 
-    /* TX|RX enable, full duplex, add CRC, pad, broadcast */
-    aw(A_MACCFG, (1u << 0) | (1u << 1) | (1u << 5) | (1u << 6) |
-                 (1u << 7) | (1u << 26));
-    aw(A_M_RDPROD, A_N - 1);               /* hand RX buffers to the chip */
     out->name = "ar8132";
     out->send = a_send;
     out->recv = a_recv;

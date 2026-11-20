@@ -500,7 +500,16 @@ static uint32_t sys_open(const char* path, uint32_t flags)
         f->len = size;
         f->zero_copy = 1;
     } else {
-        /* writable: stage the current content in the scratch slot */
+        /* writable: stage the current content in the scratch slot. size is
+         * the most payload bytes the slot can take (fs_read_file's
+         * contract), so a file that does not fit must be refused up front
+         * instead of being read past the end of the slot. */
+        if (fs_get_file_size(path) > f->cap - 1) {
+            f->used = 0;
+            slot_release(f->slot);
+            return (uint32_t)-ENOSPC_L;
+        }
+        size = f->cap - 1;
         if (fs_read_file(path, f->data, &size) != 0) {
             f->used = 0;
             slot_release(f->slot);
@@ -684,7 +693,24 @@ static uint32_t sys_read(uint32_t fd, uint8_t* buf, uint32_t count)
         uint32_t size = 0;
         const char* d = fs_file_data_ptr(f->path, &size);
         if (!d && fs_errno == 13) return (uint32_t)-EACCES_L;
-        if (!d) { f->len = 0; return 0; }     /* deleted or empty */
+        if (!d) {
+            /* No direct pointer. Either the file is deleted/empty, or it
+             * simply is not addressable in RAM (a file living on disk, or
+             * an ISO file too big for the overlay's small read cache). In
+             * the second case read it through the normal file API instead
+             * of pretending it is empty. */
+            uint32_t fsz = fs_file_exists(f->path) ? fs_get_file_size(f->path) : 0;
+            uint32_t got = 0;
+            if (fsz == 0) { f->len = 0; return 0; }
+            f->len = fsz;
+            if (f->pos >= f->len) return 0;
+            avail = f->len - f->pos;
+            n = count < avail ? count : avail;
+            if (fs_read_file_range(f->path, f->pos, (char*)buf, n, &got) != 0)
+                return (uint32_t)-EACCES_L;
+            f->pos += got;
+            return got;
+        }
         f->data = (char*)d;
         f->len = size;
     }

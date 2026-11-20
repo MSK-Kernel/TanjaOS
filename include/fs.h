@@ -27,6 +27,7 @@ extern uint32_t fs_seed_skipped;
 int fs_create_file(const char* path);
 int fs_create_directory(const char* path);
 int fs_delete_file(const char* path);
+int fs_revert_file(const char* path);   /* delete the RAM copy; ISO original (if any) shows through */
 int fs_delete_directory(const char* path);
 int fs_delete_directory_recursive(const char* path);
 int fs_write_file(const char* path, const char* data, uint32_t size);

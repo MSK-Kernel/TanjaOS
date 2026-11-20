@@ -202,7 +202,7 @@ void main(char* args)
 
     for(int f = 0; f < nfiles; f++)
     {
-        uint32_t size = MAX_FILE_SIZE;
+        uint32_t size = sizeof(buffer) - 1;   /* max payload; buffer holds one more */
 
         if(fs_read_file(files[f], buffer, &size) < 0)
         {

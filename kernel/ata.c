@@ -258,3 +258,177 @@ int ata_write_sectors(int channel, int drive, uint32_t lba, uint8_t count, const
     ata_poll_bsy(channel);
     return 0;
 }
+
+
+/* ------------------------------------------------------------------ */
+/* ATAPI (CD/DVD) - packet commands over the legacy IDE ports, PIO.    */
+/* ------------------------------------------------------------------ */
+
+#define ATAPI_CMD_PACKET           0xA0
+#define ATAPI_CMD_IDENTIFY_PACKET  0xA1
+
+/* Send one 12-byte packet and move up to `len` bytes of data into buf
+ * (buf may be NULL when len == 0). Returns the number of bytes received,
+ * or -1 on error. The device may return less than `len` (short read). */
+static int atapi_packet(int channel, int drive, const uint8_t* cdb,
+                        void* buf, uint32_t len)
+{
+    uint16_t io = io_base(channel);
+    uint8_t* out = (uint8_t*)buf;
+    uint32_t got = 0;
+    int i;
+
+    outb(io + ATA_REG_DRIVE_HEAD, drive ? 0xB0 : 0xA0);
+    ata_io_wait(channel);
+    if (ata_poll_bsy(channel) != 0) return -1;
+
+    outb(io + 1, 0);                        /* features: PIO, no DMA */
+    outb(io + ATA_REG_SECTOR_COUNT, 0);
+    outb(io + ATA_REG_LBA_LOW, 0);
+    outb(io + ATA_REG_LBA_MID, 2048 & 0xFF);          /* byte count limit */
+    outb(io + ATA_REG_LBA_HIGH, (2048 >> 8) & 0xFF);
+    outb(io + ATA_REG_COMMAND, ATAPI_CMD_PACKET);
+
+    /* The device raises DRQ when it wants the 12 command bytes. */
+    {
+        uint32_t start = get_uptime_ms();
+        for (;;) {
+            uint8_t st = inb(io + ATA_REG_STATUS);
+            if (!(st & ATA_STATUS_BSY)) {
+                if (st & (ATA_STATUS_ERR | ATA_STATUS_DF)) return -1;
+                if (st & 0x08) break;
+            }
+            if (get_uptime_ms() - start > 5000) return -1;
+        }
+    }
+    for (i = 0; i < 6; i++)
+        outw(io, (uint16_t)(cdb[i * 2] | (cdb[i * 2 + 1] << 8)));
+
+    /* Data phase: one DRQ burst per byte-count chunk, until BSY and DRQ
+     * are both clear. */
+    for (;;) {
+        uint32_t start = get_uptime_ms();
+        uint8_t st;
+        for (;;) {
+            st = inb(io + ATA_REG_STATUS);
+            if (!(st & ATA_STATUS_BSY)) break;
+            if (get_uptime_ms() - start > 10000) return -1;
+        }
+        if (st & (ATA_STATUS_ERR | ATA_STATUS_DF)) return -1;
+        if (!(st & 0x08)) break;            /* command complete */
+
+        uint32_t n = (uint32_t)inb(io + ATA_REG_LBA_MID) |
+                     ((uint32_t)inb(io + ATA_REG_LBA_HIGH) << 8);
+        uint32_t words = (n + 1) / 2;
+        uint32_t w;
+        for (w = 0; w < words; w++) {
+            uint16_t v = inw(io);
+            if (out && got < len) {
+                out[got++] = (uint8_t)(v & 0xFF);
+                if (got < len) out[got++] = (uint8_t)(v >> 8);
+            }                                /* excess data is drained */
+        }
+        ata_io_wait(channel);
+    }
+    return (int)got;
+}
+
+int atapi_detect_drive(int channel, int drive, ata_drive_info_t *info)
+{
+    if (!info) return -1;
+    info->present = 0;
+    info->model[0] = 0;
+    info->serial[0] = 0;
+    info->firmware[0] = 0;
+    info->sectors = 0;
+    info->removable = 1;
+
+    uint16_t io = io_base(channel);
+    outb(io + ATA_REG_DRIVE_HEAD, drive ? 0xB0 : 0xA0);
+    ata_io_wait(channel);
+
+    uint8_t st0 = inb(io + ATA_REG_STATUS);
+    if (st0 == 0x00 || st0 == 0xFF) return -1;      /* nothing on this slot */
+    if (ata_poll_bsy(channel) != 0) return -1;
+
+    outb(io + ATA_REG_COMMAND, ATAPI_CMD_IDENTIFY_PACKET);
+    ata_io_wait(channel);
+
+    uint8_t st = inb(io + ATA_REG_STATUS);
+    if (st == 0x00 || st == 0xFF) return -1;
+    if (ata_poll_bsy(channel) != 0) return -1;
+    st = inb(io + ATA_REG_STATUS);
+    if (st & ATA_STATUS_ERR) return -1;             /* a plain ATA disk aborts this */
+    if (ata_poll_drq(channel) != 0) return -1;
+
+    uint16_t id[256];
+    int i;
+    for (i = 0; i < 256; i++) id[i] = inw(io + ATA_REG_DATA);
+
+    /* word 0: bits 15-14 = 10b ATAPI, bits 12-8 = device type (5 = CD/DVD) */
+    if (((id[0] >> 14) & 3) != 2) return -1;
+    if (((id[0] >> 8) & 0x1F) != 5) return -1;
+
+    for (i = 0; i < 20; i++) {
+        uint16_t w = id[ATA_ID_PROD + i];
+        info->model[i * 2]     = (char)(w >> 8);
+        info->model[i * 2 + 1] = (char)(w & 0xFF);
+    }
+    info->model[40] = 0;
+    {   /* trim trailing blanks the drive pads the model string with */
+        int n = 40;
+        while (n > 0 && (info->model[n - 1] == ' ' || info->model[n - 1] == 0)) n--;
+        info->model[n] = 0;
+    }
+    info->present = 1;
+
+    /* Medium size via READ CAPACITY(10); best effort - a drive with no
+     * disc in it is still a CD drive, just one that reports 0 sectors.
+     * The first command after a disc change often answers UNIT ATTENTION,
+     * so give it a few tries. */
+    {
+        uint8_t tur[12] = {0};
+        uint8_t cap_cdb[12] = {0x25, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+        uint8_t cap[8];
+        int tries;
+        for (tries = 0; tries < 4; tries++) {
+            if (atapi_packet(channel, drive, tur, 0, 0) >= 0) break;
+        }
+        if (atapi_packet(channel, drive, cap_cdb, cap, 8) == 8) {
+            uint32_t last = ((uint32_t)cap[0] << 24) | ((uint32_t)cap[1] << 16) |
+                            ((uint32_t)cap[2] << 8) | cap[3];
+            info->sectors = (last + 1) * 4;         /* 2048-byte blocks -> 512 */
+        }
+    }
+    return 0;
+}
+
+int atapi_read_blocks(int channel, int drive, uint32_t lba, uint32_t count, void* buf)
+{
+    uint8_t* p = (uint8_t*)buf;
+    if (!buf || count == 0) return -1;
+
+    while (count) {
+        uint32_t n = count > 16 ? 16 : count;
+        uint8_t cdb[12];
+        int tries, got = -1;
+        cdb[0] = 0xA8;                               /* READ(12) */
+        cdb[1] = 0;
+        cdb[2] = (uint8_t)(lba >> 24); cdb[3] = (uint8_t)(lba >> 16);
+        cdb[4] = (uint8_t)(lba >> 8);  cdb[5] = (uint8_t)lba;
+        cdb[6] = 0; cdb[7] = 0; cdb[8] = 0; cdb[9] = (uint8_t)n;
+        cdb[10] = 0; cdb[11] = 0;
+
+        /* A drive that is spinning up or just saw a disc change fails the
+         * first read; retry a few times before giving up. */
+        for (tries = 0; tries < 5; tries++) {
+            got = atapi_packet(channel, drive, cdb, p, n * 2048);
+            if (got == (int)(n * 2048)) break;
+        }
+        if (got != (int)(n * 2048)) return -1;
+        p += n * 2048;
+        lba += n;
+        count -= n;
+    }
+    return 0;
+}

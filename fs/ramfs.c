@@ -87,8 +87,8 @@ static int strlen_safe(const char* s) {
     return n;
 }
 
-#define MAX_F 96
-#define MAX_D 64
+#define MAX_F 512
+#define MAX_D 256
 /* Per-file capacity. The largest shipped home/ files (the Torah books
  * up to ~200KB; the tcc compiler at ~281KB) must fit in one slot, or
  * fs_seed_home silently skips them and datareset can never restore them.
@@ -1703,6 +1703,11 @@ static int ramfs_read_file(void* sb, const char* path, char* buffer, uint32_t* s
     (void)sb;
     fs_errno = 0;
     if (!path || !buffer || !size) return -1;
+    /* caller convention: on entry *size is the most payload bytes the buffer
+       can take (the buffer holds one more for the NUL). Read it BEFORE
+       clearing *size - clearing first made the capacity always 1, so every
+       fs_read_file() on ramfs came back empty. */
+    uint32_t capacity = *size + 1;
     *size = 0;
     buffer[0] = 0;
     int i;
@@ -1713,8 +1718,6 @@ static int ramfs_read_file(void* sb, const char* path, char* buffer, uint32_t* s
                 return -2;
             }
             uint32_t sz = (uint32_t)fsize[i];
-            /* capacity is *size + 1 from the caller convention */
-            uint32_t capacity = *size + 1;
             if (sz > capacity - 1) sz = capacity - 1;
             if (sz && data_read(i, 0, buffer, sz) != 0) return -1;
             buffer[sz] = 0;

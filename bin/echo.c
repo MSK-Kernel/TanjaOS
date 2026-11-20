@@ -136,7 +136,7 @@ void main(char* args) {
         return;
     }
 
-    uint32_t old_size = sizeof(old);
+    uint32_t old_size = sizeof(old) - 1;   /* max payload; the NUL needs one more */
     if (fs_file_exists(filename)) {
         if (fs_read_file(filename, old, &old_size) != 0) {
             print("echo: cannot read '");

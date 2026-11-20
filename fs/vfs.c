@@ -86,6 +86,14 @@ int vfs_mount_root(const struct vfs_ops* ops, void* sb) {
     return VFS_OK;
 }
 
+int vfs_replace_root_ops(const struct vfs_ops* ops, void* sb) {
+    if (mount_count < 1 || !mounts[0].used || !ops) return VFS_EINVAL;
+    mounts[0].ops = ops;
+    mounts[0].sb = sb;
+    my_strcpy(mounts[0].fstype, ops->name ? ops->name : "root", 32);
+    return VFS_OK;
+}
+
 int vfs_mount(const char* mountpoint, const char* fstype,
               struct vfs_bdev* dev, const char* opts) {
     if (!mountpoint || !fstype || mount_count >= VFS_MAX_MOUNTS) return VFS_EINVAL;
@@ -275,13 +283,44 @@ static int ahci_bdev_write(struct vfs_bdev* dev, uint64_t lba, uint32_t count, c
     return ahci_write_sectors(lba, (uint16_t)count, buf);
 }
 
+/* ATAPI (CD/DVD) adapter. The block-device contract is 512-byte sectors;
+ * the drive speaks 2048-byte blocks, so unaligned requests go through a
+ * one-block bounce buffer. Optical media is read-only: no write hook. */
+static int atapi_bdev_read(struct vfs_bdev* dev, uint64_t lba, uint32_t count, void* buf) {
+    int channel = (int)(uintptr_t)dev->private >> 8;
+    int drive   = (int)(uintptr_t)dev->private & 0xff;
+    uint8_t* out = (uint8_t*)buf;
+    static uint8_t bounce[2048];
+
+    if (!buf || count == 0) return -1;
+    if ((lba & 3) == 0 && (count & 3) == 0)
+        return atapi_read_blocks(channel, drive, (uint32_t)(lba >> 2), count >> 2, buf);
+
+    while (count) {
+        uint32_t blk = (uint32_t)(lba >> 2);
+        uint32_t sec = (uint32_t)(lba & 3);
+        uint32_t n = 4 - sec;
+        uint32_t i;
+        if (n > count) n = count;
+        if (atapi_read_blocks(channel, drive, blk, 1, bounce) != 0) return -1;
+        for (i = 0; i < n * 512; i++) out[i] = bounce[sec * 512 + i];
+        out += n * 512;
+        lba += n;
+        count -= n;
+    }
+    return 0;
+}
+
 void vfs_probe_drives(void) {
     /* ATA primary master / slave */
     ata_drive_info_t info;
     int ch, dr;
+    int ata_slot[4] = {0, 0, 0, 0};
+    int sr_count = 0;
     for (ch = 0; ch < 2; ch++) {
         for (dr = 0; dr < 2; dr++) {
             if (ata_detect_drive(ch, dr, &info) == 0 && info.present) {
+                ata_slot[ch * 2 + dr] = 1;
                 struct vfs_bdev d;
                 d.name[0] = 'a'; d.name[1] = 't'; d.name[2] = 'a';
                 d.name[3] = '0' + (ch * 2 + dr);
@@ -293,6 +332,27 @@ void vfs_probe_drives(void) {
                 d.write = ata_bdev_write;
                 d.private = (void*)(uintptr_t)((ch << 8) | dr);
                 vfs_register_bdev(&d);
+            }
+        }
+    }
+
+    /* ATAPI CD/DVD drives on the legacy IDE channels: sr0, sr1, ...
+     * Only slots that did not answer as a plain ATA disk are tried. */
+    for (ch = 0; ch < 2; ch++) {
+        for (dr = 0; dr < 2; dr++) {
+            if (ata_slot[ch * 2 + dr]) continue;
+            if (sr_count < 4 && atapi_detect_drive(ch, dr, &info) == 0 && info.present) {
+                struct vfs_bdev d;
+                d.name[0] = 's'; d.name[1] = 'r';
+                d.name[2] = '0' + sr_count; d.name[3] = 0;
+                my_strcpy(d.model, info.model, 48);
+                d.sectors = info.sectors;
+                d.present = 1;
+                d.read = atapi_bdev_read;
+                d.write = 0;
+                d.private = (void*)(uintptr_t)((ch << 8) | dr);
+                vfs_register_bdev(&d);
+                sr_count++;
             }
         }
     }

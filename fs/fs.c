@@ -1,6 +1,8 @@
 #include "../include/fs.h"
 #include "../include/vfs.h"
 #include "../include/ramfs.h"
+#include "../include/overlay.h"
+#include "../include/iso9660.h"
 
 /* Thin public filesystem API.
  *
@@ -41,6 +43,21 @@ void fs_init(void) {
     }
     /* Discover ATA / AHCI drives and register them as block devices */
     vfs_probe_drives();
+    /* If the machine booted from an ISO (CD/DVD, or a hybrid ISO on a
+       disk), put it under the root so its files show up in / and can be
+       edited (copy-on-write into RAM). No ISO: root stays plain ramfs. */
+    if (ovl_init()) {
+        extern void boot_log(const char* msg);
+        char msg[160];
+        const char* parts[] = { "ISO9660 volume ", iso_volume_label()[0] ? iso_volume_label() : "(no label)",
+                                " on ", iso_device_name(), " (", iso_name_style(),
+                                " names) is overlaid on / - edits stay in RAM" };
+        int i, n = 0, k;
+        for (i = 0; i < 7; i++)
+            for (k = 0; parts[i][k] && n < 158; k++) msg[n++] = parts[i][k];
+        msg[n] = 0;
+        boot_log(msg);
+    }
     /* devfs: every registered block device is a node under /dev. This
        is mounted here (after the probe) because vfs_init() above wipes
        the mount table on every fs_init(). */
@@ -96,6 +113,23 @@ int fs_create_directory(const char* path) {
     struct vfs_mount* m = resolve(path, rel);
     if (!m || !m->ops || !m->ops->create_dir) return -1;
     return m->ops->create_dir(m->sb, rel);
+}
+
+/* Like fs_delete_file, but on an ISO overlay root a file that was copied up
+ * from the ISO goes back to its original instead of disappearing. Without an
+ * overlay it is exactly fs_delete_file. */
+int fs_revert_file(const char* path) {
+    fs_errno = 0;
+    if (ovl_active_now()) {
+        char full[256];
+        extern void ramfs_abs_path(const char* in, char* out);
+        struct vfs_mount* m;
+        char rel[256];
+        ramfs_abs_path(path, full);
+        m = resolve(full, rel);
+        if (m && m == resolve("/", rel)) return ovl_revert(full);
+    }
+    return fs_delete_file(path);
 }
 
 int fs_delete_file(const char* path) {
@@ -291,18 +325,30 @@ int fs_get_mode(const char* path) {
 /* Remaining functions that a few callers still use — delegated to ramfs
    for now so the kernel keeps working. They are not part of the public
    path API. */
+/* Writes that go straight to ramfs (not through the VFS ops) still have to
+ * honour the overlay: an ISO file is copied up first. */
+static int overlay_prepare(const char* path) {
+    char full[256];
+    extern void ramfs_abs_path(const char* in, char* out);
+    if (!ovl_active_now()) return 0;
+    ramfs_abs_path(path, full);
+    return ovl_prepare_write(full);
+}
+
 int fs_prealloc_file(const char* path, uint32_t size) {
     extern int ramfs_prealloc(const char*, uint32_t);
+    if (overlay_prepare(path) != 0) return -1;
     return ramfs_prealloc(path, size);
 }
 int fs_write_at(const char* path, uint32_t offset, const char* data, uint32_t len) {
     extern int ramfs_write_at(const char*, uint32_t, const char*, uint32_t);
+    if (overlay_prepare(path) != 0) return -1;
     return ramfs_write_at(path, offset, data, len);
 }
 int fs_chmod_recursive(const char* path, int mode) {
     /* simple recursive via public API */
     if (fs_chmod(path, mode) != 0) return -1;
-    char buf[8192];
+    char buf[16384];            /* list_dir can return up to 16000 bytes */
     uint32_t sz = 0;
     if (fs_list_directory(path, buf, &sz) != 0) return 0;
     /* (full recursive walk omitted for brevity; commands that need it
@@ -338,6 +384,12 @@ int fs_deserialize_fill(void* ctx, int (*fill)(void*, uint8_t*, uint32_t)) {
 
 const char* fs_file_data_ptr(const char* path, uint32_t* size_out) {
     extern const char* ramfs_file_data_ptr(const char*, uint32_t*);
+    if (ovl_active_now()) {
+        char full[256];
+        extern void ramfs_abs_path(const char* in, char* out);
+        ramfs_abs_path(path, full);
+        if (ovl_is_iso_only(full)) return ovl_iso_data_ptr(full, size_out);
+    }
     return ramfs_file_data_ptr(path, size_out);
 }
 

@@ -27,14 +27,15 @@ extern int config_deserialize(const uint8_t* buf, uint32_t buf_size);
 // store_lba (computed backward from the end of the disk) must land safely
 // past that image or every autosave silently overwrites GRUB's own files.
 //
-// The boot image is only ~6.4 MiB (tanja-base alone is ~6.3 MiB), so
-// 16384 sectors = 8 MiB still leaves ~1.5 MiB of headroom for it to grow.
+// The boot image is ~7 MiB (tanja-base alone is ~6.8 MiB), so
+// 24576 sectors = 12 MiB leaves ~5 MiB of headroom for it to grow (the
+// Makefile budget, BOOT_IMAGE_BUDGET_MIB, is 10 MiB).
 // This used to be 32768 sectors (16 MiB), which was pure waste: it pushed
 // the minimum disk for persistence to just over 64 MiB, so a round 64 MiB
 // disk - the size people actually pick - died in a kernel panic even
 // though the persistent region itself only needs ~48 MiB. If the image
-// ever grows past 8 MiB the Makefile warns at link time; raise this then.
-#define STORE_FRONT_RESERVE_SECTORS 16384
+// ever grows past 10 MiB the Makefile warns at link time; raise this then.
+#define STORE_FRONT_RESERVE_SECTORS 24576
 
 static uint32_t store_lba = STORE_FALLBACK_LBA;
 

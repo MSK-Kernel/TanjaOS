@@ -58,4 +58,18 @@ void ata_print_drive_info(ata_drive_info_t *info);
 int ata_read_sectors(int channel, int drive, uint32_t lba, uint8_t count, void* buf);
 int ata_write_sectors(int channel, int drive, uint32_t lba, uint8_t count, const void* buf);
 
+// ATAPI (CD/DVD drives on the legacy IDE channels). These are separate from
+// the ATA functions on purpose: ata_detect_drive() still reports an ATAPI
+// device as "not a disk", so the Storefile code never mistakes a CD for
+// writable storage.
+//
+// atapi_detect_drive() fills info->model and info->sectors (in 512-byte
+// units, 0 if the medium size could not be read) and returns 0 if a CD-ROM
+// class ATAPI device answers on that slot.
+int atapi_detect_drive(int channel, int drive, ata_drive_info_t *info);
+
+// Read `count` 2048-byte blocks starting at block `lba` (READ(12), PIO).
+// Returns 0 on success, -1 on error / no medium.
+int atapi_read_blocks(int channel, int drive, uint32_t lba, uint32_t count, void* buf);
+
 #endif

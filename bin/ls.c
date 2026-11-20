@@ -3,8 +3,8 @@
 #include "tanja.h"
 #include "utf8.h"
 
-#define LS_MAX_ENTRIES 64
-#define LS_NAME_LEN    64
+#define LS_MAX_ENTRIES 1024
+#define LS_NAME_LEN    128
 #define LS_TERM_WIDTH  80
 #define LS_COL_SPACING 2
 
@@ -246,6 +246,15 @@ static int ls_load_dir(const char* path_arg, int opt_a) {
             is_dir[count] = dir_flag;
             count++;
         }
+    }
+    /* the directory listing buffer is 16 KiB; if names are still left the
+     * table filled up - say so instead of silently dropping them */
+    if (ls_buf[i]) {
+        char num[16];
+        itoa(count, num, 10);
+        print("ls: too many entries, showing the first ");
+        print(num);
+        print("\n");
     }
 
     /* sort by name (insertion sort, names are short) */

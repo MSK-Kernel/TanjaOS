@@ -92,6 +92,10 @@ void vfs_init(void);
 /* Register the root filesystem. */
 int vfs_mount_root(const struct vfs_ops* ops, void* sb);
 
+/* Replace the operations behind the root mount (used by the overlay layer
+   to put a read-only ISO under the ramfs root). Returns VFS_OK. */
+int vfs_replace_root_ops(const struct vfs_ops* ops, void* sb);
+
 /* Mount a filesystem at an existing directory.
    dev may be NULL for in-memory filesystems. */
 int vfs_mount(const char* mountpoint, const char* fstype,
