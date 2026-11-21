@@ -102,7 +102,7 @@ void main(char* args) {
     target[n] = 0;
 
     if (!target[0] || streq(target, "-h") || streq(target, "--help")) {
-        print("usage: umount <mountpoint|device>\n");
+        print("Usage: umount <mountpoint|device>\n");
         print("       umount /mnt\n");
         print("       umount /dev/ata0\n");
         return;

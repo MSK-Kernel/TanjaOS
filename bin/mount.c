@@ -96,7 +96,7 @@ void main(char* args) {
         type = "tmpfs";
 
     if (!dir) {
-        print("usage: mount [-t type] <device|none> <directory>\n");
+        print("Usage: mount [-t type] <device|none> <directory>\n");
         print("       mount\n");
         return;
     }
