@@ -2236,13 +2236,11 @@ void G_TimeDemo (char* name)
  
  
 /* 
-=================== 
 = 
 = G_CheckDemoStatus 
 = 
 = Called after a death or level completion to allow demos to be cleaned up 
 = Returns true if a new demo loop action will take place 
-=================== 
 */ 
  
 boolean G_CheckDemoStatus (void) 

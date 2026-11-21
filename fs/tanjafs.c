@@ -100,9 +100,7 @@ static int dread(uint64_t off, void* dst, uint32_t len) {
     return 0;
 }
 
-/* ---------------------------------------------------------------- */
 /* Storefile layer                                                   */
-/* ---------------------------------------------------------------- */
 
 static const char* s_dname(uint32_t i) { return (const char*)(T.meta + T.o_dname + i * T.pcap); }
 static const char* s_fname(uint32_t i) { return (const char*)(T.meta + T.o_fname + i * T.pcap); }
@@ -142,9 +140,7 @@ static int s_read(int idx, uint32_t off, void* dst, uint32_t len) {
     return (int)len;
 }
 
-/* ---------------------------------------------------------------- */
 /* permissions (read-only view: only read access is ever granted)    */
-/* ---------------------------------------------------------------- */
 
 static int may(int mode, int owner, int bit) {
     if (fs_cur_uid == 0) return 1;
@@ -152,9 +148,7 @@ static int may(int mode, int owner, int bit) {
     return (mode & (bit >> 6)) != 0;
 }
 
-/* ---------------------------------------------------------------- */
 /* queries over both layers                                          */
-/* ---------------------------------------------------------------- */
 
 static int t_file_exists(void* sb, const char* p) {
     struct iso_node n;
@@ -360,9 +354,7 @@ static int t_append_file(void* sb, const char* p, const char* d, uint32_t n) {
 static int t_chmod(void* sb, const char* p, int m) { (void)sb; (void)p; (void)m; return ro_denied(); }
 static int t_chown(void* sb, const char* p, int u) { (void)sb; (void)p; (void)u; return ro_denied(); }
 
-/* ---------------------------------------------------------------- */
 /* mount / unmount                                                   */
-/* ---------------------------------------------------------------- */
 
 static void drop_store(void) {
     if (T.meta) free(T.meta);

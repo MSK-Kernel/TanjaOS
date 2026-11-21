@@ -33,9 +33,7 @@ extern void ramfs_abs_path(const char* in, char* out);
 static const struct vfs_ops* U;            /* upper layer ops (ramfs) */
 static int ovl_active;
 
-/* ---------------------------------------------------------------- */
 /* string helpers                                                    */
-/* ---------------------------------------------------------------- */
 
 static int slen(const char* s) { int n = 0; while (s[n]) n++; return n; }
 
@@ -73,9 +71,7 @@ static void parent_of(const char* p, char* out, int cap) {
     }
 }
 
-/* ---------------------------------------------------------------- */
 /* whiteouts: ISO paths hidden by a delete                           */
-/* ---------------------------------------------------------------- */
 
 #define WH_MAX  1024
 #define WH_POOL 49152
@@ -83,9 +79,56 @@ static char     wh_pool[WH_POOL];
 static uint16_t wh_off[WH_MAX];
 static int      wh_n;
 static uint32_t wh_used;
+static int wh_loaded;
+#define WH_FILE "/.tanja-overlay-whiteouts"
+
+/* Whiteouts are filesystem state, not transient overlay state. Keep them in
+ * ramfs so the normal Storefile serializer carries deletions across boots. */
+static void wh_load(void) {
+    static char saved[WH_POOL];
+    uint32_t size = sizeof(saved) - 1;
+    uint32_t pos = 0;
+    if (wh_loaded || !U) return;
+    wh_loaded = 1;
+    if (!U->file_exists(0, WH_FILE) || !U->read_file) return;
+    if (U->read_file(0, WH_FILE, saved, &size) != 0) return;
+    if (size >= sizeof(saved)) size = sizeof(saved) - 1;
+    saved[size] = 0;
+    while (pos < size && wh_n < WH_MAX) {
+        uint32_t start = pos;
+        while (pos < size && saved[pos] != '\n') pos++;
+        if (pos > start && pos - start < VFS_PATH_MAX &&
+            wh_used + (pos - start) + 1 <= WH_POOL) {
+            uint32_t len = pos - start;
+            wh_off[wh_n++] = (uint16_t)wh_used;
+            for (uint32_t k = 0; k < len; k++) wh_pool[wh_used + k] = saved[start + k];
+            wh_pool[wh_used + len] = 0;
+            wh_used += len + 1;
+        }
+        if (pos < size) pos++;
+    }
+}
+
+static int wh_save(void) {
+    static char saved[WH_POOL];
+    uint32_t pos = 0;
+    int i;
+    if (!U || !U->write_file || !U->create_file) return -1;
+    for (i = 0; i < wh_n; i++) {
+        const char* p = wh_pool + wh_off[i];
+        int k = 0;
+        while (p[k] && pos + 2 < sizeof(saved)) saved[pos++] = p[k++];
+        if (pos + 1 >= sizeof(saved)) return -1;
+        saved[pos++] = '\n';
+    }
+    saved[pos] = 0;
+    if (!U->file_exists(0, WH_FILE) && U->create_file(0, WH_FILE) != 0) return -1;
+    return U->write_file(0, WH_FILE, saved, pos);
+}
 
 static int is_blocked(const char* p) {
     int i;
+    wh_load();
     for (i = 0; i < wh_n; i++)
         if (path_under(p, wh_pool + wh_off[i])) return 1;
     return 0;
@@ -94,6 +137,7 @@ static int is_blocked(const char* p) {
 static int wh_add(const char* p) {
     int len = slen(p), i, nn = 0;
     uint32_t used = 0;
+    wh_load();
     if (is_blocked(p)) return 0;
 
     /* a whiteout on a directory covers everything below it: drop the
@@ -117,12 +161,10 @@ static int wh_add(const char* p) {
     wh_off[wh_n++] = (uint16_t)wh_used;
     scopy(wh_pool + wh_used, p, len + 1);
     wh_used += len + 1;
-    return 0;
+    return wh_save();
 }
 
-/* ---------------------------------------------------------------- */
 /* layer queries                                                     */
-/* ---------------------------------------------------------------- */
 
 static int u_file(const char* p) { return U->file_exists(0, p); }
 static int u_dir(const char* p)  { return U->dir_exists(0, p); }
@@ -154,9 +196,7 @@ static int o_dir_exists(void* sb, const char* p) {
     return l_stat(p, &n) == 0 && n.is_dir;
 }
 
-/* ---------------------------------------------------------------- */
 /* copy-up                                                           */
-/* ---------------------------------------------------------------- */
 
 /* Make sure every parent directory of p that exists on the ISO also exists
  * in ramfs. Done as root: it is bookkeeping, not the user's own write. */
@@ -243,9 +283,7 @@ static int parent_writable(const char* p) {
     return 1;
 }
 
-/* ---------------------------------------------------------------- */
 /* vfs ops                                                           */
-/* ---------------------------------------------------------------- */
 
 static int o_create_file(void* sb, const char* p) {
     int rc;
@@ -621,6 +659,7 @@ int ovl_init(void) {
     ovl_active = 0;
     wh_n = 0;
     wh_used = 0;
+    wh_loaded = 0;
     for (i = 0; i < PTR_SLOTS; i++) {
         if (ptr_cache[i].data) free(ptr_cache[i].data);
         ptr_cache[i].data = 0;

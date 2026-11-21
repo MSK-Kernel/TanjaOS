@@ -260,9 +260,7 @@ int ata_write_sectors(int channel, int drive, uint32_t lba, uint8_t count, const
 }
 
 
-/* ------------------------------------------------------------------ */
 /* ATAPI (CD/DVD) - packet commands over the legacy IDE ports, PIO.    */
-/* ------------------------------------------------------------------ */
 
 #define ATAPI_CMD_PACKET           0xA0
 #define ATAPI_CMD_IDENTIFY_PACKET  0xA1

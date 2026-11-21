@@ -29,9 +29,7 @@ static struct iso_vol* V = &iso_primary;
 
 static const char* const style_names[] = { "plain", "joliet", "rockridge" };
 
-/* ---------------------------------------------------------------- */
 /* small helpers (this file does not depend on libc)                 */
-/* ---------------------------------------------------------------- */
 
 static uint32_t le32(const uint8_t* p) {
     return (uint32_t)p[0] | ((uint32_t)p[1] << 8) |
@@ -62,9 +60,7 @@ static int streq(const char* a, const char* b) {
     return *a == *b;
 }
 
-/* ---------------------------------------------------------------- */
 /* block I/O                                                         */
-/* ---------------------------------------------------------------- */
 
 /* Read `count` ISO blocks straight into buf (no cache). */
 static int read_raw(uint32_t lba, uint32_t count, void* buf) {
@@ -105,9 +101,7 @@ static const uint8_t* get_block(uint32_t lba) {
     return bc_data[idx];
 }
 
-/* ---------------------------------------------------------------- */
 /* directory records                                                 */
-/* ---------------------------------------------------------------- */
 
 struct iso_ent {
     char     name[256];
@@ -291,9 +285,7 @@ static int parse_record(const uint8_t* r, uint32_t len, struct iso_ent* e)
     return e->name[0] ? 0 : -1;
 }
 
-/* ---------------------------------------------------------------- */
 /* directory walking                                                 */
-/* ---------------------------------------------------------------- */
 
 typedef int (*dir_cb)(const struct iso_ent* e, void* ctx);
 
@@ -422,9 +414,7 @@ restart:
     return 0;
 }
 
-/* ---------------------------------------------------------------- */
 /* listing                                                           */
-/* ---------------------------------------------------------------- */
 
 struct list_ctx {
     char*    buf;
@@ -477,9 +467,7 @@ static int iso_dir_is_empty_impl(const char* path)
     return dir_walk(n.extent, n.size, any_cb, 0) == 0;
 }
 
-/* ---------------------------------------------------------------- */
 /* file data                                                         */
-/* ---------------------------------------------------------------- */
 
 static int iso_read_range_impl(const struct iso_node* n, uint32_t offset,
                    void* buf, uint32_t cap, uint32_t* got)
@@ -516,9 +504,7 @@ static int iso_read_range_impl(const struct iso_node* n, uint32_t offset,
     return 0;
 }
 
-/* ---------------------------------------------------------------- */
 /* mounting                                                          */
-/* ---------------------------------------------------------------- */
 
 /* Does the root directory's "." record carry Rock Ridge (SUSP) entries? */
 static int detect_rockridge(uint32_t ext, uint32_t* skip_out)

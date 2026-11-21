@@ -1903,7 +1903,6 @@ static void asm_floating_point_data_processing_opcode(TCCState *s1, int token) {
 
 /* TODO:
    Instruction    opcode opcode2  Reason
-   =============================================================
    -              1?00   ?1?      Undefined
    VFNMS          1?01   ?0?      Must be unconditional
    VFNMA          1?01   ?1?      Must be unconditional
