@@ -20,6 +20,8 @@ extern uint32_t ramfs_seed_skipped;
 
 /* Serialization (Storefile) */
 uint32_t ramfs_store_size(void);
+/* layout of the serialized image (see fs/tanjafs.c) */
+void ramfs_image_geometry(uint32_t* max_f, uint32_t* max_d, uint32_t* path_cap, uint32_t* version);
 int ramfs_serialize(uint8_t* buf, uint32_t buf_size);
 int ramfs_deserialize(const uint8_t* buf, uint32_t buf_size);
 int ramfs_serialize_sink(void* ctx, void (*emit)(void*, const uint8_t*, uint32_t));

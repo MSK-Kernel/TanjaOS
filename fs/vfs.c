@@ -110,7 +110,7 @@ int vfs_mount(const char* mountpoint, const char* fstype,
     /* Call the filesystem's own mount hook if it has one */
     void* sb = 0;
     if (ops->mount) {
-        int rc = ops->mount(sb, dev, opts);
+        int rc = ops->mount(&sb, dev, opts);
         if (rc != 0) return rc;
     }
 

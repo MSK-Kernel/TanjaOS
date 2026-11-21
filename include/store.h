@@ -26,4 +26,9 @@ int store_is_persistent(void);
 // Implemented by kernel/kernel.c so this is the same built-in kernel panic path.
 void kernel_panic_storage(const char *reason);
 
+// Reading a Storefile off another disk (used by the tanjafs mount driver).
+uint32_t store_locate_lba(uint64_t disk_sectors);
+uint32_t store_front_reserve_sectors(void);
+int store_check_header(const uint8_t* sector, uint32_t* payload);
+
 #endif

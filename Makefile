@@ -140,13 +140,13 @@ ports/doom/build/doom: $(wildcard ports/doom/*.c ports/doom/Makefile ports/doom/
 	@$(MAKE) --no-print-directory -C ports/doom CC="$(CC)" LD="$(LD)" ARCH_FLAGS="$(filter -m32,$(CFLAGS))"
 
 
-arch/x86/boot/tanja-base: arch/x86/boot/boot.o arch/x86/idt_asm.o $(KERNEL_OBJ) fs/fs.o fs/vfs.o fs/devfs.o fs/ramfs.o fs/iso9660.o fs/overlay.o $(HOME_OBJ) tools/bearssl/libbearssl.a | arch/x86/boot
+arch/x86/boot/tanja-base: arch/x86/boot/boot.o arch/x86/idt_asm.o $(KERNEL_OBJ) fs/fs.o fs/vfs.o fs/devfs.o fs/ramfs.o fs/iso9660.o fs/overlay.o fs/tanjafs.o $(HOME_OBJ) tools/bearssl/libbearssl.a | arch/x86/boot
 	@echo "[LD] Linking..."
 	$(LD) $(LDFLAGS) -o arch/x86/boot/tanja-base \
 		arch/x86/boot/boot.o \
 		arch/x86/idt_asm.o \
 		$(KERNEL_OBJ) \
-		fs/fs.o fs/vfs.o fs/devfs.o fs/ramfs.o fs/iso9660.o fs/overlay.o \
+		fs/fs.o fs/vfs.o fs/devfs.o fs/ramfs.o fs/iso9660.o fs/overlay.o fs/tanjafs.o \
 		$(HOME_OBJ) \
 		tools/bearssl/libbearssl.a \
 		$(shell $(CC) -m32 -print-libgcc-file-name)
@@ -192,3 +192,7 @@ fs/iso9660.o: fs/iso9660.c include/iso9660.h include/vfs.h
 fs/overlay.o: fs/overlay.c include/overlay.h include/iso9660.h include/ramfs.h include/vfs.h
 	@echo "[CC] fs/overlay.c"
 	$(CC) $(CFLAGS) -o fs/overlay.o fs/overlay.c
+
+fs/tanjafs.o: fs/tanjafs.c include/vfs.h include/iso9660.h include/store.h include/ramfs.h
+	@echo "[CC] fs/tanjafs.c"
+	$(CC) $(CFLAGS) -o fs/tanjafs.o fs/tanjafs.c

@@ -1298,6 +1298,12 @@ static uint32_t fs_store_size(void) {
         + (DSK_HOLES * 8); /* free extent table         */
 }
 
+/* Layout constants of the saved filesystem image, for code that has to read
+ * an image from another disk (fs/tanjafs.c). */
+void ramfs_image_geometry(uint32_t* max_f, uint32_t* max_d, uint32_t* path_cap, uint32_t* version) {
+    *max_f = MAX_F; *max_d = MAX_D; *path_cap = FS_PATH_CAP; *version = STORE_VERSION;
+}
+
 uint32_t ramfs_serialized_size(void) {
     uint32_t need = 8
         + MAX_D

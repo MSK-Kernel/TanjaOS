@@ -71,7 +71,9 @@ struct vfs_ops {
     int (*prealloc)(void* sb, const char* path, uint32_t size);
 
     /* optional: called when the filesystem is mounted / unmounted */
-    int (*mount)(void* sb, struct vfs_bdev* dev, const char* opts);
+    /* *sbp receives the per-mount state pointer later passed as `sb` to
+       every op (leave it NULL for filesystems without per-mount state) */
+    int (*mount)(void** sbp, struct vfs_bdev* dev, const char* opts);
     void (*unmount)(void* sb);
 };
 

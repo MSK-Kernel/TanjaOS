@@ -350,6 +350,38 @@ static int has_word(const char* s, const char* w) {
     return 0;
 }
 
+/* Whole-word match ("reset" must not match "preset"). */
+static int has_exact_word(const char* s, const char* w) {
+    int n = 0;
+    if (!s || !w) return 0;
+    while (w[n]) n++;
+    while (*s) {
+        int i = 0;
+        while (i < n && (s[i] | 32) == (w[i] | 32)) i++;
+        if (i == n && (s[n] == 0 || s[n] == ' ' || s[n] == '\t')) return 1;
+        while (*s && *s != ' ' && *s != '\t') s++;      /* skip to the next word */
+        while (*s == ' ' || *s == '\t') s++;
+    }
+    return 0;
+}
+
+/* Is `word` on the kernel command line or in a module string? */
+static int boot_has_flag(uint32_t mb_magic, uint32_t mb_addr, const char* word) {
+    multiboot_info_t* mbi;
+    if (mb_magic != MULTIBOOT_BOOTLOADER_MAGIC || mb_addr == 0) return 0;
+    mbi = (multiboot_info_t*)(uintptr_t)mb_addr;
+    if (mbi->cmdline && has_exact_word((const char*)(uintptr_t)mbi->cmdline, word)) return 1;
+    if ((mbi->flags & MULTIBOOT_FLAG_MODS) && mbi->mods_count > 0) {
+        multiboot_module_t* mods = (multiboot_module_t*)(uintptr_t)mbi->mods_addr;
+        int i;
+        for (i = 0; i < (int)mbi->mods_count; i++) {
+            const char* m = (const char*)(uintptr_t)mods[i].string;
+            if (m && has_exact_word(m, word)) return 1;
+        }
+    }
+    return 0;
+}
+
 static int boot_is_livecd(uint32_t mb_magic, uint32_t mb_addr) {
 #ifdef TANJA_LIVECD
     /* A LiveCD image must never touch storage: the stick it was written to
@@ -511,45 +543,86 @@ void store_init(uint32_t mb_magic, uint32_t mb_addr) {
         store_panic_disk_too_small();
     }
 
-    /* Read only the tiny header first: one sector. If it validates,
-       the payload streams straight from disk through the staging
-       window - no whole-image RAM buffer. */
-    if (store_backend_read(store_lba, 1, store_stage) == 0 &&
-        store_header_valid_at(store_stage) &&
-        store_header_matches_build_at(store_stage)) {
-
+    /* ---- Load the saved state - and never destroy one we cannot read ----
+     *
+     * Only a disk with NO Storefile (blank, or never used by TanjaOS) may be
+     * started fresh and written. If a valid Storefile is there but cannot be
+     * loaded (written by another build, bigger than this machine's file
+     * memory, damaged header, unreadable sector), starting fresh and saving
+     * would silently overwrite the user's data, so instead the system runs
+     * from RAM, leaves the disk untouched and says why. The old behaviour
+     * (discard and start over) is still available on purpose: put the word
+     * "reset" on the kernel command line.
+     */
+    const char* keep_reason = 0;
+    if (store_backend_read(store_lba, 1, store_stage) != 0) {
+        keep_reason = "the disk could not be read";
+    } else if (!store_header_valid_at(store_stage)) {
+        boot_log("Storefile: on-disk image starting from a fresh condition");
+    } else if (!store_header_matches_build_at(store_stage)) {
+        keep_reason = "it was written by a different TanjaOS build";
+    } else {
+        /* Header validated: the payload streams straight from disk through
+           the staging window - no whole-image RAM buffer. */
         uint32_t payload_bytes = le32_at(&store_stage[4]);
-        if (payload_bytes >= 8 + store_cfg_need &&
-            payload_bytes <= store_fs_need + store_cfg_need) {
+        if (payload_bytes < 8 + store_cfg_need ||
+            payload_bytes > store_fs_need + store_cfg_need ||
+            bytes_to_sectors(STORE_HEADER_BYTES + payload_bytes) > store_capacity_sectors) {
+            keep_reason = "its header is inconsistent";
+        } else {
             uint32_t total_bytes = STORE_HEADER_BYTES + payload_bytes;
+            store_rd_ctx rd;
             store_sectors = bytes_to_sectors(total_bytes);
+            rd.img_off  = STORE_HEADER_BYTES;
+            rd.img_end  = total_bytes;
+            rd.win_off  = 0;
+            rd.win_len  = 0;
 
-            if (store_sectors <= store_capacity_sectors) {
-                store_rd_ctx rd;
-                uint32_t fs_bytes = payload_bytes - store_cfg_need;
-                rd.img_off  = STORE_HEADER_BYTES;
-                rd.img_end  = total_bytes;
-                rd.win_off  = 0;
-                rd.win_len  = 0;
-
-                /* Filesystem tables must exist before deserialize fills them. */
-                fs_init();
-                if (fs_deserialize_fill(&rd, store_rd_fill) == 0 &&
-                    store_rd_fill(&rd, store_cfgbuf, store_cfg_need) == 0 &&
-                    config_deserialize(store_cfgbuf, store_cfg_need) == 0) {
-                    store_enabled = 1;
-                    boot_log("Storefile: loaded saved state from disk");
-                    return;
-                }
-                boot_log("Storefile: saved image failed validation, starting fresh");
+            /* Filesystem tables must exist before deserialize fills them.
+             *
+             * While loading, the disk is READ-ONLY: if the saved files do not
+             * fit this machine's RAM pool, the file layer's fallback is to
+             * spill them onto the data blocks - but the allocator state that
+             * says which of those blocks the saved image already uses is
+             * restored only at the very end of the image, so spilling now
+             * would overwrite the saved state's own disk-backed files. A
+             * load that cannot be done in RAM must fail, not write. */
+            store_data_ok = 0;
+            fs_init();
+            if (fs_deserialize_fill(&rd, store_rd_fill) == 0 &&
+                store_rd_fill(&rd, store_cfgbuf, store_cfg_need) == 0 &&
+                config_deserialize(store_cfgbuf, store_cfg_need) == 0) {
+                store_data_ok = 1;
+                store_enabled = 1;
+                boot_log("Storefile: loaded saved state from disk");
+                return;
             }
+            keep_reason = "it does not fit in this machine's file memory, or is damaged";
         }
-        boot_log("Storefile: saved image failed validation, starting fresh");
-    } else if (store_backend_read(store_lba, 1, store_stage) == 0) {
-        if (!store_header_valid_at(store_stage))
-            boot_log("Storefile: on-disk image starting from a fresh condition");
-        else
-            boot_log("Storefile: saved state is from a new/custom version");
+    }
+
+    if (keep_reason) {
+        if (boot_has_flag(mb_magic, mb_addr, "reset")) {
+            boot_log("Storefile: 'reset' given - discarding the saved state on disk");
+            store_data_ok = 1;
+        } else {
+            store_enabled = 0;       /* no autosave ... */
+            store_data_ok = 0;       /* ... and no big-file spill onto the disk */
+            fs_init();               /* (flags first: seeding home/ on a small */
+            fs_seed_home();          /*  pool would otherwise spill to disk)  */
+            {
+                char why[160];
+                const char* pre = "Storefile: WARNING - the saved data on this disk cannot be loaded: ";
+                int n = 0, k;
+                for (k = 0; pre[k] && n < 120; k++) why[n++] = pre[k];
+                for (k = 0; keep_reason[k] && n < 158; k++) why[n++] = keep_reason[k];
+                why[n] = 0;
+                boot_log(why);
+            }
+            boot_log("Storefile: the disk was NOT modified. Running from RAM only - nothing will be saved.");
+            boot_log("Storefile: add the word 'reset' to the kernel line to discard it and start fresh.");
+            return;
+        }
     }
 
     /* No usable disk state. Start from factory home/ contents, then
@@ -622,3 +695,25 @@ int store_data_write(uint32_t lba, uint32_t count, const void* buf) {
     return store_backend_write(lba, count, buf);
 }
 
+
+
+/* ---- reading a Storefile from another disk (fs/tanjafs.c) ---- */
+
+/* Where this build would put the Storefile on a disk of `disk_sectors`
+ * sectors (same arithmetic as store_init). 0 = disk too small. */
+uint32_t store_locate_lba(uint64_t disk_sectors) {
+    uint32_t cap = bytes_to_sectors(STORE_HEADER_BYTES + fs_store_size() + config_store_size());
+    if (disk_sectors <= (uint64_t)cap + STORE_RESERVED_TAIL_SECTORS + 32) return 0;
+    return (uint32_t)(disk_sectors - cap - STORE_RESERVED_TAIL_SECTORS);
+}
+
+uint32_t store_front_reserve_sectors(void) { return STORE_FRONT_RESERVE_SECTORS; }
+
+/* first sector of a Storefile: 2 = valid and written by this very build,
+ * 1 = valid but another build, 0 = not a Storefile. *payload gets the
+ * image length that follows the 16-byte header. */
+int store_check_header(const uint8_t* sector, uint32_t* payload) {
+    if (!store_header_valid_at(sector)) return 0;
+    if (payload) *payload = le32_at(&sector[4]);
+    return store_header_matches_build_at(sector) ? 2 : 1;
+}

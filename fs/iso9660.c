@@ -13,12 +13,19 @@
 #define BLK        2048u
 #define SECT_PER_BLK 4u
 
-static struct vfs_bdev* iso_dev;
-static int       iso_active;
-static uint32_t  root_extent, root_size;
-static int       iso_style;              /* 0 plain, 1 joliet, 2 rockridge */
-static uint32_t  rr_skip;                /* SUSP "SP" bytes to skip */
-static char      iso_label[40];
+/* All state of one ISO volume lives in a struct iso_vol (include/iso9660.h),
+ * so the boot ISO and a second ISO/disk mounted later can be read at the
+ * same time. The routines below work on the "current" volume V; every
+ * public entry point sets V first (single-threaded kernel). */
+static struct iso_vol iso_primary;
+static struct iso_vol* V = &iso_primary;
+#define iso_dev      (V->dev)
+#define iso_active   (V->active)
+#define root_extent  (V->root_extent)
+#define root_size    (V->root_size)
+#define iso_style    (V->style)
+#define rr_skip      (V->rr_skip)
+#define iso_label    (V->label)
 
 static const char* const style_names[] = { "plain", "joliet", "rockridge" };
 
@@ -78,6 +85,7 @@ static int read_raw(uint32_t lba, uint32_t count, void* buf) {
 #define BC_N 64
 static uint8_t  bc_data[BC_N][BLK];
 static uint32_t bc_tag[BC_N];              /* lba + 1, 0 = empty */
+static const struct iso_vol* bc_vol[BC_N]; /* which volume the block belongs to */
 
 static void bc_flush(void) {
     int i;
@@ -87,12 +95,13 @@ static void bc_flush(void) {
 /* Pointer into the cache; valid only until the next get_block() call. */
 static const uint8_t* get_block(uint32_t lba) {
     uint32_t idx = (lba ^ (lba >> 6)) & (BC_N - 1);
-    if (bc_tag[idx] == lba + 1) return bc_data[idx];
+    if (bc_tag[idx] == lba + 1 && bc_vol[idx] == V) return bc_data[idx];
     if (read_raw(lba, 1, bc_data[idx]) != 0) {
         bc_tag[idx] = 0;
         return 0;
     }
     bc_tag[idx] = lba + 1;
+    bc_vol[idx] = V;
     return bc_data[idx];
 }
 
@@ -340,7 +349,7 @@ static int find_cb(const struct iso_ent* e, void* vctx) {
  * Rock Ridge symlink met on the way (also as the last component) is
  * replaced by its target and the walk restarted - at most LOOKUP_HOPS times,
  * so a link loop just fails. */
-int iso_lookup(const char* path, struct iso_node* out)
+static int iso_lookup_impl(const char* path, struct iso_node* out)
 {
     static char work[640];
     static struct iso_ent cur, next;
@@ -438,14 +447,14 @@ static int list_cb(const struct iso_ent* e, void* vctx) {
     return 0;
 }
 
-int iso_list(const char* path, char* buf, uint32_t cap, uint32_t* size)
+static int iso_list_impl(const char* path, char* buf, uint32_t cap, uint32_t* size)
 {
     struct iso_node n;
     struct list_ctx c;
     if (!buf || !size || cap < 2) return -1;
     *size = 0;
     buf[0] = 0;
-    if (iso_lookup(path, &n) != 0 || !n.is_dir) return -1;
+    if (iso_lookup_impl(path, &n) != 0 || !n.is_dir) return -1;
 
     c.buf = buf; c.cap = cap - 1; c.pos = 0;
     c.want_dirs = 1;
@@ -461,10 +470,10 @@ static int any_cb(const struct iso_ent* e, void* ctx) {
     return 1;
 }
 
-int iso_dir_is_empty(const char* path)
+static int iso_dir_is_empty_impl(const char* path)
 {
     struct iso_node n;
-    if (iso_lookup(path, &n) != 0 || !n.is_dir) return 0;
+    if (iso_lookup_impl(path, &n) != 0 || !n.is_dir) return 0;
     return dir_walk(n.extent, n.size, any_cb, 0) == 0;
 }
 
@@ -472,7 +481,7 @@ int iso_dir_is_empty(const char* path)
 /* file data                                                         */
 /* ---------------------------------------------------------------- */
 
-int iso_read_range(const struct iso_node* n, uint32_t offset,
+static int iso_read_range_impl(const struct iso_node* n, uint32_t offset,
                    void* buf, uint32_t cap, uint32_t* got)
 {
     uint8_t* out = (uint8_t*)buf;
@@ -621,6 +630,7 @@ int iso_probe(void)
     int n = vfs_bdev_count();
     int pass, i;
 
+    V = &iso_primary;
     iso_active = 0;
     iso_dev = 0;
     iso_label[0] = 0;
@@ -643,7 +653,47 @@ int iso_probe(void)
     return 0;
 }
 
-int iso_available(void) { return iso_active; }
-const char* iso_device_name(void) { return iso_active && iso_dev ? iso_dev->name : ""; }
-const char* iso_volume_label(void) { return iso_active ? iso_label : ""; }
-const char* iso_name_style(void) { return style_names[iso_active ? iso_style : 0]; }
+/* ---- explicit-volume API (a second ISO / disk besides the boot one) ---- */
+
+int iso_vol_open(struct iso_vol* v, struct vfs_bdev* d)
+{
+    if (!v || !d || !d->present || !d->read) return 0;
+    V = v;
+    v->active = 0;
+    v->dev = 0;
+    v->label[0] = 0;
+    if (try_device(d)) return 1;
+    v->dev = 0;
+    v->active = 0;
+    return 0;
+}
+
+int iso_v_lookup(struct iso_vol* v, const char* path, struct iso_node* out) {
+    V = v; return iso_lookup_impl(path, out);
+}
+int iso_v_list(struct iso_vol* v, const char* path, char* buf, uint32_t cap, uint32_t* size) {
+    V = v; return iso_list_impl(path, buf, cap, size);
+}
+int iso_v_dir_is_empty(struct iso_vol* v, const char* path) {
+    V = v; return iso_dir_is_empty_impl(path);
+}
+int iso_v_read_range(struct iso_vol* v, const struct iso_node* n, uint32_t offset,
+                     void* buf, uint32_t cap, uint32_t* got) {
+    V = v; return iso_read_range_impl(n, offset, buf, cap, got);
+}
+const char* iso_v_name_style(const struct iso_vol* v) {
+    return style_names[v->active ? v->style : 0];
+}
+
+/* ---- boot volume (what the overlay uses) ---- */
+
+int iso_lookup(const char* path, struct iso_node* out) { return iso_v_lookup(&iso_primary, path, out); }
+int iso_list(const char* path, char* buf, uint32_t cap, uint32_t* size) { return iso_v_list(&iso_primary, path, buf, cap, size); }
+int iso_dir_is_empty(const char* path) { return iso_v_dir_is_empty(&iso_primary, path); }
+int iso_read_range(const struct iso_node* n, uint32_t offset, void* buf, uint32_t cap, uint32_t* got) {
+    return iso_v_read_range(&iso_primary, n, offset, buf, cap, got);
+}
+int iso_available(void) { return iso_primary.active; }
+const char* iso_device_name(void) { return iso_primary.active && iso_primary.dev ? iso_primary.dev->name : ""; }
+const char* iso_volume_label(void) { return iso_primary.active ? iso_primary.label : ""; }
+const char* iso_name_style(void) { return style_names[iso_primary.active ? iso_primary.style : 0]; }

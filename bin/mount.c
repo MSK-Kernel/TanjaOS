@@ -6,6 +6,10 @@
  *
  *   mount                       list current mounts
  *   mount [-t type] <dev> <dir> mount device (or "none") at directory
+ *
+ * With a device and no -t the type is "tanjafs": a TanjaOS disk (its boot
+ * image with the boot/ folder, plus the saved TanjaOS files) or a CD/ISO,
+ * mounted read-only. "-t iso9660" mounts just the boot image / ISO part.
  */
 
 extern int vfs_list_mounts(char* buf, uint32_t* size);
@@ -13,6 +17,7 @@ extern int vfs_mount(const char* mountpoint, const char* fstype, void* dev, cons
 extern void* vfs_find_bdev(const char* name);
 extern int fs_directory_exists(const char* path);
 extern int fs_create_directory(const char* path);
+extern int fs_delete_directory(const char* path);
 
 
 static int slen(const char* s) {
@@ -82,12 +87,17 @@ void main(char* args) {
     }
 
     int i = 0;
+    int type_given = 0;
     if (nt >= 2 && streq(tok[0], "-t")) {
         type = tok[1];
+        type_given = 1;
         i = 2;
     }
     if (i < nt) devname = tok[i++];
     if (i < nt) dir = tok[i++];
+    /* a real device with no -t: treat it as a TanjaOS disk / ISO */
+    if (!type_given && devname && !streq(devname, "none") && !streq(devname, "-"))
+        type = "tanjafs";
 
     if (!dir) {
         print("usage: mount [-t type] <device|none> <directory>\n");
@@ -95,7 +105,9 @@ void main(char* args) {
         return;
     }
 
+    int made_dir = 0;
     if (!fs_directory_exists(dir)) {
+        made_dir = 1;
         if (fs_create_directory(dir) != 0) {
             print("mount: cannot create mount point\n");
             return;
@@ -116,13 +128,17 @@ void main(char* args) {
             print("mount: /dev/");
             print(devname);
             print(": no such device\n");
+            if (made_dir) fs_delete_directory(dir);
             return;
         }
     }
 
     int rc = vfs_mount(dir, type, dev, 0);
     if (rc != 0) {
-        print("mount: failed\n");
+        if (made_dir) fs_delete_directory(dir);   /* do not leave the mountpoint behind */
+        if (rc == -7 || rc == -3) print("mount: that directory is already a mount point\n");
+        else if (rc == -2 && dev) print("mount: no TanjaOS disk or ISO9660 image found on that device\n");
+        else print("mount: failed\n");
         return;
     }
     print("mounted ");

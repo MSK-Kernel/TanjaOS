@@ -25,6 +25,18 @@ struct iso_node {
     uint8_t  is_link;    /* Rock Ridge symlink: shown as an empty file */
 };
 
+/* State of one ISO volume. The boot volume lives inside iso9660.c; a second
+ * one (a disk or CD that gets mounted later) is a struct iso_vol owned by
+ * the caller and opened with iso_vol_open(). */
+struct iso_vol {
+    struct vfs_bdev* dev;
+    int      active;
+    uint32_t root_extent, root_size;
+    int      style;          /* 0 plain, 1 joliet, 2 rockridge */
+    uint32_t rr_skip;
+    char     label[40];
+};
+
 /* Look for an ISO9660 volume on every registered block device (optical
  * drives first). Returns 1 if one was found and is now the active volume,
  * 0 otherwise. Safe to call again after the device table was rebuilt. */
@@ -50,5 +62,16 @@ int iso_list(const char* path, char* buf, uint32_t cap, uint32_t* size);
 
 /* 1 if the directory has no entries besides . and .. */
 int iso_dir_is_empty(const char* path);
+
+/* The same operations on an explicitly opened volume. iso_vol_open()
+ * returns 1 if dev holds an ISO9660 image (also a hybrid one at the start
+ * of a disk) and fills *v. */
+int iso_vol_open(struct iso_vol* v, struct vfs_bdev* dev);
+int iso_v_lookup(struct iso_vol* v, const char* path, struct iso_node* out);
+int iso_v_list(struct iso_vol* v, const char* path, char* buf, uint32_t cap, uint32_t* size);
+int iso_v_dir_is_empty(struct iso_vol* v, const char* path);
+int iso_v_read_range(struct iso_vol* v, const struct iso_node* n, uint32_t offset,
+                     void* buf, uint32_t cap, uint32_t* got);
+const char* iso_v_name_style(const struct iso_vol* v);
 
 #endif

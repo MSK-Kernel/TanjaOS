@@ -2,6 +2,8 @@
 #include "../include/vfs.h"
 #include "../include/ramfs.h"
 #include "../include/overlay.h"
+extern const struct vfs_ops* tanjafs_get_ops(void);
+extern const struct vfs_ops* iso9660_get_ops(void);
 #include "../include/iso9660.h"
 
 /* Thin public filesystem API.
@@ -50,8 +52,8 @@ void fs_init(void) {
         extern void boot_log(const char* msg);
         char msg[160];
         const char* parts[] = { "ISO9660 volume ", iso_volume_label()[0] ? iso_volume_label() : "(no label)",
-                                " on ", iso_device_name(), ", devices will be labelled using ", iso_name_style(),
-                                " names" };
+                                " on ", iso_device_name(), " (", iso_name_style(),
+                                " names) is overlaid on / - edits stay in RAM" };
         int i, n = 0, k;
         for (i = 0; i < 7; i++)
             for (k = 0; parts[i][k] && n < 158; k++) msg[n++] = parts[i][k];
@@ -62,6 +64,8 @@ void fs_init(void) {
        is mounted here (after the probe) because vfs_init() above wipes
        the mount table on every fs_init(). */
     vfs_register_fstype(devfs_get_ops());
+    vfs_register_fstype(tanjafs_get_ops());   /* mount a TanjaOS disk (read-only) */
+    vfs_register_fstype(iso9660_get_ops());   /* mount a CD/ISO (read-only) */
     vfs_mount("/dev", "devfs", 0, 0);
 }
 
