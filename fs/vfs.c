@@ -328,6 +328,7 @@ void vfs_probe_drives(void) {
                 my_strcpy(d.model, info.model, 48);
                 d.sectors = info.sectors;
                 d.present = 1;
+                d.removable = info.removable;
                 d.read = ata_bdev_read;
                 d.write = ata_bdev_write;
                 d.private = (void*)(uintptr_t)((ch << 8) | dr);
@@ -348,6 +349,7 @@ void vfs_probe_drives(void) {
                 my_strcpy(d.model, info.model, 48);
                 d.sectors = info.sectors;
                 d.present = 1;
+                d.removable = 1;
                 d.read = atapi_bdev_read;
                 d.write = 0;
                 d.private = (void*)(uintptr_t)((ch << 8) | dr);
@@ -364,6 +366,7 @@ void vfs_probe_drives(void) {
         my_strcpy(d.model, "AHCI SATA", 48);
         d.sectors = ahci_get_sector_count();
         d.present = 1;
+        d.removable = 0;
         d.read = ahci_bdev_read;
         d.write = ahci_bdev_write;
         d.private = 0;

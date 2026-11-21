@@ -39,6 +39,7 @@ struct vfs_bdev {
     char model[48];
     uint64_t sectors;           /* 512-byte sectors */
     int present;
+    int removable;              /* 1 for removable media (USB/optical) */
     int (*read)(struct vfs_bdev* dev, uint64_t lba, uint32_t count, void* buf);
     int (*write)(struct vfs_bdev* dev, uint64_t lba, uint32_t count, const void* buf);
     void* private;

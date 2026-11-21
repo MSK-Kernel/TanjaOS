@@ -622,15 +622,22 @@ int iso_probe(void)
     iso_label[0] = 0;
     bc_flush();
 
-    /* optical drives ("sr0"...) first, then anything else that may hold a
-     * hybrid ISO */
+    /* Prefer optical drives, then removable media (such as a USB installer).
+     * Never treat a fixed internal disk as the boot ISO: an installed TanjaOS
+     * disk can contain an ISO9660 installer image in its boot area, and exposing
+     * that image as the root overlay makes /boot/grub/grub.cfg show the
+     * installer menu instead of the installed system's files. */
     for (pass = 0; pass < 2; pass++) {
         for (i = 0; i < n; i++) {
             struct vfs_bdev* d = vfs_bdev_at(i);
             int is_sr;
             if (!d || !d->present || !d->read) continue;
             is_sr = (d->name[0] == 's' && d->name[1] == 'r');
-            if ((pass == 0) != is_sr) continue;
+            if (pass == 0) {
+                if (!is_sr) continue;
+            } else {
+                if (is_sr || !d->removable) continue;
+            }
             if (try_device(d)) return 1;
         }
     }
