@@ -5,6 +5,9 @@
 #include "../include/multiboot.h"
 #include "../include/fs.h"
 #include "../include/build_id.h"
+#include "../include/iso9660.h"
+#include "../include/overlay.h"
+#include "../include/vfs.h"
 
 extern void print(const char* s);
 extern void print_dec(uint32_t n);
@@ -269,6 +272,148 @@ static void store_wr_sink(void* vctx, const uint8_t* data, uint32_t len)
     }
 }
 
+/*
+ * Boot image write-through.
+ *
+ * GRUB does not read /boot/grub/grub.cfg from the Storefile: it reads it from
+ * the ISO9660 boot image at the front of the disk. An edit made inside
+ * TanjaOS only lands in the RAM filesystem (and from there in the Storefile),
+ * so GRUB kept showing the original menu after a reboot. Whenever the saved
+ * state is written, the boot config files that were edited are therefore also
+ * written into the boot image, in place.
+ *
+ * An ISO cannot grow a file, so the new contents must fit in the blocks the
+ * file already owns (2048 bytes for a config file smaller than that). If it
+ * does not fit, nothing is written to the boot image and a warning says so.
+ */
+#define BOOTSYNC_BUF (8u * 2048u)
+
+struct boot_sync_file {
+    const char* path;
+    uint32_t    done_len;     /* contents last found/made identical on disk */
+    uint32_t    done_sum;
+    int         done_valid;
+};
+
+static struct boot_sync_file boot_sync_files[] = {
+    { "/boot/grub/grub.cfg",   0, 0, 0 },
+    { "/boot/tanja/tanja.cfg", 0, 0, 0 },
+};
+
+static struct iso_vol boot_vol;
+static int boot_vol_state = 0;          /* 0 not tried yet, 1 open, -1 none */
+
+static uint32_t bootsync_sum(const uint8_t* d, uint32_t n) {
+    uint32_t h = 2166136261u, i;
+    for (i = 0; i < n; i++) { h ^= d[i]; h *= 16777619u; }
+    return h;
+}
+
+/* The bdev the Storefile (and so the installed boot image) lives on. */
+static struct vfs_bdev* bootsync_store_bdev(void) {
+    int i, n = vfs_bdev_count();
+    for (i = 0; i < n; i++) {
+        struct vfs_bdev* d = vfs_bdev_at(i);
+        int match = 0;
+        if (!d || !d->present || !d->read || !d->write || d->removable) continue;
+        if (d->name[0] == 's' && d->name[1] == 'r') continue;
+        if (backend == BACKEND_ATA)
+            match = ((uintptr_t)d->private == (uintptr_t)((store_channel << 8) | store_drive)) &&
+                    d->name[0] == 'a' && d->name[1] == 't' && d->name[2] == 'a';
+        else if (backend == BACKEND_AHCI)
+            match = d->name[0] == 'a' && d->name[1] == 'h';
+        if (match) return d;
+    }
+    return 0;
+}
+
+static int bootsync_open(void) {
+    struct vfs_bdev* d;
+    if (boot_vol_state != 0) return boot_vol_state > 0;
+    boot_vol_state = -1;
+    d = bootsync_store_bdev();
+    if (d && iso_vol_open(&boot_vol, d)) boot_vol_state = 1;
+    return boot_vol_state > 0;
+}
+
+static void bootsync_one(struct boot_sync_file* f) {
+    static uint8_t want[BOOTSYNC_BUF + 1];
+    static uint8_t have[BOOTSYNC_BUF + 1];
+    uint32_t want_len, have_len = 0, sum, cap = 0;
+    struct iso_node node;
+    int rc;
+
+    if (!fs_file_exists(f->path)) return;
+    want_len = fs_get_file_size(f->path);
+    if (want_len == 0) return;                 /* never leave GRUB an empty menu */
+
+    if (want_len > BOOTSYNC_BUF) {
+        /* too big for any config file: warn once per size */
+        if (f->done_valid && f->done_len == want_len && f->done_sum == 0) return;
+        f->done_valid = 1; f->done_len = want_len; f->done_sum = 0;
+        print("[boot] "); print(f->path);
+        print(" is too large for the boot image, not written (GRUB will keep the old one)\n");
+        return;
+    }
+
+    {
+        uint32_t sz = BOOTSYNC_BUF;
+        if (fs_read_file(f->path, (char*)want, &sz) != 0) return;
+        want_len = sz;
+    }
+    sum = bootsync_sum(want, want_len);
+    if (f->done_valid && f->done_len == want_len && f->done_sum == sum) return;
+
+    if (!bootsync_open() || iso_v_lookup(&boot_vol, f->path, &node) != 0 ||
+        node.is_dir || node.is_link) {
+        /* no boot image on this disk, or the file is not part of it */
+        f->done_valid = 1; f->done_len = want_len; f->done_sum = sum;
+        return;
+    }
+
+    /* already identical on disk? */
+    if (node.size == want_len && node.size <= BOOTSYNC_BUF &&
+        iso_v_read_range(&boot_vol, &node, 0, have, BOOTSYNC_BUF, &have_len) == 0 &&
+        have_len == want_len && bootsync_sum(have, have_len) == sum) {
+        f->done_valid = 1; f->done_len = want_len; f->done_sum = sum;
+        return;
+    }
+
+    rc = iso_v_update_file(&boot_vol, f->path, want, want_len, &cap);
+    f->done_valid = 1; f->done_len = want_len; f->done_sum = sum;   /* do not retry the same contents */
+    if (rc == 0) {
+        print("[boot] "); print(f->path); print(" written to the boot image\n");
+    } else if (rc == -2) {
+        print("[boot] "); print(f->path);
+        print(" does not fit in the boot image (max "); print_dec(cap);
+        print(" bytes, it is "); print_dec(want_len);
+        print("); GRUB will keep the old one\n");
+    } else {
+        print("[boot] could not write "); print(f->path); print(" to the boot image\n");
+    }
+}
+
+static int bootsync_busy = 0;
+
+static void store_sync_boot_files(void) {
+    unsigned i;
+    if (bootsync_busy) return;
+    /* Booted from some other ISO (installer / live media in a drive): /boot/...
+       in the tree is that medium's copy, not this disk's. Never copy it
+       across. When the overlay IS this disk's own boot image, sync as usual. */
+    if (ovl_active_now()) {
+        struct vfs_bdev* d = bootsync_store_bdev();
+        const char* a = iso_device_name();
+        const char* b = d ? d->name : "";
+        while (*a && *a == *b) { a++; b++; }
+        if (*a || *b || !d) return;     /* overlay is some other medium */
+    }
+    bootsync_busy = 1;
+    for (i = 0; i < sizeof boot_sync_files / sizeof boot_sync_files[0]; i++)
+        bootsync_one(&boot_sync_files[i]);
+    bootsync_busy = 0;
+}
+
 void store_autosave(void) {
     if (!store_enabled) return;
 
@@ -315,6 +460,11 @@ void store_autosave(void) {
             le32_at(&chk[4]) == payload_bytes)
             store_enabled = 1;
     }
+
+    /* The Storefile is safely on disk: now carry boot config edits over to
+       the boot image GRUB actually reads. */
+    if (store_enabled)
+        store_sync_boot_files();
 }
 
 void store_save(void) {

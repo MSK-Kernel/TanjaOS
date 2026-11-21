@@ -74,4 +74,11 @@ int iso_v_read_range(struct iso_vol* v, const struct iso_node* n, uint32_t offse
                      void* buf, uint32_t cap, uint32_t* got);
 const char* iso_v_name_style(const struct iso_vol* v);
 
+/* Overwrite an existing plain file of a volume that sits on a writable disk
+ * (the installed boot image), in place. The new contents must fit in the
+ * blocks the file already occupies: 0 = ok, -1 = error / not a plain file,
+ * -2 = too big (*cap_out = bytes the file can hold). */
+int iso_v_update_file(struct iso_vol* v, const char* path,
+                      const void* data, uint32_t len, uint32_t* cap_out);
+
 #endif

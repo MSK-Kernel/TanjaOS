@@ -289,6 +289,12 @@ static int parse_record(const uint8_t* r, uint32_t len, struct iso_ent* e)
 
 typedef int (*dir_cb)(const struct iso_ent* e, void* ctx);
 
+/* Where the record most recently handed to a dir_walk callback lives (ISO
+ * block + byte offset inside it). iso_v_update_file() uses this to patch the
+ * size fields of the record it just looked up. */
+static uint32_t walk_rec_lba;
+static uint32_t walk_rec_bo;
+
 /* Calls cb for every entry (never "." or ".."). A non-zero return from cb
  * stops the walk and is passed back. -1 = I/O error / corrupt directory. */
 static int dir_walk(uint32_t ext, uint32_t size, dir_cb cb, void* ctx)
@@ -312,6 +318,8 @@ static int dir_walk(uint32_t ext, uint32_t size, dir_cb cb, void* ctx)
         }
         if (bo + len > BLK) return -1;
         mcopy(rec, blk + bo, len);
+        walk_rec_lba = lba;
+        walk_rec_bo  = bo;
         off += len;
 
         rc = parse_record(rec, len, &e);
@@ -622,12 +630,13 @@ int iso_probe(void)
     iso_label[0] = 0;
     bc_flush();
 
-    /* Prefer optical drives, then removable media (such as a USB installer).
-     * Never treat a fixed internal disk as the boot ISO: an installed TanjaOS
-     * disk can contain an ISO9660 installer image in its boot area, and exposing
-     * that image as the root overlay makes /boot/grub/grub.cfg show the
-     * installer menu instead of the installed system's files. */
-    for (pass = 0; pass < 2; pass++) {
+    /* Prefer optical drives, then removable media (such as a USB installer),
+     * and only then a fixed disk: an installed TanjaOS disk carries its own
+     * boot image (GRUB, kernel, grub.cfg) at the front, and that is what
+     * /boot shows. A live/installer medium, when present, always wins, so an
+     * installer menu can never be mistaken for the installed one; edits to
+     * the boot config are written back to the image by kernel/store.c. */
+    for (pass = 0; pass < 3; pass++) {
         for (i = 0; i < n; i++) {
             struct vfs_bdev* d = vfs_bdev_at(i);
             int is_sr;
@@ -635,8 +644,10 @@ int iso_probe(void)
             is_sr = (d->name[0] == 's' && d->name[1] == 'r');
             if (pass == 0) {
                 if (!is_sr) continue;
-            } else {
+            } else if (pass == 1) {
                 if (is_sr || !d->removable) continue;
+            } else {
+                if (is_sr || d->removable) continue;
             }
             if (try_device(d)) return 1;
         }
@@ -658,6 +669,70 @@ int iso_vol_open(struct iso_vol* v, struct vfs_bdev* d)
     if (try_device(d)) return 1;
     v->dev = 0;
     v->active = 0;
+    return 0;
+}
+
+/* Largest file iso_v_update_file() will write (8 blocks). */
+#define UPD_MAX (8u * BLK)
+
+/* Replace the contents of an existing, regular file of an ISO9660 volume
+ * IN PLACE, for a volume on a writable disk (the boot image the installer
+ * dd'd to the front of the disk). An ISO cannot grow or move files, so the
+ * new contents have to fit in the blocks the file already owns; the data is
+ * zero-padded to a block boundary and the size fields of the file's
+ * directory record are patched (both-endian, ECMA-119 9.1.4).
+ *
+ * Returns 0 on success, -1 on I/O error or not found / not a plain file,
+ * -2 if the data does not fit (*cap_out, if given, receives the number of
+ * bytes the file can hold). */
+int iso_v_update_file(struct iso_vol* v, const char* path,
+                      const void* data, uint32_t len, uint32_t* cap_out)
+{
+    static uint8_t buf[UPD_MAX];
+    static uint8_t dblk[BLK];
+    struct iso_node n;
+    uint32_t blocks, cap, i, pos;
+    int rc;
+
+    if (cap_out) *cap_out = 0;
+    if (!v || !v->active || !v->dev || !v->dev->write || !path || (!data && len)) return -1;
+    V = v;
+    if (iso_lookup_impl(path, &n) != 0) return -1;
+    if (n.is_dir || n.is_link) return -1;
+
+    /* iso_lookup_impl() walked the parent directory last, so walk_rec_* is
+     * the record of the file itself (a Rock Ridge symlink hop would break
+     * that, and links are refused above). */
+    pos = walk_rec_bo;
+    i   = walk_rec_lba;
+
+    cap = ((n.size + BLK - 1) / BLK) * BLK;
+    if (cap_out) *cap_out = cap;
+    if (cap == 0 || len > cap) return -2;
+    if (len > UPD_MAX) return -2;
+
+    blocks = (len + BLK - 1) / BLK;
+    if (blocks == 0) blocks = 1;
+    for (rc = 0; rc < (int)(blocks * BLK); rc++) buf[rc] = 0;
+    mcopy(buf, data, len);
+
+    /* 1. data blocks first, then 2. the directory record that points at
+     * them: an interrupted update leaves either the old file or the new
+     * data with the old size, never a record pointing at garbage. */
+    if (v->dev->write(v->dev, (uint64_t)n.extent * SECT_PER_BLK,
+                      blocks * SECT_PER_BLK, buf) != 0)
+        return -1;
+
+    if (read_raw(i, 1, dblk) != 0) return -1;
+    if (pos + 18 > BLK) return -1;
+    dblk[pos + 10] = (uint8_t)(len);        dblk[pos + 11] = (uint8_t)(len >> 8);
+    dblk[pos + 12] = (uint8_t)(len >> 16);  dblk[pos + 13] = (uint8_t)(len >> 24);
+    dblk[pos + 14] = (uint8_t)(len >> 24);  dblk[pos + 15] = (uint8_t)(len >> 16);
+    dblk[pos + 16] = (uint8_t)(len >> 8);   dblk[pos + 17] = (uint8_t)(len);
+    if (v->dev->write(v->dev, (uint64_t)i * SECT_PER_BLK, SECT_PER_BLK, dblk) != 0)
+        return -1;
+
+    bc_flush();
     return 0;
 }
 
