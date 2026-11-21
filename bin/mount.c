@@ -6,10 +6,6 @@
  *
  *   mount                       list current mounts
  *   mount [-t type] <dev> <dir> mount device (or "none") at directory
- *
- * With a device and no -t the type is "tanjafs": a TanjaOS disk (its boot
- * image with the boot/ folder, plus the saved TanjaOS files) or a CD/ISO,
- * mounted read-only. "-t iso9660" mounts just the boot image / ISO part.
  */
 
 extern int vfs_list_mounts(char* buf, uint32_t* size);
@@ -97,7 +93,7 @@ void main(char* args) {
     if (i < nt) dir = tok[i++];
     /* a real device with no -t: treat it as a TanjaOS disk / ISO */
     if (!type_given && devname && !streq(devname, "none") && !streq(devname, "-"))
-        type = "tanjafs";
+        type = "tmpfs";
 
     if (!dir) {
         print("usage: mount [-t type] <device|none> <directory>\n");
