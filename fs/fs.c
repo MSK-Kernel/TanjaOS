@@ -52,8 +52,8 @@ void fs_init(void) {
         extern void boot_log(const char* msg);
         char msg[160];
         const char* parts[] = { "ISO9660 volume ", iso_volume_label()[0] ? iso_volume_label() : "(no label)",
-                                " on ", iso_device_name(), " (", iso_name_style(),
-                                " names) is overlaid on / - edits stay in RAM" };
+                                " on ", iso_device_name(), ", devices will be labelled using ", iso_name_style(),
+                                " names" };
         int i, n = 0, k;
         for (i = 0; i < 7; i++)
             for (k = 0; parts[i][k] && n < 158; k++) msg[n++] = parts[i][k];
