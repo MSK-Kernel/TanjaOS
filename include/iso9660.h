@@ -78,6 +78,9 @@ const char* iso_v_name_style(const struct iso_vol* v);
  * (the installed boot image), in place. The new contents must fit in the
  * blocks the file already occupies: 0 = ok, -1 = error / not a plain file,
  * -2 = too big (*cap_out = bytes the file can hold). */
+/* Remove a file or directory from a volume on a writable disk by deleting its
+ * directory record (the data blocks are left unreferenced). 0 = ok. */
+int iso_v_remove_entry(struct iso_vol* v, const char* path);
 int iso_v_update_file(struct iso_vol* v, const char* path,
                       const void* data, uint32_t len, uint32_t* cap_out);
 

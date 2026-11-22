@@ -134,6 +134,19 @@ static int is_blocked(const char* p) {
     return 0;
 }
 
+/* The ISO paths hidden by deletes, in order (for kernel/store.c, which mirrors
+ * them into the boot image on disk). */
+int ovl_whiteout_count(void) {
+    if (!ovl_active_now()) return 0;
+    wh_load();
+    return wh_n;
+}
+const char* ovl_whiteout_at(int i) {
+    if (!ovl_active_now()) return 0;
+    wh_load();
+    return (i >= 0 && i < wh_n) ? wh_pool + wh_off[i] : 0;
+}
+
 static int wh_add(const char* p) {
     int len = slen(p), i, nn = 0;
     uint32_t used = 0;

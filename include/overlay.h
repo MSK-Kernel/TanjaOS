@@ -24,4 +24,8 @@ const char* ovl_iso_data_ptr(const char* abs, uint32_t* size_out);
  * (no whiteout). Absolute path. */
 int ovl_revert(const char* abs);
 
+/* ISO paths hidden by deletes (whiteouts). */
+int ovl_whiteout_count(void);
+const char* ovl_whiteout_at(int i);
+
 #endif

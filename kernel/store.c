@@ -393,6 +393,42 @@ static void bootsync_one(struct boot_sync_file* f) {
     }
 }
 
+/* rm in the overlay only hides an ISO file; GRUB reads the image itself, so
+ * hidden /boot entries are also taken out of the image's directory records.
+ * /boot and /boot/grub themselves are never removed (that would leave nothing
+ * to boot). */
+static int bootsync_protect_warned = 0;
+
+static void bootsync_prune(void) {
+    char path[160];
+    int i, n = ovl_whiteout_count();
+    for (i = 0; i < n; i++) {
+        const char* w = ovl_whiteout_at(i);
+        struct iso_node node;
+        unsigned k;
+        if (!w) continue;
+        for (k = 0; w[k] && k < sizeof path - 1; k++) path[k] = w[k];
+        path[k] = 0;
+        if (w[k]) continue;                                 /* too long: skip */
+        if (path[0] != '/' || path[1] != 'b' || path[2] != 'o' || path[3] != 'o' ||
+            path[4] != 't' || path[5] != '/' || path[6] == 0) continue;   /* only /boot/... */
+        if (!bootsync_open()) return;
+        if (iso_v_lookup(&boot_vol, path, &node) != 0) continue;           /* already gone */
+        if (path[6] == 'g' && path[7] == 'r' && path[8] == 'u' && path[9] == 'b' && path[10] == 0) {
+            if (!bootsync_protect_warned) {
+                bootsync_protect_warned = 1;
+                print("[boot] /boot/grub is not removed from the boot image (GRUB needs it)\n");
+            }
+            continue;
+        }
+        if (iso_v_remove_entry(&boot_vol, path) == 0) {
+            print("[boot] "); print(path); print(" removed from the boot image\n");
+        } else {
+            print("[boot] could not remove "); print(path); print(" from the boot image\n");
+        }
+    }
+}
+
 static int bootsync_busy = 0;
 
 static void store_sync_boot_files(void) {
@@ -411,6 +447,7 @@ static void store_sync_boot_files(void) {
     bootsync_busy = 1;
     for (i = 0; i < sizeof boot_sync_files / sizeof boot_sync_files[0]; i++)
         bootsync_one(&boot_sync_files[i]);
+    bootsync_prune();
     bootsync_busy = 0;
 }
 

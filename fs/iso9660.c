@@ -736,6 +736,33 @@ int iso_v_update_file(struct iso_vol* v, const char* path,
     return 0;
 }
 
+/* Remove a file or directory from a volume on a writable disk by deleting its
+ * directory record: the records after it in the same block move up, the tail
+ * of the block is zeroed (ECMA-119 records never span blocks, and a zero
+ * length byte ends a block's records). The data blocks stay where they are,
+ * now unreferenced. Returns 0 ok, -1 not found / I/O error. */
+int iso_v_remove_entry(struct iso_vol* v, const char* path)
+{
+    static uint8_t dblk[BLK];
+    struct iso_node n;
+    uint32_t lba, bo, rlen, i;
+
+    if (!v || !v->active || !v->dev || !v->dev->write || !path) return -1;
+    V = v;
+    if (iso_lookup_impl(path, &n) != 0) return -1;
+    lba = walk_rec_lba;
+    bo  = walk_rec_bo;
+    if (read_raw(lba, 1, dblk) != 0) return -1;
+    rlen = dblk[bo];
+    if (rlen < 34 || bo + rlen > BLK) return -1;
+    for (i = bo; i + rlen < BLK; i++) dblk[i] = dblk[i + rlen];
+    for (; i < BLK; i++) dblk[i] = 0;
+    if (v->dev->write(v->dev, (uint64_t)lba * SECT_PER_BLK, SECT_PER_BLK, dblk) != 0)
+        return -1;
+    bc_flush();
+    return 0;
+}
+
 int iso_v_lookup(struct iso_vol* v, const char* path, struct iso_node* out) {
     V = v; return iso_lookup_impl(path, out);
 }
