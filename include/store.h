@@ -18,6 +18,10 @@ void store_save(void);
 // active. This is what fs.c calls after every mutation.
 void store_autosave(void);
 
+// Mirror /boot into the boot image on disk (no-op unless persistence is on).
+void store_sync_boot(void);
+void store_sync_boot_force(void);   // same, but also writes large files
+
 // 1 if a disk-backed Storefile is active (writes are being persisted),
 // 0 if we're running from RAM (no disk found, or it was too small).
 int store_is_persistent(void);

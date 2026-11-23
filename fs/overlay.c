@@ -134,6 +134,24 @@ static int is_blocked(const char* p) {
     return 0;
 }
 
+/* After an operation that changed something under /boot has finished (so the
+ * tree is in a settled state, never half-way through create+write), let
+ * kernel/store.c mirror it into the boot image on disk. */
+extern void store_sync_boot(void);
+static void boot_changed(const char* p) {
+    if (p && p[0] == '/' && p[1] == 'b' && p[2] == 'o' && p[3] == 'o' && p[4] == 't' &&
+        (p[5] == 0 || p[5] == '/'))
+        store_sync_boot();
+}
+
+/* Entries of directory p that live in the RAM layer (copied-up or new), same
+ * format as a directory listing. */
+int ovl_upper_list(const char* p, char* out, uint32_t* size) {
+    *size = 0; out[0] = 0;
+    if (!ovl_active_now() || !p || !U->dir_exists(0, p)) return -1;
+    return U->list_dir(0, p, out, size);
+}
+
 /* The ISO paths hidden by deletes, in order (for kernel/store.c, which mirrors
  * them into the boot image on disk). */
 int ovl_whiteout_count(void) {
@@ -298,7 +316,7 @@ static int parent_writable(const char* p) {
 
 /* vfs ops                                                           */
 
-static int o_create_file(void* sb, const char* p) {
+static int o_create_file_impl(void* sb, const char* p) {
     int rc;
     (void)sb;
     fs_errno = 0;
@@ -310,7 +328,7 @@ static int o_create_file(void* sb, const char* p) {
     return U->create_file(0, p);
 }
 
-static int o_create_dir(void* sb, const char* p) {
+static int o_create_dir_impl(void* sb, const char* p) {
     int rc;
     (void)sb;
     fs_errno = 0;
@@ -343,7 +361,7 @@ static int prepare_replace(const char* p) {
     return ensure_parents(p);
 }
 
-static int o_write_file(void* sb, const char* p, const char* data, uint32_t size) {
+static int o_write_file_impl(void* sb, const char* p, const char* data, uint32_t size) {
     int rc;
     (void)sb;
     fs_errno = 0;
@@ -352,7 +370,7 @@ static int o_write_file(void* sb, const char* p, const char* data, uint32_t size
     return U->write_file(0, p, data, size);
 }
 
-static int o_append_file(void* sb, const char* p, const char* data, uint32_t len) {
+static int o_append_file_impl(void* sb, const char* p, const char* data, uint32_t len) {
     int rc;
     (void)sb;
     fs_errno = 0;
@@ -510,7 +528,7 @@ static int o_dir_is_empty(void* sb, const char* p) {
 
 /* ---- delete / attributes ---------------------------------------- */
 
-static int o_delete_file(void* sb, const char* p) {
+static int o_delete_file_impl(void* sb, const char* p) {
     struct iso_node n;
     int on_iso;
     (void)sb;
@@ -529,7 +547,7 @@ static int o_delete_file(void* sb, const char* p) {
     return -1;
 }
 
-static int o_delete_dir(void* sb, const char* p) {
+static int o_delete_dir_impl(void* sb, const char* p) {
     struct iso_node n;
     (void)sb;
     fs_errno = 0;
@@ -594,6 +612,38 @@ static int o_get_mode(void* sb, const char* p) {
     (void)sb;
     if (u_file(p) || u_dir(p)) return U->get_mode(0, p);
     return l_stat(p, &n) == 0 ? (int)n.mode : -1;
+}
+
+/* wrappers: run the boot image sync once the operation has completed */
+static int o_create_file(void* sb, const char* p) {
+    int rc = o_create_file_impl(sb, p);
+    if (rc == 0) boot_changed(p);
+    return rc;
+}
+static int o_create_dir(void* sb, const char* p) {
+    int rc = o_create_dir_impl(sb, p);
+    if (rc == 0) boot_changed(p);
+    return rc;
+}
+static int o_write_file(void* sb, const char* p, const char* data, uint32_t size) {
+    int rc = o_write_file_impl(sb, p, data, size);
+    if (rc == 0) boot_changed(p);
+    return rc;
+}
+static int o_append_file(void* sb, const char* p, const char* data, uint32_t len) {
+    int rc = o_append_file_impl(sb, p, data, len);
+    if (rc == 0) boot_changed(p);
+    return rc;
+}
+static int o_delete_file(void* sb, const char* p) {
+    int rc = o_delete_file_impl(sb, p);
+    if (rc == 0) boot_changed(p);
+    return rc;
+}
+static int o_delete_dir(void* sb, const char* p) {
+    int rc = o_delete_dir_impl(sb, p);
+    if (rc == 0) boot_changed(p);
+    return rc;
 }
 
 static struct vfs_ops ovl_ops;

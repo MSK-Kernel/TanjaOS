@@ -74,14 +74,24 @@ int iso_v_read_range(struct iso_vol* v, const struct iso_node* n, uint32_t offse
                      void* buf, uint32_t cap, uint32_t* got);
 const char* iso_v_name_style(const struct iso_vol* v);
 
-/* Overwrite an existing plain file of a volume that sits on a writable disk
- * (the installed boot image), in place. The new contents must fit in the
- * blocks the file already occupies: 0 = ok, -1 = error / not a plain file,
- * -2 = too big (*cap_out = bytes the file can hold). */
-/* Remove a file or directory from a volume on a writable disk by deleting its
- * directory record (the data blocks are left unreferenced). 0 = ok. */
+/* ---- writing (a volume on a writable disk: the installed boot image) ---- */
+
+/* data source for iso_v_put_file(): fill buf with n bytes at offset off, 0 = ok */
+typedef int (*iso_src_fn)(void* ctx, uint32_t off, void* buf, uint32_t n);
+
+/* Create or replace a regular file. Rewritten in place if the new contents fit
+ * in the blocks it owns, otherwise written to fresh blocks appended to the
+ * image (never at or beyond block limit_blk). 0 = ok, -1 = error / not a plain
+ * file, -2 = no room (*free_bytes = what is left), -3 = parent missing or its
+ * directory is full. */
+int iso_v_put_file(struct iso_vol* v, const char* path, uint32_t len,
+                   iso_src_fn src, void* ctx, uint32_t limit_blk, uint32_t* free_bytes);
+
+/* Create a directory (0 also if it already exists). Same codes. */
+int iso_v_make_dir(struct iso_vol* v, const char* path, uint32_t limit_blk, uint32_t* free_bytes);
+
+/* Remove a file or directory by deleting its directory record (the data blocks
+ * are left unreferenced). 0 = ok. */
 int iso_v_remove_entry(struct iso_vol* v, const char* path);
-int iso_v_update_file(struct iso_vol* v, const char* path,
-                      const void* data, uint32_t len, uint32_t* cap_out);
 
 #endif

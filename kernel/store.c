@@ -275,38 +275,52 @@ static void store_wr_sink(void* vctx, const uint8_t* data, uint32_t len)
 /*
  * Boot image write-through.
  *
- * GRUB does not read /boot/grub/grub.cfg from the Storefile: it reads it from
- * the ISO9660 boot image at the front of the disk. An edit made inside
- * TanjaOS only lands in the RAM filesystem (and from there in the Storefile),
- * so GRUB kept showing the original menu after a reboot. Whenever the saved
- * state is written, the boot config files that were edited are therefore also
- * written into the boot image, in place.
- *
- * An ISO cannot grow a file, so the new contents must fit in the blocks the
- * file already owns (2048 bytes for a config file smaller than that). If it
- * does not fit, nothing is written to the boot image and a warning says so.
+ * GRUB does not read /boot from the Storefile: it reads the ISO9660 boot image
+ * at the front of the disk. Inside TanjaOS, /boot is that image seen through
+ * the overlay, and every change lands in the RAM layer and the Storefile only,
+ * so GRUB kept the old menu, the old kernel, the old everything. Whenever the
+ * saved state is written and something under /boot changed, the changes are
+ * also written into the image on disk:
+ *   - new directories and files get new directory records; their data goes to
+ *     blocks appended to the image (the image's headroom below the
+ *     filesystem's data area, see STORE_FRONT_RESERVE_SECTORS);
+ *   - edited files are rewritten in place when they still fit, else moved to
+ *     fresh blocks at the end of the image;
+ *   - deleted files and directories lose their directory record.
+ * If the image has no room left, or a directory block is full, nothing is
+ * written for that entry and a warning says so.
  */
-#define BOOTSYNC_BUF (8u * 2048u)
 
-struct boot_sync_file {
-    const char* path;
-    uint32_t    done_len;     /* contents last found/made identical on disk */
-    uint32_t    done_sum;
-    int         done_valid;
-};
-
-static struct boot_sync_file boot_sync_files[] = {
-    { "/boot/grub/grub.cfg",   0, 0, 0 },
-    { "/boot/tanja/tanja.cfg", 0, 0, 0 },
-};
+extern void* malloc(unsigned int n);
+extern void free(void* p);
 
 static struct iso_vol boot_vol;
 static int boot_vol_state = 0;          /* 0 not tried yet, 1 open, -1 none */
+static int bootsync_busy = 0;
+static int bootsync_boot = 0;      /* 1 = start-up catch-up: compare large files before nagging */
+static int bootsync_force = 0;     /* 1 = also write large files (sync / boot) */
+#define BS_DEFER_BYTES (64u * 1024u)
 
-static uint32_t bootsync_sum(const uint8_t* d, uint32_t n) {
-    uint32_t h = 2166136261u, i;
-    for (i = 0; i < n; i++) { h ^= d[i]; h *= 16777619u; }
+/* failures already reported (path hash + size), so a later unrelated change
+ * under /boot does not repeat the same warning */
+#define BS_WARN_MAX 8
+static uint32_t bs_warn_hash[BS_WARN_MAX], bs_warn_len[BS_WARN_MAX];
+static int bs_warn_n = 0;
+
+static uint32_t bs_hash(const char* s) {
+    uint32_t h = 2166136261u;
+    while (*s) { h ^= (uint8_t)*s++; h *= 16777619u; }
     return h;
+}
+
+/* 1 = first time this (path, len) failure is reported */
+static int bs_warn_once(const char* path, uint32_t len) {
+    uint32_t h = bs_hash(path);
+    int i;
+    for (i = 0; i < bs_warn_n; i++)
+        if (bs_warn_hash[i] == h && bs_warn_len[i] == len) return 0;
+    if (bs_warn_n < BS_WARN_MAX) { bs_warn_hash[bs_warn_n] = h; bs_warn_len[bs_warn_n] = len; bs_warn_n++; }
+    return 1;
 }
 
 /* The bdev the Storefile (and so the installed boot image) lives on. */
@@ -336,64 +350,126 @@ static int bootsync_open(void) {
     return boot_vol_state > 0;
 }
 
-static void bootsync_one(struct boot_sync_file* f) {
-    static uint8_t want[BOOTSYNC_BUF + 1];
-    static uint8_t have[BOOTSYNC_BUF + 1];
-    uint32_t want_len, have_len = 0, sum, cap = 0;
-    struct iso_node node;
-    int rc;
+/* first block of the image that must NOT be used: where the data area starts */
+static uint32_t bootsync_limit_blk(void) {
+    return store_front_reserve_sectors() / 4u;          /* 2048-byte blocks */
+}
 
-    if (!fs_file_exists(f->path)) return;
-    want_len = fs_get_file_size(f->path);
-    if (want_len == 0) return;                 /* never leave GRUB an empty menu */
+static void bs_say(const char* a, const char* path, const char* b) {
+    print("[boot] "); print(a); print(path); print(b); print("\n");
+}
 
-    if (want_len > BOOTSYNC_BUF) {
-        /* too big for any config file: warn once per size */
-        if (f->done_valid && f->done_len == want_len && f->done_sum == 0) return;
-        f->done_valid = 1; f->done_len = want_len; f->done_sum = 0;
-        print("[boot] "); print(f->path);
-        print(" is too large for the boot image, not written (GRUB will keep the old one)\n");
-        return;
-    }
-
-    {
-        uint32_t sz = BOOTSYNC_BUF;
-        if (fs_read_file(f->path, (char*)want, &sz) != 0) return;
-        want_len = sz;
-    }
-    sum = bootsync_sum(want, want_len);
-    if (f->done_valid && f->done_len == want_len && f->done_sum == sum) return;
-
-    if (!bootsync_open() || iso_v_lookup(&boot_vol, f->path, &node) != 0 ||
-        node.is_dir || node.is_link) {
-        /* no boot image on this disk, or the file is not part of it */
-        f->done_valid = 1; f->done_len = want_len; f->done_sum = sum;
-        return;
-    }
-
-    /* already identical on disk? */
-    if (node.size == want_len && node.size <= BOOTSYNC_BUF &&
-        iso_v_read_range(&boot_vol, &node, 0, have, BOOTSYNC_BUF, &have_len) == 0 &&
-        have_len == want_len && bootsync_sum(have, have_len) == sum) {
-        f->done_valid = 1; f->done_len = want_len; f->done_sum = sum;
-        return;
-    }
-
-    rc = iso_v_update_file(&boot_vol, f->path, want, want_len, &cap);
-    f->done_valid = 1; f->done_len = want_len; f->done_sum = sum;   /* do not retry the same contents */
-    if (rc == 0) {
-        print("[boot] "); print(f->path); print(" written to the boot image\n");
-    } else if (rc == -2) {
-        print("[boot] "); print(f->path);
-        print(" does not fit in the boot image (max "); print_dec(cap);
-        print(" bytes, it is "); print_dec(want_len);
-        print("); GRUB will keep the old one\n");
+static void bs_fail(int rc, uint32_t freeb, uint32_t need, const char* path, const char* what) {
+    if (!bs_warn_once(path, (uint32_t)(rc + 100))) return;
+    if (rc == -2) {
+        print("Storefile: no room in the boot image for "); print(path);
+        print(" with "); print_dec(freeb / 1024); print(" KiB free, needs "); print_dec((need + 1023) / 1024);
+        print(" KiB, GRUB will not see it\n");
+    } else if (rc == -3) {
+        print("Storefile: cannot add "); print(path); print(" to the boot image (directory full or name too long); GRUB will not see it\n");
     } else {
-        print("[boot] could not write "); print(f->path); print(" to the boot image\n");
+        print("Storefile: could not "); print(what); print(" "); print(path); print(" in the boot image\n");
     }
 }
 
-/* rm in the overlay only hides an ISO file; GRUB reads the image itself, so
+static int bs_src(void* ctx, uint32_t off, void* buf, uint32_t n) {
+    uint32_t got = 0;
+    if (fs_read_file_range((const char*)ctx, off, (char*)buf, n, &got) != 0 || got != n) return -1;
+    return 0;
+}
+
+/* does the file in the tree match the one in the image? */
+static int bs_same(const char* path, const struct iso_node* node, uint32_t len) {
+    static uint8_t a[4096], b[4096];
+    uint32_t off = 0;
+    if (node->size != len) return 0;
+    while (off < len) {
+        uint32_t n = len - off, ga = 0, gb = 0, i;
+        if (n > sizeof a) n = sizeof a;
+        if (fs_read_file_range(path, off, (char*)a, n, &ga) != 0 || ga != n) return 0;
+        if (iso_v_read_range(&boot_vol, node, off, b, n, &gb) != 0 || gb != n) return 0;
+        for (i = 0; i < n; i++) if (a[i] != b[i]) return 0;
+        off += n;
+    }
+    return 1;
+}
+
+static void bootsync_file(const char* path) {
+    struct iso_node node;
+    uint32_t len = fs_get_file_size(path), freeb = 0;
+    int rc, exists;
+
+    exists = (iso_v_lookup(&boot_vol, path, &node) == 0);
+    if (exists && (node.is_dir || node.is_link)) return;
+
+    /* A big file arrives in many chunks, and writing it to the image after
+       each one would take forever and leave a half-copied file where GRUB
+       could see it (think: cp newkernel /boot/kernel/kernel). So anything
+       involving a large file - the new one or the one it replaces - waits
+       for an explicit `sync`. */
+    if ((len > BS_DEFER_BYTES || (exists && node.size > BS_DEFER_BYTES)) && !bootsync_force) {
+        if (bootsync_boot && exists && bs_same(path, &node, len)) return;   /* already in the image */
+        if (bs_warn_once(path, 1)) {
+            print("[boot] "); print(path);
+            print(" is large: run `sync` to write it to the boot image\n");
+        }
+        return;
+    }
+
+    if (exists) {
+        if (bs_same(path, &node, len)) return;
+        /* never leave GRUB an empty menu */
+        if (len == 0 && path[6] == 'g' && path[7] == 'r' && path[8] == 'u' && path[9] == 'b' &&
+            path[10] == '/' && path[11] == 'g' && path[12] == 'r' && path[13] == 'u' && path[14] == 'b' &&
+            path[15] == '.' && path[16] == 'c' && path[17] == 'f' && path[18] == 'g' && path[19] == 0)
+            return;
+    }
+    rc = iso_v_put_file(&boot_vol, path, len, bs_src, (void*)path, bootsync_limit_blk(), &freeb);
+    if (rc == 0) bs_say("", path, exists ? " written to the boot image" : " added to the boot image");
+    else bs_fail(rc, freeb, len, path, "write");
+}
+
+static void bootsync_walk(const char* dir, int depth) {
+    char* list;
+    uint32_t sz = 0, i = 0;
+    if (depth > 6) return;
+    list = (char*)malloc(16400);
+    if (!list) return;
+    if (ovl_upper_list(dir, list, &sz) != 0) { free(list); return; }
+    if (sz > 16399) sz = 16399;
+    list[sz] = 0;
+    while (i < sz) {
+        char path[160];
+        uint32_t s = i, e, nl, k, m = 0;
+        int is_dir;
+        while (i < sz && list[i] != '\n') i++;
+        e = i;
+        if (i < sz) i++;
+        if (e == s) continue;
+        is_dir = (list[e - 1] == '/');
+        nl = e - s - (is_dir ? 1 : 0);
+        for (k = 0; dir[k] && m < sizeof path - 2; k++) path[m++] = dir[k];
+        if (!(m == 1 && path[0] == '/')) path[m++] = '/';
+        if (m + nl >= sizeof path) continue;
+        for (k = 0; k < nl; k++) path[m++] = list[s + k];
+        path[m] = 0;
+        if (is_dir) {
+            struct iso_node nd;
+            if (iso_v_lookup(&boot_vol, path, &nd) != 0) {
+                uint32_t freeb = 0;
+                int rc = iso_v_make_dir(&boot_vol, path, bootsync_limit_blk(), &freeb);
+                if (rc == 0) bs_say("", path, " added to the boot image");
+                else { bs_fail(rc, freeb, 2048, path, "create"); continue; }
+            } else if (!nd.is_dir) continue;
+            bootsync_walk(path, depth + 1);
+        } else {
+            bootsync_file(path);
+        }
+    }
+    free(list);
+}
+
+/* rm in the overlay only hides an ISO entry; GRUB reads the image itself, so
  * hidden /boot entries are also taken out of the image's directory records.
  * /boot and /boot/grub themselves are never removed (that would leave nothing
  * to boot). */
@@ -412,7 +488,7 @@ static void bootsync_prune(void) {
         if (w[k]) continue;                                 /* too long: skip */
         if (path[0] != '/' || path[1] != 'b' || path[2] != 'o' || path[3] != 'o' ||
             path[4] != 't' || path[5] != '/' || path[6] == 0) continue;   /* only /boot/... */
-        if (!bootsync_open()) return;
+        if (fs_file_exists(path) || fs_directory_exists(path)) continue;  /* made again since */
         if (iso_v_lookup(&boot_vol, path, &node) != 0) continue;           /* already gone */
         if (path[6] == 'g' && path[7] == 'r' && path[8] == 'u' && path[9] == 'b' && path[10] == 0) {
             if (!bootsync_protect_warned) {
@@ -421,34 +497,63 @@ static void bootsync_prune(void) {
             }
             continue;
         }
-        if (iso_v_remove_entry(&boot_vol, path) == 0) {
-            print("[boot] "); print(path); print(" removed from the boot image\n");
-        } else {
-            print("[boot] could not remove "); print(path); print(" from the boot image\n");
+        if (!node.is_dir && node.size > BS_DEFER_BYTES && !bootsync_force) {
+            if (bs_warn_once(path, 2)) {
+                print("[boot] "); print(path);
+                print(" is large: run `sync` to remove it from the boot image\n");
+            }
+            continue;
         }
+        if (iso_v_remove_entry(&boot_vol, path) == 0) bs_say("", path, " removed from the boot image");
+        else bs_say("could not remove ", path, " from the boot image");
     }
 }
 
-static int bootsync_busy = 0;
-
 static void store_sync_boot_files(void) {
-    unsigned i;
+    struct vfs_bdev* d;
+    const char* a;
+    const char* b;
+
     if (bootsync_busy) return;
-    /* Booted from some other ISO (installer / live media in a drive): /boot/...
-       in the tree is that medium's copy, not this disk's. Never copy it
-       across. When the overlay IS this disk's own boot image, sync as usual. */
-    if (ovl_active_now()) {
-        struct vfs_bdev* d = bootsync_store_bdev();
-        const char* a = iso_device_name();
-        const char* b = d ? d->name : "";
-        while (*a && *a == *b) { a++; b++; }
-        if (*a || *b || !d) return;     /* overlay is some other medium */
-    }
+    /* Only when /boot is this disk's own boot image seen through the overlay.
+       Booted from some other ISO (installer / live medium in a drive) it is
+       that medium's copy, and must never be copied across. */
+    if (!ovl_active_now()) return;
+    d = bootsync_store_bdev();
+    if (!d) return;
+    a = iso_device_name();
+    b = d->name;
+    while (*a && *a == *b) { a++; b++; }
+    if (*a || *b) return;
+
     bootsync_busy = 1;
-    for (i = 0; i < sizeof boot_sync_files / sizeof boot_sync_files[0]; i++)
-        bootsync_one(&boot_sync_files[i]);
-    bootsync_prune();
+    if (bootsync_open()) {
+        bootsync_walk("/boot", 0);
+        bootsync_prune();
+    }
     bootsync_busy = 0;
+}
+
+/* Mirror /boot into the boot image on disk (no-op unless persistence is on). */
+void store_sync_boot(void) {
+    if (store_enabled) store_sync_boot_files();
+}
+
+/* same, but also writes large files (explicit `sync`, boot-time catch-up) */
+void store_sync_boot_force(void) {
+    if (!store_enabled) return;
+    bootsync_force = 1;
+    store_sync_boot_files();
+    bootsync_force = 0;
+}
+
+/* start-up: bring the image up to date with what an earlier session left in
+ * the saved state (large files still wait for an explicit `sync`) */
+static void store_sync_boot_startup(void) {
+    if (!store_enabled) return;
+    bootsync_boot = 1;
+    store_sync_boot_files();
+    bootsync_boot = 0;
 }
 
 void store_autosave(void) {
@@ -497,15 +602,13 @@ void store_autosave(void) {
             le32_at(&chk[4]) == payload_bytes)
             store_enabled = 1;
     }
-
-    /* The Storefile is safely on disk: now carry boot config edits over to
-       the boot image GRUB actually reads. */
-    if (store_enabled)
-        store_sync_boot_files();
 }
 
+/* `sync`: save the state, then make sure the boot image on disk matches
+ * /boot (also covers writes that do not go through the normal file ops). */
 void store_save(void) {
     store_autosave();
+    store_sync_boot_force();
 }
 
 int store_is_persistent(void) {
@@ -782,6 +885,7 @@ void store_init(uint32_t mb_magic, uint32_t mb_addr) {
                 store_data_ok = 1;
                 store_enabled = 1;
                 boot_log("Storefile: loaded saved state from disk");
+                store_sync_boot_startup();   /* edits saved by an earlier session that never reached the image */
                 return;
             }
             keep_reason = "it does not fit in this machine's file memory, or is damaged";
@@ -839,6 +943,7 @@ void store_init(uint32_t mb_magic, uint32_t mb_addr) {
     store_enabled = 1;
     store_autosave();
     boot_log("Storefile: persistence enabled, initial state written to disk");
+    store_sync_boot_startup();
 }
 
 /*

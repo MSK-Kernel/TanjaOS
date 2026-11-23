@@ -290,8 +290,8 @@ static int parse_record(const uint8_t* r, uint32_t len, struct iso_ent* e)
 typedef int (*dir_cb)(const struct iso_ent* e, void* ctx);
 
 /* Where the record most recently handed to a dir_walk callback lives (ISO
- * block + byte offset inside it). iso_v_update_file() uses this to patch the
- * size fields of the record it just looked up. */
+ * block + byte offset inside it). iso_v_put_file() and iso_v_remove_entry() use this to patch the
+ * record they just looked up. */
 static uint32_t walk_rec_lba;
 static uint32_t walk_rec_bo;
 
@@ -672,68 +672,268 @@ int iso_vol_open(struct iso_vol* v, struct vfs_bdev* d)
     return 0;
 }
 
-/* Largest file iso_v_update_file() will write (8 blocks). */
-#define UPD_MAX (8u * BLK)
-
-/* Replace the contents of an existing, regular file of an ISO9660 volume
- * IN PLACE, for a volume on a writable disk (the boot image the installer
- * dd'd to the front of the disk). An ISO cannot grow or move files, so the
- * new contents have to fit in the blocks the file already owns; the data is
- * zero-padded to a block boundary and the size fields of the file's
- * directory record are patched (both-endian, ECMA-119 9.1.4).
+/* ---- writing to a volume on a writable disk (the installed boot image) ----
  *
- * Returns 0 on success, -1 on I/O error or not found / not a plain file,
- * -2 if the data does not fit (*cap_out, if given, receives the number of
- * bytes the file can hold). */
-int iso_v_update_file(struct iso_vol* v, const char* path,
-                      const void* data, uint32_t len, uint32_t* cap_out)
-{
-    static uint8_t buf[UPD_MAX];
+ * An ISO has no free-space map, so new data is appended after the end of the
+ * image: the volume size in the primary volume descriptor says where that is,
+ * and every allocation bumps it. The caller passes `limit_blk`, the first
+ * block that is NOT free to use (kernel/store.c: where the filesystem's own
+ * data area starts). Old blocks of a file that moved are simply left behind.
+ */
+
+static uint32_t rd_le32(const uint8_t* p) {
+    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+static void put_both32(uint8_t* p, uint32_t v) {          /* ECMA-119 7.3.3 */
+    p[0] = (uint8_t)v;         p[1] = (uint8_t)(v >> 8);
+    p[2] = (uint8_t)(v >> 16); p[3] = (uint8_t)(v >> 24);
+    p[4] = (uint8_t)(v >> 24); p[5] = (uint8_t)(v >> 16);
+    p[6] = (uint8_t)(v >> 8);  p[7] = (uint8_t)v;
+}
+
+static int dev_write_blocks(uint32_t blk, uint32_t n, const void* buf) {
+    if (!iso_dev || !iso_dev->write) return -1;
+    return iso_dev->write(iso_dev, (uint64_t)blk * SECT_PER_BLK, n * SECT_PER_BLK, buf);
+}
+
+/* Reserve n blocks at the end of the image. 0 ok, -1 I/O, -2 no room
+ * (*free_blk = blocks still free). */
+static int alloc_blocks(uint32_t n, uint32_t limit_blk, uint32_t* start, uint32_t* free_blk) {
+    static uint8_t pvd[BLK];
+    uint32_t cur;
+    if (read_raw(16, 1, pvd) != 0) return -1;
+    if (pvd[0] != 1 || pvd[1] != 'C' || pvd[2] != 'D') return -1;
+    cur = rd_le32(pvd + 80);
+    if (free_blk) *free_blk = limit_blk > cur ? limit_blk - cur : 0;
+    if (cur + n > limit_blk || cur + n < cur) return -2;
+    if (n == 0) { *start = cur; return 0; }
+    put_both32(pvd + 80, cur + n);
+    if (dev_write_blocks(16, 1, pvd) != 0) return -1;
+    *start = cur;
+    return 0;
+}
+
+/* Write `len` bytes pulled from src to consecutive blocks, zero-padded. */
+static int write_stream(uint32_t start_blk, uint32_t len, iso_src_fn src, void* ctx) {
+    static uint8_t chunk[16u * BLK];
+    uint32_t done = 0, i;
+    while (done < len) {
+        uint32_t n = len - done, nb;
+        if (n > sizeof chunk) n = sizeof chunk;
+        nb = (n + BLK - 1) / BLK;
+        for (i = 0; i < nb * BLK; i++) chunk[i] = 0;
+        if (src(ctx, done, chunk, n) != 0) return -1;
+        if (dev_write_blocks(start_blk + done / BLK, nb, chunk) != 0) return -1;
+        done += n;
+    }
+    return 0;
+}
+
+/* Patch the directory record at (lba, bo): new extent (if != 0xFFFFFFFF) and size. */
+static int patch_rec(uint32_t lba, uint32_t bo, uint32_t extent, uint32_t size) {
     static uint8_t dblk[BLK];
-    struct iso_node n;
-    uint32_t blocks, cap, i, pos;
+    if (read_raw(lba, 1, dblk) != 0 || bo + 18 > BLK) return -1;
+    if (extent != 0xFFFFFFFFu) put_both32(dblk + bo + 2, extent);
+    put_both32(dblk + bo + 10, size);
+    return dev_write_blocks(lba, 1, dblk);
+}
+
+/* Build a directory record. RR volumes get PX + NM so Rock Ridge readers (GRUB
+ * and this kernel) see the exact name, mode and type. Returns its length or 0. */
+static uint32_t build_record(uint8_t* r, const char* name, int is_dir, uint32_t extent,
+                             uint32_t size, const uint8_t* date, int rr)
+{
+    uint32_t nl = 0, idl, o, i;
+    while (name[nl]) nl++;
+    if (nl == 0 || nl > 80) return 0;
+    idl = nl + (is_dir ? 0 : 2);                         /* "name;1" for files */
+    for (i = 0; i < 256; i++) r[i] = 0;
+    put_both32(r + 2, extent);
+    put_both32(r + 10, size);
+    for (i = 0; i < 7; i++) r[18 + i] = date[i];
+    r[25] = is_dir ? 2 : 0;
+    r[28] = 1; r[31] = 1;                                /* volume sequence number 1 */
+    r[32] = (uint8_t)idl;
+    for (i = 0; i < nl; i++) r[33 + i] = (uint8_t)name[i];
+    if (!is_dir) { r[33 + nl] = ';'; r[34 + nl] = '1'; }
+    o = 33 + idl;
+    if (o & 1) o++;                                      /* pad id to an even length */
+    if (rr) {
+        r[o] = 'P'; r[o + 1] = 'X'; r[o + 2] = 36; r[o + 3] = 1;
+        put_both32(r + o + 4,  is_dir ? 040755u : 0100644u);
+        put_both32(r + o + 12, 1);
+        put_both32(r + o + 20, 0);
+        put_both32(r + o + 28, 0);
+        o += 36;
+        r[o] = 'N'; r[o + 1] = 'M'; r[o + 2] = (uint8_t)(5 + nl); r[o + 3] = 1; r[o + 4] = 0;
+        for (i = 0; i < nl; i++) r[o + 5 + i] = (uint8_t)name[i];
+        o += 5 + nl;
+    }
+    if (o & 1) o++;
+    if (o > 255) return 0;
+    r[0] = (uint8_t)o;
+    return o;
+}
+
+/* Put `rec` into the first block of the directory with room for it. */
+static int dir_insert(uint32_t dext, uint32_t dsize, const uint8_t* rec, uint32_t rlen) {
+    static uint8_t dblk[BLK];
+    uint32_t b, nb = dsize / BLK, off, i;
+    for (b = 0; b < nb; b++) {
+        if (read_raw(dext + b, 1, dblk) != 0) return -1;
+        off = 0;
+        while (off < BLK && dblk[off] != 0) off += dblk[off];
+        if (off > BLK) return -1;
+        if (off + rlen <= BLK) {
+            for (i = 0; i < rlen; i++) dblk[off + i] = rec[i];
+            return dev_write_blocks(dext + b, 1, dblk) == 0 ? 0 : -1;
+        }
+    }
+    return -3;                                           /* directory is full */
+}
+
+/* split "/a/b/c" into parent "/a/b" and name "c" */
+static int split_path(const char* path, char* parent, uint32_t pcap, const char** name) {
+    uint32_t n = 0, last = 0, i;
+    while (path[n]) n++;
+    if (n < 2 || path[0] != '/') return -1;
+    for (i = 0; i < n; i++) if (path[i] == '/') last = i;
+    if (last + 1 >= n || last + 1 > pcap) return -1;
+    if (last == 0) { parent[0] = '/'; parent[1] = 0; }
+    else { for (i = 0; i < last; i++) parent[i] = path[i]; parent[last] = 0; }
+    *name = path + last + 1;
+    return 0;
+}
+
+/* Parent directory of `path` plus the recording date to reuse for new records. */
+static int parent_info(const char* path, struct iso_node* pn, const char** name, uint8_t* date) {
+    static uint8_t blk[BLK];
+    char parent[200];
+    uint32_t i;
+    if (split_path(path, parent, sizeof parent, name) != 0) return -1;
+    if (iso_lookup_impl(parent, pn) != 0 || !pn->is_dir || pn->is_link) return -3;
+    if (read_raw(pn->extent, 1, blk) != 0) return -1;
+    for (i = 0; i < 7; i++) date[i] = blk[18 + i];
+    return 0;
+}
+
+/* Files that had to move get spare blocks, so that growing them again (a log,
+ * a config being appended to) rewrites in place instead of leaking the old
+ * blocks every time. Remembered per session: extent -> blocks reserved. */
+#define RELOC_SLOTS 8
+static struct { uint32_t ext, blocks; } reloc_tab[RELOC_SLOTS];
+static unsigned reloc_next;
+
+static uint32_t reloc_blocks(uint32_t ext) {
+    unsigned i;
+    for (i = 0; i < RELOC_SLOTS; i++)
+        if (reloc_tab[i].blocks && reloc_tab[i].ext == ext) return reloc_tab[i].blocks;
+    return 0;
+}
+
+static void reloc_note(uint32_t ext, uint32_t blocks) {
+    unsigned i;
+    for (i = 0; i < RELOC_SLOTS; i++)
+        if (reloc_tab[i].ext == ext) { reloc_tab[i].blocks = blocks; return; }
+    reloc_tab[reloc_next++ % RELOC_SLOTS].ext = ext;
+    reloc_tab[(reloc_next - 1) % RELOC_SLOTS].blocks = blocks;
+}
+
+/* Create or replace a regular file of a volume on a writable disk, taking its
+ * `len` bytes from src. A file whose new contents fit in the blocks it already
+ * owns is rewritten in place; otherwise (or for a new file) the data goes to
+ * freshly allocated blocks at the end of the image and the directory record is
+ * updated / added. The data is always written before the record that points at
+ * it. Returns 0 ok, -1 error or not a plain file, -2 no room in the image
+ * (*free_bytes = what is left), -3 parent missing or its directory is full. */
+int iso_v_put_file(struct iso_vol* v, const char* path, uint32_t len,
+                   iso_src_fn src, void* ctx, uint32_t limit_blk, uint32_t* free_bytes)
+{
+    struct iso_node n, pn;
+    uint8_t date[7];
+    static uint8_t rec[256];
+    const char* name;
+    uint32_t nb = (len + BLK - 1) / BLK, start, fb = 0, rlen;
     int rc;
 
-    if (cap_out) *cap_out = 0;
-    if (!v || !v->active || !v->dev || !v->dev->write || !path || (!data && len)) return -1;
+    if (free_bytes) *free_bytes = 0;
+    if (!v || !v->active || !v->dev || !v->dev->write || !path || (len && !src)) return -1;
     V = v;
-    if (iso_lookup_impl(path, &n) != 0) return -1;
-    if (n.is_dir || n.is_link) return -1;
-
-    /* iso_lookup_impl() walked the parent directory last, so walk_rec_* is
-     * the record of the file itself (a Rock Ridge symlink hop would break
-     * that, and links are refused above). */
-    pos = walk_rec_bo;
-    i   = walk_rec_lba;
-
-    cap = ((n.size + BLK - 1) / BLK) * BLK;
-    if (cap_out) *cap_out = cap;
-    if (cap == 0 || len > cap) return -2;
-    if (len > UPD_MAX) return -2;
-
-    blocks = (len + BLK - 1) / BLK;
-    if (blocks == 0) blocks = 1;
-    for (rc = 0; rc < (int)(blocks * BLK); rc++) buf[rc] = 0;
-    mcopy(buf, data, len);
-
-    /* 1. data blocks first, then 2. the directory record that points at
-     * them: an interrupted update leaves either the old file or the new
-     * data with the old size, never a record pointing at garbage. */
-    if (v->dev->write(v->dev, (uint64_t)n.extent * SECT_PER_BLK,
-                      blocks * SECT_PER_BLK, buf) != 0)
-        return -1;
-
-    if (read_raw(i, 1, dblk) != 0) return -1;
-    if (pos + 18 > BLK) return -1;
-    dblk[pos + 10] = (uint8_t)(len);        dblk[pos + 11] = (uint8_t)(len >> 8);
-    dblk[pos + 12] = (uint8_t)(len >> 16);  dblk[pos + 13] = (uint8_t)(len >> 24);
-    dblk[pos + 14] = (uint8_t)(len >> 24);  dblk[pos + 15] = (uint8_t)(len >> 16);
-    dblk[pos + 16] = (uint8_t)(len >> 8);   dblk[pos + 17] = (uint8_t)(len);
-    if (v->dev->write(v->dev, (uint64_t)i * SECT_PER_BLK, SECT_PER_BLK, dblk) != 0)
-        return -1;
-
     bc_flush();
-    return 0;
+
+    if (iso_lookup_impl(path, &n) == 0) {
+        uint32_t lba = walk_rec_lba, bo = walk_rec_bo, cap = ((n.size + BLK - 1) / BLK) * BLK;
+        uint32_t rb = reloc_blocks(n.extent);
+        if (n.is_dir || n.is_link) return -1;
+        if (rb * BLK > cap) cap = rb * BLK;
+        if (len <= cap && (len == 0 || cap > 0)) {
+            if (len && write_stream(n.extent, len, src, ctx) != 0) return -1;
+            rc = patch_rec(lba, bo, 0xFFFFFFFFu, len);
+        } else {
+            uint32_t grant = nb * 2 + 4;                 /* spare room for growth */
+            rc = alloc_blocks(grant, limit_blk, &start, &fb);
+            if (rc == -2) { grant = nb; rc = alloc_blocks(grant, limit_blk, &start, &fb); }
+            if (free_bytes) *free_bytes = fb * BLK;
+            if (rc != 0) return rc;
+            if (write_stream(start, len, src, ctx) != 0) return -1;
+            rc = patch_rec(lba, bo, start, len);
+            if (rc == 0) reloc_note(start, grant);
+        }
+        bc_flush();
+        return rc == 0 ? 0 : -1;
+    }
+
+    rc = parent_info(path, &pn, &name, date);
+    if (rc != 0) return rc;
+    rc = alloc_blocks(nb, limit_blk, &start, &fb);
+    if (free_bytes) *free_bytes = fb * BLK;
+    if (rc != 0) return rc;
+    if (nb && write_stream(start, len, src, ctx) != 0) return -1;
+    rlen = build_record(rec, name, 0, start, len, date, v->style == 2);
+    if (!rlen) return -3;
+    rc = dir_insert(pn.extent, pn.size, rec, rlen);
+    bc_flush();
+    return rc == 0 ? 0 : (rc == -3 ? -3 : -1);
+}
+
+/* Create a directory (one block with "." and ".."). 0 ok / already there,
+ * same error codes as iso_v_put_file. */
+int iso_v_make_dir(struct iso_vol* v, const char* path, uint32_t limit_blk, uint32_t* free_bytes)
+{
+    struct iso_node n, pn;
+    uint8_t date[7];
+    static uint8_t rec[256], dblk[BLK];
+    const char* name;
+    uint32_t start, fb = 0, rlen, i;
+    int rc;
+
+    if (free_bytes) *free_bytes = 0;
+    if (!v || !v->active || !v->dev || !v->dev->write || !path) return -1;
+    V = v;
+    bc_flush();
+    if (iso_lookup_impl(path, &n) == 0) return n.is_dir ? 0 : -1;
+
+    rc = parent_info(path, &pn, &name, date);
+    if (rc != 0) return rc;
+    rc = alloc_blocks(1, limit_blk, &start, &fb);
+    if (free_bytes) *free_bytes = fb * BLK;
+    if (rc != 0) return rc;
+
+    for (i = 0; i < BLK; i++) dblk[i] = 0;
+    for (i = 0; i < 2; i++) {                            /* "." then ".." */
+        uint8_t* r = dblk + 34 * i;
+        r[0] = 34;
+        put_both32(r + 2, i == 0 ? start : pn.extent);
+        put_both32(r + 10, i == 0 ? BLK : pn.size);
+        { uint32_t k; for (k = 0; k < 7; k++) r[18 + k] = date[k]; }
+        r[25] = 2; r[28] = 1; r[31] = 1; r[32] = 1; r[33] = (uint8_t)i;
+    }
+    if (dev_write_blocks(start, 1, dblk) != 0) return -1;
+    rlen = build_record(rec, name, 1, start, BLK, date, v->style == 2);
+    if (!rlen) return -3;
+    rc = dir_insert(pn.extent, pn.size, rec, rlen);
+    bc_flush();
+    return rc == 0 ? 0 : (rc == -3 ? -3 : -1);
 }
 
 /* Remove a file or directory from a volume on a writable disk by deleting its

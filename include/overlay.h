@@ -24,6 +24,10 @@ const char* ovl_iso_data_ptr(const char* abs, uint32_t* size_out);
  * (no whiteout). Absolute path. */
 int ovl_revert(const char* abs);
 
+/* Entries of a directory that live in the RAM layer only (copied-up or new),
+ * listed like a directory listing. */
+int ovl_upper_list(const char* p, char* out, uint32_t* size);
+
 /* ISO paths hidden by deletes (whiteouts). */
 int ovl_whiteout_count(void);
 const char* ovl_whiteout_at(int i);
