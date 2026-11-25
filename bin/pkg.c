@@ -399,27 +399,55 @@ static void do_remove(const char* name) {
     printf("removed %s\n", name);
 }
 
+#define MAX_PKGS 16
+
+/* pkg install a b c: one at a time, in the order typed. The names are all
+ * checked first, so a typo stops the command before anything is installed. */
 void main(char* args) {
-    char sub[16], name[64];
+    char sub[16];
+    char names[MAX_PKGS][64];
+    int count = 0, i = 0, k, dup;
 
     /* Package installation/removal changes system-wide /usr/bin and /var/pkg. */
     if (fs_cur_uid != 0) {
         print("pkg: Permission denied, are you root?\n");
         return;
     }
-    int i = 0, j = 0;
     while (*args == ' ') args++;
     while (*args && *args != ' ' && i < 15) sub[i++] = *args++;
     sub[i] = 0;
-    while (*args == ' ') args++;
-    while (*args && *args != ' ' && j < 63) name[j++] = *args++;
-    name[j] = 0;
 
-    if ((strcmp(sub, "install") == 0 || strcmp(sub, "remove") == 0) && name[0]) {
-        if (!valid_name(name)) { print("pkg: invalid package name (letters, digits, - _ . only)\n"); return; }
-        if (sub[0] == 'i') do_install(name); else do_remove(name);
-        return;
+    if (strcmp(sub, "install") == 0 || strcmp(sub, "remove") == 0) {
+        for (;;) {
+            int j = 0;
+            char tok[64];
+            while (*args == ' ') args++;
+            if (!*args) break;
+            while (*args && *args != ' ' && j < 63) tok[j++] = *args++;
+            tok[j] = 0;
+            while (*args && *args != ' ') args++;          /* over-long name: skip the rest */
+            if (!valid_name(tok)) {
+                printf("pkg: invalid package name '%s' (letters, digits, - _ . only)\n", tok);
+                return;
+            }
+            for (dup = 0, k = 0; k < count; k++)
+                if (strcmp(names[k], tok) == 0) dup = 1;
+            if (dup) continue;                             /* typed twice: do it once */
+            if (count == MAX_PKGS) {
+                printf("pkg: too many packages at once (max %d)\n", MAX_PKGS);
+                return;
+            }
+            strcpy(names[count++], tok);
+        }
+        if (count) {
+            for (k = 0; k < count; k++) {
+                if (count > 1)
+                    printf("[%d/%d] %s %s\n", k + 1, count, sub[0] == 'i' ? "installing" : "removing", names[k]);
+                if (sub[0] == 'i') do_install(names[k]); else do_remove(names[k]);
+            }
+            return;
+        }
     }
-    print("usage: pkg install <package_name>\n"
-          "       pkg remove <package_name>\n");
+    print("usage: pkg install <package_name> [package_name ...]\n"
+          "       pkg remove <package_name> [package_name ...]\n");
 }

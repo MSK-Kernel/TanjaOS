@@ -13,6 +13,10 @@ static int mount_count = 0;
 
 static struct vfs_bdev bdevs[VFS_MAX_BDEVS];
 static int bdev_count = 0;
+/* store_init() probes the drives early (to learn which disk was booted from)
+ * and fs_init() later runs vfs_init() + vfs_probe_drives() again: once the
+ * drives have been probed, the device list is kept and not probed twice. */
+static int drives_probed = 0;
 
 static const struct vfs_ops* fstypes[MAX_FSTYPES];
 static int fstype_count = 0;
@@ -53,7 +57,7 @@ void vfs_init(void) {
         mounts[i].fstype[0] = 0;
     }
     mount_count = 0;
-    bdev_count = 0;
+    if (!drives_probed) bdev_count = 0;
     fstype_count = 0;
 }
 
@@ -311,7 +315,32 @@ static int atapi_bdev_read(struct vfs_bdev* dev, uint64_t lba, uint32_t count, v
     return 0;
 }
 
+/* Same, for an optical drive on an AHCI port. */
+static int ahci_cd_bdev_read(struct vfs_bdev* dev, uint64_t lba, uint32_t count, void* buf) {
+    uint8_t* out = (uint8_t*)buf;
+    static uint8_t bounce[2048];
+    (void)dev;
+    if (!buf || count == 0) return -1;
+    if ((lba & 3) == 0 && (count & 3) == 0)
+        return ahci_cd_read_blocks((uint32_t)(lba >> 2), count >> 2, buf);
+    while (count) {
+        uint32_t blk = (uint32_t)(lba >> 2);
+        uint32_t sec = (uint32_t)(lba & 3);
+        uint32_t n = 4 - sec;
+        uint32_t i;
+        if (n > count) n = count;
+        if (ahci_cd_read_blocks(blk, 1, bounce) != 0) return -1;
+        for (i = 0; i < n * 512; i++) out[i] = bounce[sec * 512 + i];
+        out += n * 512;
+        lba += n;
+        count -= n;
+    }
+    return 0;
+}
+
 void vfs_probe_drives(void) {
+    if (drives_probed) return;
+    drives_probed = 1;
     /* ATA primary master / slave */
     ata_drive_info_t info;
     int ch, dr;
@@ -357,6 +386,22 @@ void vfs_probe_drives(void) {
                 sr_count++;
             }
         }
+    }
+
+    /* Optical drive on an AHCI port (BIOS in AHCI mode): sr<N> as well. */
+    if (sr_count < 4 && ahci_cd_init() == 0) {
+        struct vfs_bdev d;
+        d.name[0] = 's'; d.name[1] = 'r';
+        d.name[2] = '0' + sr_count; d.name[3] = 0;
+        my_strcpy(d.model, "AHCI CD/DVD", 48);
+        d.sectors = (uint64_t)ahci_cd_blocks() * 4;
+        d.present = 1;
+        d.removable = 1;
+        d.read = ahci_cd_bdev_read;
+        d.write = 0;
+        d.private = 0;
+        vfs_register_bdev(&d);
+        sr_count++;
     }
 
     /* AHCI (single selected drive) */

@@ -329,7 +329,7 @@ static struct vfs_bdev* bootsync_store_bdev(void) {
     for (i = 0; i < n; i++) {
         struct vfs_bdev* d = vfs_bdev_at(i);
         int match = 0;
-        if (!d || !d->present || !d->read || !d->write || d->removable) continue;
+        if (!d || !d->present || !d->read || !d->write) continue;
         if (d->name[0] == 's' && d->name[1] == 'r') continue;
         if (backend == BACKEND_ATA)
             match = ((uintptr_t)d->private == (uintptr_t)((store_channel << 8) | store_drive)) &&
@@ -362,13 +362,13 @@ static void bs_say(const char* a, const char* path, const char* b) {
 static void bs_fail(int rc, uint32_t freeb, uint32_t need, const char* path, const char* what) {
     if (!bs_warn_once(path, (uint32_t)(rc + 100))) return;
     if (rc == -2) {
-        print("Storefile: no room in the boot image for "); print(path);
-        print(" with "); print_dec(freeb / 1024); print(" KiB free, needs "); print_dec((need + 1023) / 1024);
-        print(" KiB, GRUB will not see it\n");
+        print("[boot] no room in the boot image for "); print(path);
+        print(" ("); print_dec(freeb / 1024); print(" KiB free, needs "); print_dec((need + 1023) / 1024);
+        print(" KiB); GRUB will not see it\n");
     } else if (rc == -3) {
-        print("Storefile: cannot add "); print(path); print(" to the boot image (directory full or name too long); GRUB will not see it\n");
+        print("[boot] cannot add "); print(path); print(" to the boot image (directory full or name too long); GRUB will not see it\n");
     } else {
-        print("Storefile: could not "); print(what); print(" "); print(path); print(" in the boot image\n");
+        print("[boot] could not "); print(what); print(" "); print(path); print(" in the boot image\n");
     }
 }
 
@@ -615,16 +615,65 @@ int store_is_persistent(void) {
     return store_enabled;
 }
 
+/* The prefix of every storage line in the boot log. It is the file name of the
+ * first Multiboot module - the one the kernel treats as the Storefile image
+ * (see the end of store_init) - so a module called mystate.bin logs as
+ * "mystate.bin: ...". Without a module it stays "Storefile". */
+static uint32_t store_mb_magic = 0, store_mb_addr = 0;
+static char store_label_buf[48];
+static int store_label_done = 0;
+
+static const char* store_label(void) {
+    if (!store_label_done) {
+        const char* def = "Storefile";
+        int i;
+        store_label_done = 1;
+        for (i = 0; def[i]; i++) store_label_buf[i] = def[i];
+        store_label_buf[i] = 0;
+        if (store_mb_magic == MULTIBOOT_BOOTLOADER_MAGIC && store_mb_addr) {
+            multiboot_info_t* mbi = (multiboot_info_t*)(uintptr_t)store_mb_addr;
+            if ((mbi->flags & MULTIBOOT_FLAG_MODS) && mbi->mods_count > 0) {
+                multiboot_module_t* mods = (multiboot_module_t*)(uintptr_t)mbi->mods_addr;
+                const char* m = (const char*)(uintptr_t)mods[0].string;
+                if (m && *m) {
+                    const char* end = m;
+                    const char* base = m;
+                    const char* q;
+                    int n = 0;
+                    while (*end && *end != ' ') end++;            /* path only, not arguments */
+                    for (q = m; q < end; q++) if (*q == '/') base = q + 1;
+                    for (q = base; q < end && n < 40; q++)
+                        store_label_buf[n++] = (*q >= 32 && *q < 127) ? *q : '?';
+                    if (n) store_label_buf[n] = 0;
+                }
+            }
+        }
+    }
+    return store_label_buf;
+}
+
+/* boot_log("<label>: msg") */
+static void slog(const char* msg) {
+    static char line[220];
+    const char* lab = store_label();
+    uint32_t n = 0, k;
+    for (k = 0; lab[k] && n < 60; k++) line[n++] = lab[k];
+    line[n++] = ':'; line[n++] = ' ';
+    for (k = 0; msg[k] && n < sizeof line - 1; k++) line[n++] = msg[k];
+    line[n] = 0;
+    boot_log(line);
+}
+
 // Print which of the 4 legacy IDE slots (primary/secondary,
 // master/slave) got used, so it's visible on the boot log instead of
 // being a silent guess. Handy for diagnosing "why is this running from RAM?"
 // across different VM software that orders IDE devices differently.
 static void log_slot(int channel, int drive) {
-    boot_log(channel == 0
-        ? (drive == 0 ? "Storefile: using primary master"
-                      : "Storefile: using primary slave")
-        : (drive == 0 ? "Storefile: using secondary master"
-                      : "Storefile: using secondary slave"));
+    slog(channel == 0
+        ? (drive == 0 ? "using primary master"
+                      : "using primary slave")
+        : (drive == 0 ? "using secondary master"
+                      : "using secondary slave"));
 }
 
 static int has_word(const char* s, const char* w) {
@@ -672,50 +721,114 @@ static int boot_has_flag(uint32_t mb_magic, uint32_t mb_addr, const char* word) 
     return 0;
 }
 
-static int boot_is_livecd(uint32_t mb_magic, uint32_t mb_addr) {
-#ifdef TANJA_LIVECD
-    /* A LiveCD image must never touch storage: the stick it was written to
- * is the boot medium, and a machine running it may have any disk. This
- * is compiled in, so no boot configuration can turn it back on. */
-    (void)mb_magic; (void)mb_addr;
-    return 1;
-#endif
-    /* Explicit live/livecd boot requests remain RAM-only. Otherwise,
-       persistence is automatic when store_init has found a usable disk.
-       Do not classify an optical boot device as LiveCD here: a VM can
-       boot its installer ISO while also having a writable disk.img attached. */
-    if (mb_magic != MULTIBOOT_BOOTLOADER_MAGIC || mb_addr == 0)
-        return 1; /* without Multiboot metadata, avoid guessing */
+/* 1 when this boot was started from the very disk the Storefile lives on (an
+ * installed system); 0 when it was started from a CD/DVD, a USB stick, an SD
+ * card or anything else. Set in store_init() before it is needed. */
+static int store_disk_boot = 0;
 
-    multiboot_info_t* mbi = (multiboot_info_t*)(uintptr_t)mb_addr;
-
+/* "live" / "livecd" on the kernel line or in a module string: RAM only. */
+static int boot_wants_live(uint32_t mb_magic, uint32_t mb_addr) {
+    multiboot_info_t* mbi;
+    if (mb_magic != MULTIBOOT_BOOTLOADER_MAGIC || mb_addr == 0) return 0;
+    mbi = (multiboot_info_t*)(uintptr_t)mb_addr;
     if (mbi->cmdline && (has_word((const char*)(uintptr_t)mbi->cmdline, "live") ||
                          has_word((const char*)(uintptr_t)mbi->cmdline, "livecd")))
         return 1;
-
-    if (mbi->cmdline && (has_word((const char*)(uintptr_t)mbi->cmdline, "install") ||
-                         has_word((const char*)(uintptr_t)mbi->cmdline, "persist")))
-        return 0;
-
     if ((mbi->flags & MULTIBOOT_FLAG_MODS) && mbi->mods_count > 0) {
-        multiboot_module_t* mods =
-            (multiboot_module_t*)(uintptr_t)mbi->mods_addr;
+        multiboot_module_t* mods = (multiboot_module_t*)(uintptr_t)mbi->mods_addr;
         int i;
         for (i = 0; i < (int)mbi->mods_count; i++) {
-            const char *s = (const char*)(uintptr_t)mods[i].string;
-            if (!s) continue;
-            if (has_word(s, "live")) return 1;
-            if (has_word(s, "storefile") || has_word(s, "install") ||
-                has_word(s, "persist"))
-                return 0;
+            const char* m = (const char*)(uintptr_t)mods[i].string;
+            if (m && has_word(m, "live")) return 1;
         }
     }
-
-    /* No explicit live marker: if a disk is found, use persistence. */
     return 0;
 }
 
+/* "persist" (or "install") on the kernel line or in a module string: the
+ * user asked for persistent storage even though this is not a disk boot. */
+static int boot_wants_persist(uint32_t mb_magic, uint32_t mb_addr) {
+    multiboot_info_t* mbi;
+    if (mb_magic != MULTIBOOT_BOOTLOADER_MAGIC || mb_addr == 0) return 0;
+    if (boot_wants_live(mb_magic, mb_addr)) return 0;
+    mbi = (multiboot_info_t*)(uintptr_t)mb_addr;
+    if (mbi->cmdline && (has_word((const char*)(uintptr_t)mbi->cmdline, "persist") ||
+                         has_word((const char*)(uintptr_t)mbi->cmdline, "install")))
+        return 1;
+    if ((mbi->flags & MULTIBOOT_FLAG_MODS) && mbi->mods_count > 0) {
+        multiboot_module_t* mods = (multiboot_module_t*)(uintptr_t)mbi->mods_addr;
+        int i;
+        for (i = 0; i < (int)mbi->mods_count; i++) {
+            const char* m = (const char*)(uintptr_t)mods[i].string;
+            if (m && (has_word(m, "persist") || has_word(m, "install"))) return 1;
+        }
+    }
+    return 0;
+}
+
+/* Run from RAM only?
+ *   - no Multiboot information: yes (do not guess);
+ *   - "live" / "livecd": yes, always;
+ *   - "persist": no - an explicit request for persistent storage wins, also on
+ *     a LiveCD build and also when booted from a CD / USB / SD card;
+ *   - LiveCD build: yes;
+ *   - booted from the disk that holds the Storefile (installed system): no,
+ *     persistence is automatic;
+ *   - booted from anything else (CD/DVD, USB, SD card, ...): yes. */
+static int boot_is_livecd(uint32_t mb_magic, uint32_t mb_addr) {
+    if (mb_magic != MULTIBOOT_BOOTLOADER_MAGIC || mb_addr == 0)
+        return 1;
+    if (boot_wants_live(mb_magic, mb_addr)) return 1;
+    if (boot_wants_persist(mb_magic, mb_addr)) return 0;
+#ifdef TANJA_LIVECD
+    return 1;
+#endif
+    return !store_disk_boot;
+}
+
+/* Name the vfs layer gives the disk the Storefile is on ("ata0".."ata3",
+ * "ahci0"). */
+static void store_disk_name(char* out) {
+    if (backend == BACKEND_AHCI) {
+        out[0] = 'a'; out[1] = 'h'; out[2] = 'c'; out[3] = 'i'; out[4] = '0'; out[5] = 0;
+    } else {
+        out[0] = 'a'; out[1] = 't'; out[2] = 'a';
+        out[3] = (char)('0' + store_channel * 2 + store_drive); out[4] = 0;
+    }
+}
+
+/* Was this boot started from the disk we are about to use for the Storefile?
+ * The boot image is an ISO9660 volume at the front of that disk when it is an
+ * installed system; a CD, a USB stick or an SD card shows up as some other
+ * device (or not at all, when the kernel cannot read it). */
+static int store_boot_from_this_disk(void) {
+    char want[8];
+    const char* got;
+    int i;
+    vfs_probe_drives();
+    if (!iso_probe()) return 0;
+    got = iso_device_name();
+    store_disk_name(want);
+    for (i = 0; want[i] || got[i]; i++)
+        if (want[i] != got[i]) return 0;
+    return 1;
+}
+
+/* Is the Storefile area at the end of the disk unused (all zero)? Used before
+ * claiming a disk that was NOT booted from: it may belong to someone else. */
+static int store_tail_blank(void) {
+    static uint8_t buf[8 * 512];
+    uint32_t i;
+    if (store_backend_read(store_lba, 8, buf) != 0) return 0;
+    for (i = 0; i < sizeof buf; i++) if (buf[i]) return 0;
+    if (store_backend_read(store_lba + store_capacity_sectors - 1, 1, buf) != 0) return 0;
+    for (i = 0; i < 512; i++) if (buf[i]) return 0;
+    return 1;
+}
+
 void store_init(uint32_t mb_magic, uint32_t mb_addr) {
+    store_mb_magic = mb_magic;
+    store_mb_addr = mb_addr;
     store_fs_need = fs_store_size();       /* maximum possible v4 image */
     store_cfg_need = config_store_size();
 
@@ -727,6 +840,7 @@ void store_init(uint32_t mb_magic, uint32_t mb_addr) {
 
     ata_drive_info_t info;
     int found = 0;
+    int removable_dev = 0;
     uint64_t disk_sectors = 0;
     int ch, dr;
     for (ch = 0; ch < 2 && !found; ch++) {
@@ -743,26 +857,32 @@ void store_init(uint32_t mb_magic, uint32_t mb_addr) {
 
     /* USB Live boot: the stick the image was written to appears as a
        removable ATA device (or its model string identifies it as USB /
-       flash). Never use it for persistent storage; run from RAM instead.
-       Fixed hard disks still get persistence. */
+       flash). By default nothing is written to it and the session runs from
+       RAM; the word "persist" on the boot line asks for persistent storage
+       on it anyway. */
+    store_disk_boot = 0;
     if (found && backend == BACKEND_ATA &&
         (info.removable ||
          has_word(info.model, "usb") ||
          has_word(info.model, "flash") ||
          has_word(info.model, "mass storage") ||
          has_word(info.model, "udisk"))) {
-        store_enabled = 0;
-        fs_init();
-        fs_seed_home();
-        boot_log("Storefile: booted from USB/removable media, running from RAM (nothing is written to the stick)");
-        return;
+        if (!boot_wants_persist(mb_magic, mb_addr)) {
+            store_enabled = 0;
+            fs_init();
+            fs_seed_home();
+            slog("booted from USB/removable media, running from RAM (add 'persist' to keep files on it)");
+            return;
+        }
+        slog("'persist' given - using the removable device for storage");
+        removable_dev = 1;
     }
 
     if (!found && ahci_init() == 0) {
         backend = BACKEND_AHCI;
         disk_sectors = ahci_get_sector_count();
         found = 1;
-        boot_log("Storefile: using AHCI drive");
+        slog("using AHCI drive");
     }
 
     if (!found) {
@@ -772,12 +892,15 @@ void store_init(uint32_t mb_magic, uint32_t mb_addr) {
         store_enabled = 0;
         fs_init();
         fs_seed_home();
-        boot_log("Storefile: no usable disk found, running from RAM");
+        slog("no usable disk found, running from RAM");
         return;
     }
 
     store_disk_sectors = disk_sectors;
     if (backend == BACKEND_ATA) log_slot(store_channel, store_drive);
+
+    /* Booted from this disk (installed system), or from something else? */
+    store_disk_boot = removable_dev ? 0 : store_boot_from_this_disk();
 
     /* LiveCD / live USB: the stick the ISO was written to is a real disk,
        but it is the boot medium, not an install target. Never persist. */
@@ -786,9 +909,9 @@ void store_init(uint32_t mb_magic, uint32_t mb_addr) {
         fs_init();
         fs_seed_home();
 #ifdef TANJA_LIVECD
-        boot_log("Storefile: LiveCD build - running from RAM, no disk is ever written");
+        slog("LiveCD build - running from RAM, no disk is ever written");
 #else
-        boot_log("Storefile: LiveCD session, running from RAM (nothing is written to disk)");
+        slog("LiveCD session, running from RAM (nothing is written to disk)");
 #endif
         return;
     }
@@ -802,11 +925,11 @@ void store_init(uint32_t mb_magic, uint32_t mb_addr) {
         store_lba = (uint32_t)(disk_sectors - store_capacity_sectors -
                                STORE_RESERVED_TAIL_SECTORS);
     } else {
-        if (boot_is_livecd(mb_magic, mb_addr)) {
+        if (boot_is_livecd(mb_magic, mb_addr) || !store_disk_boot) {
             store_enabled = 0;
             fs_init();
             fs_seed_home();
-            boot_log("Storefile: This session will run from RAM");
+            slog("disk too small for persistence, this session will run from RAM");
             return;
         }
         store_panic_disk_too_small();
@@ -823,11 +946,11 @@ void store_init(uint32_t mb_magic, uint32_t mb_addr) {
     // *next* boot drops to a bare grub> prompt. Refuse to run persistent
     // on a disk that small instead of corrupting it silently.
     if (store_lba < STORE_FRONT_RESERVE_SECTORS) {
-        if (boot_is_livecd(mb_magic, mb_addr)) {
+        if (boot_is_livecd(mb_magic, mb_addr) || !store_disk_boot) {
             store_enabled = 0;
             fs_init();
             fs_seed_home();
-            boot_log("Storefile: disk too small for safe persistence, running from RAM");
+            slog("disk too small for safe persistence, running from RAM");
             return;
         }
         store_panic_disk_too_small();
@@ -848,7 +971,10 @@ void store_init(uint32_t mb_magic, uint32_t mb_addr) {
     if (store_backend_read(store_lba, 1, store_stage) != 0) {
         keep_reason = "the disk could not be read";
     } else if (!store_header_valid_at(store_stage)) {
-        boot_log("Storefile: on-disk image starting from a fresh condition");
+        if (!store_disk_boot && !boot_has_flag(mb_magic, mb_addr, "reset") && !store_tail_blank())
+            keep_reason = "the end of this disk holds other data (not a TanjaOS Storefile) and TanjaOS was not booted from it";
+        else
+            slog("on-disk image starting from a fresh condition");
     } else if (!store_header_matches_build_at(store_stage)) {
         keep_reason = "it was written by a different TanjaOS build";
     } else {
@@ -884,7 +1010,7 @@ void store_init(uint32_t mb_magic, uint32_t mb_addr) {
                 config_deserialize(store_cfgbuf, store_cfg_need) == 0) {
                 store_data_ok = 1;
                 store_enabled = 1;
-                boot_log("Storefile: loaded saved state from disk");
+                slog("loaded saved state from disk");
                 store_sync_boot_startup();   /* edits saved by an earlier session that never reached the image */
                 return;
             }
@@ -894,7 +1020,7 @@ void store_init(uint32_t mb_magic, uint32_t mb_addr) {
 
     if (keep_reason) {
         if (boot_has_flag(mb_magic, mb_addr, "reset")) {
-            boot_log("Storefile: 'reset' given - discarding the saved state on disk");
+            slog("'reset' given - discarding the saved state on disk");
             store_data_ok = 1;
         } else {
             store_enabled = 0;       /* no autosave ... */
@@ -902,16 +1028,16 @@ void store_init(uint32_t mb_magic, uint32_t mb_addr) {
             fs_init();               /* (flags first: seeding home/ on a small */
             fs_seed_home();          /*  pool would otherwise spill to disk)  */
             {
-                char why[160];
-                const char* pre = "Storefile: WARNING - the saved data on this disk cannot be loaded: ";
+                char why[220];
+                const char* pre = "WARNING - the saved data on this disk cannot be loaded: ";
                 int n = 0, k;
                 for (k = 0; pre[k] && n < 120; k++) why[n++] = pre[k];
-                for (k = 0; keep_reason[k] && n < 158; k++) why[n++] = keep_reason[k];
+                for (k = 0; keep_reason[k] && n < 218; k++) why[n++] = keep_reason[k];
                 why[n] = 0;
-                boot_log(why);
+                slog(why);
             }
-            boot_log("Storefile: the disk was NOT modified. Running from RAM only - nothing will be saved.");
-            boot_log("Storefile: add the word 'reset' to the kernel line to discard it and start fresh.");
+            slog("the disk was NOT modified. Running from RAM only - nothing will be saved.");
+            slog("add the word 'reset' to the kernel line to discard it and start fresh.");
             return;
         }
     }
@@ -933,16 +1059,16 @@ void store_init(uint32_t mb_magic, uint32_t mb_addr) {
             if (mod_size >= 8) {
                 if (fs_deserialize((const uint8_t*)(uintptr_t)mod_start,
                                    mod_size) == 0)
-                    boot_log("Storefile: seeded state from boot module");
+                    slog("seeded state from boot module");
                 else
-                    boot_log("Storefile: boot module wasn't a valid image, starting empty");
+                    slog("boot module wasn't a valid image, starting empty");
             }
         }
     }
 
     store_enabled = 1;
     store_autosave();
-    boot_log("Storefile: persistence enabled, initial state written to disk");
+    slog("persistence enabled, initial state written to disk");
     store_sync_boot_startup();
 }
 

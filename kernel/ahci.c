@@ -296,3 +296,202 @@ int ahci_write_sectors(uint64_t lba, uint16_t count, const void* buf) {
     if (ahci_do_command(0x35 /* WRITE DMA EXT */, lba, count, (void*)buf, 1) != 0) return -1;
     return ahci_do_command(0xEA /* FLUSH CACHE EXT */, 0, 0, 0, 0);
 }
+
+// ---- ATAPI (CD/DVD) on an AHCI port ---------------------------------------
+//
+// On machines whose BIOS only offers AHCI mode the optical drive is a SATA
+// ATAPI device on an AHCI port and does not exist on the legacy IDE ports at
+// all, so the legacy ATAPI driver never finds it. This is a read-only driver
+// for it: ATA PACKET (0xA0) carrying a SCSI READ(10), data via the PRDT.
+// It has its own command list / FIS area / command table, separate from the
+// hard drive's, so both can be in use at once.
+
+#define ATAPI_SIG 0xEB140101u
+
+static hba_cmd_header_t cd_list[32] __attribute__((aligned(1024)));
+static uint8_t cd_fis[256] __attribute__((aligned(256)));
+static hba_cmd_table_t cd_table __attribute__((aligned(128)));
+static uint8_t cd_bounce[2048] __attribute__((aligned(16)));
+static uint8_t cd_small[16] __attribute__((aligned(16)));
+static hba_port_t* cd_port = 0;
+static uint32_t cd_nblocks = 0;
+static int cd_ready = 0;
+
+static void cd_port_stop(void) {
+    uint32_t start = get_uptime_ms();
+    cd_port->cmd &= ~(uint32_t)PORT_CMD_ST;
+    while ((cd_port->cmd & PORT_CMD_CR) && get_uptime_ms() - start < 1000) { }
+    cd_port->cmd &= ~(uint32_t)PORT_CMD_FRE;
+    start = get_uptime_ms();
+    while ((cd_port->cmd & PORT_CMD_FR) && get_uptime_ms() - start < 1000) { }
+}
+
+static void cd_port_start(void) {
+    uint32_t start = get_uptime_ms();
+    while ((cd_port->cmd & PORT_CMD_CR) && get_uptime_ms() - start < 1000) { }
+    cd_port->cmd |= PORT_CMD_FRE;
+    cd_port->cmd |= PORT_CMD_ST;
+}
+
+/* after an error the port has to be restarted before the next command */
+static void cd_recover(void) {
+    cd_port_stop();
+    cd_port->serr = 0xFFFFFFFFu;
+    cd_port->is = 0xFFFFFFFFu;
+    cd_port_start();
+}
+
+/* One 12-byte packet command, up to `len` bytes of data into buf (len even).
+ * 0 on success, -1 on error or timeout. */
+static int cd_packet(const uint8_t* cdb, void* buf, uint32_t len, uint32_t timeout_ms) {
+    uint32_t start = get_uptime_ms();
+    uint32_t i;
+    uint8_t* fis;
+
+    while (cd_port->tfd & (TFD_BSY | TFD_DRQ)) {
+        if (get_uptime_ms() - start > 3000) { cd_recover(); return -1; }
+    }
+
+    cd_list[0].dw0 = 5u | (1u << 5) /* A: ATAPI, the ACMD area holds the packet */
+                   | ((len ? 1u : 0u) << 16);
+    cd_list[0].prdbc = 0;
+    cd_list[0].ctba = (uint32_t)(uintptr_t)&cd_table;
+    cd_list[0].ctbau = 0;
+
+    for (i = 0; i < 64; i++) cd_table.cfis[i] = 0;
+    for (i = 0; i < 16; i++) cd_table.acmd[i] = i < 12 ? cdb[i] : 0;
+    if (len) {
+        cd_table.prdt[0].dba = (uint32_t)(uintptr_t)buf;
+        cd_table.prdt[0].dbau = 0;
+        cd_table.prdt[0].reserved = 0;
+        cd_table.prdt[0].dbc_ic = (len - 1) & 0x3FFFFF;
+    }
+
+    fis = cd_table.cfis;
+    fis[0] = 0x27;
+    fis[1] = 0x80;
+    fis[2] = 0xA0;                                   /* PACKET */
+    fis[3] = 0;                                      /* features: PIO data phase */
+    fis[5] = (uint8_t)(len > 0xFFFE ? 0xFE : (len & 0xFF));   /* byte count limit */
+    fis[6] = (uint8_t)(len > 0xFFFE ? 0xFF : ((len >> 8) & 0xFF));
+    fis[7] = 0;
+
+    cd_port->is = 0xFFFFFFFFu;
+    cd_port->ci = 1u;
+
+    start = get_uptime_ms();
+    while (cd_port->ci & 1u) {
+        if ((cd_port->is & (1u << 30)) || (cd_port->tfd & TFD_ERR)) { cd_recover(); return -1; }
+        if (get_uptime_ms() - start > timeout_ms) { cd_recover(); return -1; }
+    }
+    if ((cd_port->is & (1u << 30)) || (cd_port->tfd & TFD_ERR)) { cd_recover(); return -1; }
+    return 0;
+}
+
+int ahci_cd_init(void) {
+    uint32_t abar, start;
+    hba_ghc_t* g;
+    int i, tries;
+    uint8_t cdb[12];
+
+    cd_ready = 0;
+    cd_port = 0;
+    if (find_ahci_pci_device(&abar) != 0 || abar == 0) return -1;
+    g = (hba_ghc_t*)(uintptr_t)abar;
+    g->ghc |= GHC_AE;
+
+    for (i = 0; i < 32; i++) {
+        hba_port_t* p;
+        if (!(g->pi & (1u << i))) continue;
+        p = (hba_port_t*)((uint8_t*)g + 0x100 + i * 0x80);
+        if ((p->ssts & 0x0F) != 3) continue;          /* no device / no link */
+        if (p->sig != ATAPI_SIG) continue;            /* only optical drives here */
+        cd_port = p;
+        break;
+    }
+    if (!cd_port) return -1;
+
+    cd_port_stop();
+    for (i = 0; i < 32; i++) {
+        cd_list[i].dw0 = 0; cd_list[i].prdbc = 0;
+        cd_list[i].ctba = 0; cd_list[i].ctbau = 0;
+    }
+    for (i = 0; i < 256; i++) cd_fis[i] = 0;
+    cd_port->clb  = (uint32_t)(uintptr_t)cd_list;
+    cd_port->clbu = 0;
+    cd_port->fb   = (uint32_t)(uintptr_t)cd_fis;
+    cd_port->fbu  = 0;
+    cd_port->serr = 0xFFFFFFFFu;
+    cd_port->is   = 0xFFFFFFFFu;
+    cd_port_start();
+
+    /* wait for the drive to report a disc (TEST UNIT READY). Right after
+       power-up / a disc change the first commands often fail with "unit
+       attention" or "becoming ready", so those are retried (up to ~6 s); but
+       an empty tray ("medium not present") is final - asking REQUEST SENSE
+       why it failed lets an empty drive be skipped at once instead of
+       stalling every boot. */
+    for (i = 0; i < 12; i++) cdb[i] = 0;
+    for (tries = 0; tries < 30; tries++) {
+        uint8_t sense_key, asc;
+        if (cd_packet(cdb, 0, 0, 3000) == 0) break;
+        for (i = 0; i < 12; i++) cdb[i] = 0;
+        cdb[0] = 0x03;                                  /* REQUEST SENSE */
+        cdb[4] = 18;
+        for (i = 0; i < 16; i++) cd_small[i] = 0;
+        sense_key = 0; asc = 0;
+        if (cd_packet(cdb, cd_small, 16, 3000) == 0) {
+            sense_key = cd_small[2] & 0x0F;
+            asc = cd_small[12];
+        }
+        if (sense_key == 0x02 && asc == 0x3A) { cd_port = 0; return -1; }   /* no disc */
+        for (i = 0; i < 12; i++) cdb[i] = 0;
+        start = get_uptime_ms();
+        while (get_uptime_ms() - start < 200) { }
+    }
+    if (tries == 30) { cd_port = 0; return -1; }
+
+    /* READ CAPACITY(10): last LBA + block length, both big-endian */
+    for (i = 0; i < 12; i++) cdb[i] = 0;
+    cdb[0] = 0x25;
+    if (cd_packet(cdb, cd_small, 8, 3000) != 0) { cd_port = 0; return -1; }
+    {
+        uint32_t last = ((uint32_t)cd_small[0] << 24) | ((uint32_t)cd_small[1] << 16) |
+                        ((uint32_t)cd_small[2] << 8) | cd_small[3];
+        uint32_t bsz  = ((uint32_t)cd_small[4] << 24) | ((uint32_t)cd_small[5] << 16) |
+                        ((uint32_t)cd_small[6] << 8) | cd_small[7];
+        if (bsz != 2048) { cd_port = 0; return -1; }
+        cd_nblocks = last + 1;
+    }
+    cd_ready = 1;
+    return 0;
+}
+
+uint32_t ahci_cd_blocks(void) { return cd_ready ? cd_nblocks : 0; }
+
+/* Read `count` 2048-byte blocks starting at block lba. 0 ok, -1 error. */
+int ahci_cd_read_blocks(uint32_t lba, uint32_t count, void* buf) {
+    uint8_t* out = (uint8_t*)buf;
+    if (!cd_ready || !buf || count == 0) return -1;
+    while (count) {
+        uint8_t cdb[12];
+        uint32_t n = count > 32 ? 32 : count, i, attempt;
+        void* dst = out;
+        int aligned = (((uintptr_t)out) & 1u) == 0;
+        if (!aligned) n = 1;                              /* odd address: bounce one block */
+        if (!aligned) dst = cd_bounce;
+        for (i = 0; i < 12; i++) cdb[i] = 0;
+        cdb[0] = 0x28;                                    /* READ(10) */
+        cdb[2] = (uint8_t)(lba >> 24); cdb[3] = (uint8_t)(lba >> 16);
+        cdb[4] = (uint8_t)(lba >> 8);  cdb[5] = (uint8_t)lba;
+        cdb[7] = (uint8_t)(n >> 8);    cdb[8] = (uint8_t)n;
+        for (attempt = 0; attempt < 3; attempt++)
+            if (cd_packet(cdb, dst, n * 2048, 10000) == 0) break;
+        if (attempt == 3) return -1;
+        if (!aligned) for (i = 0; i < 2048; i++) out[i] = cd_bounce[i];
+        out += n * 2048;
+        lba += n;
+        count -= n;
+    }
+    return 0;
+}

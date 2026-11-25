@@ -33,20 +33,20 @@ You can install TinyCC in TanjaOS with 'pkg install tcc'
 which it will fetch from https://github.com/MSK-Kernel/pkg_tcc
 and you will see some text about TinyCC below.
 
-TinyCC is strict by default, on purpose:
+tcc is strict by default, on purpose:
 
-    ALL warnings are hard compile-time errors (-Werror is injected
+  * ALL warnings are hard compile-time errors (-Werror is injected
     first in the argument list).  Pass -Wno-error to get normal
     warning behavior back. (warning directives are exempt, like
     a real gcc -Werror build.)
-    After a clean compile the wrapper verifies EVERY external symbol
+  * After a clean compile the wrapper verifies EVERY external symbol
     the produced object references against the live kernel export
     table (tanja_export_count()/tanja_export_name() in kernel/elf.c).
     A program that calls something the kernel does not export fails
     AT COMPILE TIME with "undefined symbol" instead of failing to
     load at run time.  Weak undefined symbols are exempt (they bind
     to 0, per the C standard).
-    C11 u8"..." string literals work (parsed as UTF-8 narrow
+  * C11 u8"..." string literals work (parsed as UTF-8 narrow
     strings).  u/U wide literals are a clear compile-time error
     (there is no wchar/char16_t machinery).
 

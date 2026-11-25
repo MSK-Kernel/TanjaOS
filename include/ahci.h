@@ -24,4 +24,12 @@ int ahci_write_sectors(uint64_t lba, uint16_t count, const void* buf);
 // LBA48-aware), 0 if no drive is available.
 uint64_t ahci_get_sector_count(void);
 
+// Read-only access to an optical drive (ATAPI) on an AHCI port, for machines
+// whose BIOS only offers AHCI mode (the drive is not on the legacy IDE ports
+// then). ahci_cd_init() returns 0 when a drive with a disc in it was found;
+// blocks are 2048 bytes. Independent of the hard drive above.
+int ahci_cd_init(void);
+uint32_t ahci_cd_blocks(void);
+int ahci_cd_read_blocks(uint32_t lba, uint32_t count, void* buf);
+
 #endif
