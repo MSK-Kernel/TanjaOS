@@ -6,7 +6,7 @@ ASM=nasm
 CFLAGS=-ffreestanding -m32 -c -fno-stack-protector -fno-builtin -fno-pic -fno-pie -I.
 LDFLAGS=-m elf_i386 -T linker/linker.ld -nostdlib
 
-KERNEL_OBJ = kernel/kernel.o kernel/game.o kernel/ata.o kernel/ahci.o kernel/store.o kernel/idt.o kernel/elf.o kernel/atomic.o kernel/libc.o kernel/libc2.o kernel/exec.o kernel/setjmp_asm.o kernel/linux.o kernel/nic.o kernel/net.o kernel/tls.o arch/x86/linux_asm.o
+KERNEL_OBJ = kernel/kernel.o kernel/game.o kernel/ata.o kernel/ahci.o kernel/nvme.o kernel/store.o kernel/idt.o kernel/elf.o kernel/atomic.o kernel/libc.o kernel/libc2.o kernel/exec.o kernel/setjmp_asm.o kernel/linux.o kernel/nic.o kernel/net.o kernel/tls.o arch/x86/linux_asm.o
 
 # Doom is a separately installable ELF32 package, never a kernel built-in.
 BIN_SRC = $(filter-out bin/doom.c,$(wildcard bin/*.c))
@@ -140,13 +140,13 @@ ports/doom/build/doom: $(wildcard ports/doom/*.c ports/doom/Makefile ports/doom/
 	@$(MAKE) --no-print-directory -C ports/doom CC="$(CC)" LD="$(LD)" ARCH_FLAGS="$(filter -m32,$(CFLAGS))"
 
 
-arch/x86/boot/tanja-base: arch/x86/boot/boot.o arch/x86/idt_asm.o $(KERNEL_OBJ) fs/fs.o fs/vfs.o fs/devfs.o fs/ramfs.o fs/iso9660.o fs/overlay.o fs/tanjafs.o $(HOME_OBJ) tools/bearssl/libbearssl.a | arch/x86/boot
+arch/x86/boot/tanja-base: arch/x86/boot/boot.o arch/x86/idt_asm.o $(KERNEL_OBJ) fs/fs.o fs/vfs.o fs/devfs.o fs/ramfs.o fs/iso9660.o fs/overlay.o fs/tanjafs.o fs/blkio.o fs/part.o fs/extfs.o fs/fatfs.o fs/btrfs.o $(HOME_OBJ) tools/bearssl/libbearssl.a | arch/x86/boot
 	@echo "[LD] Linking..."
 	$(LD) $(LDFLAGS) -o arch/x86/boot/tanja-base \
 		arch/x86/boot/boot.o \
 		arch/x86/idt_asm.o \
 		$(KERNEL_OBJ) \
-		fs/fs.o fs/vfs.o fs/devfs.o fs/ramfs.o fs/iso9660.o fs/overlay.o fs/tanjafs.o \
+		fs/fs.o fs/vfs.o fs/devfs.o fs/ramfs.o fs/iso9660.o fs/overlay.o fs/tanjafs.o fs/blkio.o fs/part.o fs/extfs.o fs/fatfs.o fs/btrfs.o \
 		$(HOME_OBJ) \
 		tools/bearssl/libbearssl.a \
 		$(shell $(CC) -m32 -print-libgcc-file-name)
@@ -192,6 +192,27 @@ fs/iso9660.o: fs/iso9660.c include/iso9660.h include/vfs.h
 fs/overlay.o: fs/overlay.c include/overlay.h include/iso9660.h include/ramfs.h include/vfs.h
 	@echo "[CC] fs/overlay.c"
 	$(CC) $(CFLAGS) -o fs/overlay.o fs/overlay.c
+
+
+fs/blkio.o: fs/blkio.c include/blkio.h include/vfs.h
+	@echo "[CC] fs/blkio.c"
+	$(CC) $(CFLAGS) -o fs/blkio.o fs/blkio.c
+
+fs/part.o: fs/part.c include/blkio.h include/vfs.h
+	@echo "[CC] fs/part.c"
+	$(CC) $(CFLAGS) -o fs/part.o fs/part.c
+
+fs/extfs.o: fs/extfs.c include/blkio.h include/vfs.h
+	@echo "[CC] fs/extfs.c"
+	$(CC) $(CFLAGS) -o fs/extfs.o fs/extfs.c
+
+fs/fatfs.o: fs/fatfs.c include/blkio.h include/vfs.h
+	@echo "[CC] fs/fatfs.c"
+	$(CC) $(CFLAGS) -o fs/fatfs.o fs/fatfs.c
+
+fs/btrfs.o: fs/btrfs.c include/blkio.h include/vfs.h
+	@echo "[CC] fs/btrfs.c"
+	$(CC) $(CFLAGS) -o fs/btrfs.o fs/btrfs.c
 
 fs/tanjafs.o: fs/tanjafs.c include/vfs.h include/iso9660.h include/store.h include/ramfs.h
 	@echo "[CC] fs/tanjafs.c"

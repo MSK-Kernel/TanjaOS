@@ -1,12 +1,14 @@
 #include "../include/vfs.h"
 #include "../include/ata.h"
 #include "../include/ahci.h"
+#include "../include/blkio.h"
+#include "../include/nvme.h"
 
 /* TanjaOS VFS core
  * Mount table, block-device registry, and path resolution.
  */
 
-#define MAX_FSTYPES 8
+#define MAX_FSTYPES 16
 
 static struct vfs_mount mounts[VFS_MAX_MOUNTS];
 static int mount_count = 0;
@@ -67,9 +69,40 @@ int vfs_register_fstype(const struct vfs_ops* ops) {
     return VFS_OK;
 }
 
+/* Several names for one driver: ext2/ext3/ext4 are all "ext4" (the driver
+ * handles all three), and the FAT family is "vfat". */
+static const char* canon_fstype(const char* name) {
+    static const char* const ext[] = { "ext2", "ext3", "ext4", "ext", 0 };
+    static const char* const fat[] = { "vfat", "fat", "fat12", "fat16", "fat32", "msdos", "dos", 0 };
+    int i;
+    for (i = 0; ext[i]; i++) if (my_strcmp(name, ext[i]) == 0) return "ext4";
+    for (i = 0; fat[i]; i++) if (my_strcmp(name, fat[i]) == 0) return "vfat";
+    return name;
+}
+
+extern int extfs_probe(struct vfs_bdev* dev);
+extern int fatfs_probe(struct vfs_bdev* dev);
+extern int btrfs_probe(struct vfs_bdev* dev);
+
+/* What is on this device? The name to mount it as ("ext2", "ext3", "ext4",
+ * "btrfs", "vfat"), or "tanjafs" (a TanjaOS disk or an ISO9660 image) when
+ * none of the on-disk formats matches. */
+const char* vfs_detect_fstype(struct vfs_bdev* dev) {
+    int e;
+    if (!dev) return 0;
+    e = extfs_probe(dev);
+    if (e == 2) return "ext2";
+    if (e == 3) return "ext3";
+    if (e == 4) return "ext4";
+    if (btrfs_probe(dev)) return "btrfs";
+    if (fatfs_probe(dev)) return "vfat";
+    return "tanjafs";
+}
+
 const struct vfs_ops* vfs_find_fstype(const char* name) {
     int i;
     if (!name) return 0;
+    name = canon_fstype(name);
     for (i = 0; i < fstype_count; i++)
         if (my_strcmp(fstypes[i]->name, name) == 0)
             return fstypes[i];
@@ -102,6 +135,11 @@ int vfs_mount(const char* mountpoint, const char* fstype,
               struct vfs_bdev* dev, const char* opts) {
     if (!mountpoint || !fstype || mount_count >= VFS_MAX_MOUNTS) return VFS_EINVAL;
     if (mountpoint[0] != '/') return VFS_EINVAL;
+    if (my_strcmp(fstype, "auto") == 0) {            /* look at what is on the device */
+        if (!dev) return VFS_EINVAL;
+        fstype = vfs_detect_fstype(dev);
+        if (!fstype) return VFS_ENOENT;
+    }
 
     const struct vfs_ops* ops = vfs_find_fstype(fstype);
     if (!ops) return VFS_EINVAL;
@@ -338,6 +376,16 @@ static int ahci_cd_bdev_read(struct vfs_bdev* dev, uint64_t lba, uint32_t count,
     return 0;
 }
 
+static int nvme_bdev_read(struct vfs_bdev* dev, uint64_t lba, uint32_t count, void* buf) {
+    (void)dev;
+    return nvme_read(lba, count, buf);
+}
+
+/* Extra SATA disks (private = index into the AHCI driver's list). */
+static int ahci_x_bdev_read(struct vfs_bdev* dev, uint64_t lba, uint32_t count, void* buf) {
+    return ahci_extra_read((int)(uintptr_t)dev->private, lba, count, buf);
+}
+
 void vfs_probe_drives(void) {
     if (drives_probed) return;
     drives_probed = 1;
@@ -417,4 +465,51 @@ void vfs_probe_drives(void) {
         d.private = 0;
         vfs_register_bdev(&d);
     }
+
+    /* Every other SATA disk on the AHCI controller (read-only): ahci1, ahci2, ...
+       - or ahci0, ahci1, ... when no SATA disk is the Storefile disk. */
+    {
+        int n = ahci_extra_init(), i;
+        int first = ahci_is_available() ? 1 : 0;
+        for (i = 0; i < n; i++) {
+            struct vfs_bdev d;
+            int num = first + i;
+            char* z = (char*)&d;
+            uint32_t k;
+            const char* m = ahci_extra_model(i);
+            for (k = 0; k < sizeof d; k++) z[k] = 0;
+            d.name[0] = 'a'; d.name[1] = 'h'; d.name[2] = 'c'; d.name[3] = 'i';
+            d.name[4] = (char)('0' + num); d.name[5] = 0;
+            for (k = 0; m[k] && k < 47; k++) d.model[k] = m[k];
+            d.sectors = ahci_extra_sectors(i);
+            d.present = 1;
+            d.removable = 0;
+            d.read = ahci_x_bdev_read;
+            d.write = 0;
+            d.private = (void*)(uintptr_t)i;
+            vfs_register_bdev(&d);
+        }
+    }
+
+    /* NVMe (first namespace of the first controller, read-only): nvme0n1 */
+    if (nvme_init() == 0) {
+        struct vfs_bdev d;
+        char* z = (char*)&d;
+        uint32_t k;
+        const char* m = nvme_model();
+        const char* nm = "nvme0n1";
+        for (k = 0; k < sizeof d; k++) z[k] = 0;
+        for (k = 0; nm[k]; k++) d.name[k] = nm[k];
+        for (k = 0; m[k] && k < 47; k++) d.model[k] = m[k];
+        d.sectors = nvme_sectors();
+        d.present = 1;
+        d.removable = 0;
+        d.read = nvme_bdev_read;
+        d.write = 0;
+        d.private = 0;
+        vfs_register_bdev(&d);
+    }
+
+    /* partitions of the disks found above (ata0p1, ahci0p2, nvme0n1p1, ...) */
+    vfs_scan_partitions();
 }

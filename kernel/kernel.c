@@ -36,6 +36,11 @@ uint16_t* VGA = (uint16_t*)0xB8000;
 int cursor = 0;
 uint16_t con_color = VGA_USER_COLOR;      /* default text attribute      */
 uint16_t con_log_color = VGA_COLOR;       /* boot_log() line attribute   */
+/* The attribute of the last character the console drew. The hardware text
+ * cursor has no colour of its own: it is drawn in the foreground colour of
+ * the cell it sits on, so sync_cursor() gives the empty cell under it this
+ * colour - the cursor always matches the text printed just before it. */
+static uint16_t last_text_attr = VGA_USER_COLOR;
 
 // FPU INIT
 
@@ -529,7 +534,17 @@ void sync_cursor() {
         if (fl & 0x200) asm volatile ("sti");
     }
 
-    // 2. Update Cursor Position
+    // 2. Cursor colour = colour of the text printed last (only for an empty
+    //    cell: over a character the cursor already takes that character's colour)
+    {
+        uint16_t cell = VGA[cursor];
+        if ((cell & 0xFF) == ' ' || (cell & 0xFF) == 0) {
+            uint16_t want = (uint16_t)((cell & 0xF000) | (last_text_attr & 0x0F00));
+            if ((cell & 0xFF00) != want) VGA[cursor] = (uint16_t)(want | ' ');
+        }
+    }
+
+    // 3. Update Cursor Position
     outb(0x3D4, 0x0F);
     outb(0x3D5, (uint8_t)(cursor & 0xFF));
     outb(0x3D4, 0x0E);
@@ -767,6 +782,7 @@ static void putc_draw(char c, uint16_t color) {
         cursor += (next - col);
     } else if (c >= ' ') {
         VGA[cursor] = color | (uint8_t)c;
+        last_text_attr = color;
         cursor++;
     }
     if (cursor >= VGA_WIDTH * VGA_HEIGHT) scroll();
@@ -1134,6 +1150,7 @@ void read_line(char* buffer, int max_len) {
                         cursor = prompt_start + i;
                     }
                     VGA[cursor] = con_color | (rl_mask ? '*' : line[i]);
+                    last_text_attr = con_color;
                     cursor++;
                 }
 
@@ -1201,6 +1218,7 @@ void read_line(char* buffer, int max_len) {
                         cursor = prompt_start + i;
                     }
                     VGA[cursor] = con_color | (rl_mask ? '*' : line[i]);
+                    last_text_attr = con_color;
                     cursor++;
                 }
 

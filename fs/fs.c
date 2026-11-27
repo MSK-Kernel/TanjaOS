@@ -4,6 +4,9 @@
 #include "../include/overlay.h"
 extern const struct vfs_ops* tanjafs_get_ops(void);
 extern const struct vfs_ops* iso9660_get_ops(void);
+extern const struct vfs_ops* extfs_get_ops(void);
+extern const struct vfs_ops* fatfs_get_ops(void);
+extern const struct vfs_ops* btrfs_get_ops(void);
 #include "../include/iso9660.h"
 
 /* Thin public filesystem API.
@@ -66,6 +69,9 @@ void fs_init(void) {
     vfs_register_fstype(devfs_get_ops());
     vfs_register_fstype(tanjafs_get_ops());   /* mount a TanjaOS disk (read-only) */
     vfs_register_fstype(iso9660_get_ops());   /* mount a CD/ISO (read-only) */
+    vfs_register_fstype(extfs_get_ops());     /* ext2 / ext3 / ext4 (read-only) */
+    vfs_register_fstype(fatfs_get_ops());     /* FAT12 / FAT16 / FAT32, vfat (read-only) */
+    vfs_register_fstype(btrfs_get_ops());     /* btrfs (read-only) */
     vfs_mount("/dev", "devfs", 0, 0);
 }
 

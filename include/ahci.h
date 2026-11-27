@@ -32,4 +32,11 @@ int ahci_cd_init(void);
 uint32_t ahci_cd_blocks(void);
 int ahci_cd_read_blocks(uint32_t lba, uint32_t count, void* buf);
 
+// Every SATA disk other than the one ahci_init() drives, read-only, so that
+// all drives of a machine are visible. ahci_extra_init() returns how many.
+int ahci_extra_init(void);
+const char* ahci_extra_model(int i);
+uint64_t ahci_extra_sectors(int i);
+int ahci_extra_read(int i, uint64_t lba, uint32_t count, void* buf);
+
 #endif

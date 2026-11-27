@@ -495,3 +495,154 @@ int ahci_cd_read_blocks(uint32_t lba, uint32_t count, void* buf) {
     }
     return 0;
 }
+
+static inline uint16_t rd16w(const uint8_t* b, int word) { return (uint16_t)(b[word * 2] | (b[word * 2 + 1] << 8)); }
+
+// ---- additional SATA disks (read-only) ----------------------------------------
+//
+// ahci_init() above drives exactly one SATA disk (the one the Storefile lives
+// on). Every other SATA disk on the controller is made available here, so a
+// machine with several drives shows all of them as block devices. Each port
+// has its own command list / FIS area / command table.
+
+#define XP_MAX 6
+
+struct xp {
+    hba_cmd_header_t list[32] __attribute__((aligned(1024)));
+    uint8_t fis[256] __attribute__((aligned(256)));
+    hba_cmd_table_t table __attribute__((aligned(128)));
+    hba_port_t* hp;
+    uint64_t sectors;
+    char model[48];
+};
+
+static struct xp xps[XP_MAX];
+static uint8_t xp_ident[512] __attribute__((aligned(16)));
+static uint8_t xp_bounce[128 * 512] __attribute__((aligned(16)));
+static int xp_n = 0;
+
+static void xp_stop(struct xp* x) {
+    uint32_t start = get_uptime_ms();
+    x->hp->cmd &= ~(uint32_t)PORT_CMD_ST;
+    while ((x->hp->cmd & PORT_CMD_CR) && get_uptime_ms() - start < 1000) { }
+    x->hp->cmd &= ~(uint32_t)PORT_CMD_FRE;
+    start = get_uptime_ms();
+    while ((x->hp->cmd & PORT_CMD_FR) && get_uptime_ms() - start < 1000) { }
+}
+
+static void xp_start(struct xp* x) {
+    uint32_t start = get_uptime_ms();
+    while ((x->hp->cmd & PORT_CMD_CR) && get_uptime_ms() - start < 1000) { }
+    x->hp->cmd |= PORT_CMD_FRE;
+    x->hp->cmd |= PORT_CMD_ST;
+}
+
+/* one read-type ATA command (IDENTIFY DEVICE / READ DMA EXT); 0 ok, -1 error */
+static int xp_cmd(struct xp* x, uint8_t ata_cmd, uint64_t lba, uint32_t count, void* buf, uint32_t bytes)
+{
+    uint32_t start = get_uptime_ms(), i;
+    uint8_t* fis;
+    while (x->hp->tfd & (TFD_BSY | TFD_DRQ)) {
+        if (get_uptime_ms() - start > 3000) goto fail;
+    }
+    x->list[0].dw0 = 5u | (1u << 16);                    /* 20-byte FIS, one PRDT entry, read */
+    x->list[0].prdbc = 0;
+    x->list[0].ctba = (uint32_t)(uintptr_t)&x->table;
+    x->list[0].ctbau = 0;
+    for (i = 0; i < 64; i++) x->table.cfis[i] = 0;
+    x->table.prdt[0].dba = (uint32_t)(uintptr_t)buf;
+    x->table.prdt[0].dbau = 0;
+    x->table.prdt[0].reserved = 0;
+    x->table.prdt[0].dbc_ic = (bytes - 1) & 0x3FFFFF;
+    fis = x->table.cfis;
+    fis[0] = 0x27; fis[1] = 0x80; fis[2] = ata_cmd;
+    fis[4] = (uint8_t)lba;         fis[5] = (uint8_t)(lba >> 8);  fis[6] = (uint8_t)(lba >> 16);
+    fis[7] = 0x40;
+    fis[8] = (uint8_t)(lba >> 24); fis[9] = (uint8_t)(lba >> 32); fis[10] = (uint8_t)(lba >> 40);
+    fis[12] = (uint8_t)count;      fis[13] = (uint8_t)(count >> 8);
+    x->hp->is = 0xFFFFFFFFu;
+    x->hp->ci = 1u;
+    start = get_uptime_ms();
+    while (x->hp->ci & 1u) {
+        if ((x->hp->tfd & TFD_ERR) || get_uptime_ms() - start > 10000) goto fail;
+    }
+    if (x->hp->tfd & TFD_ERR) goto fail;
+    return 0;
+fail:
+    xp_stop(x);                                          /* restart the port for the next command */
+    x->hp->serr = 0xFFFFFFFFu;
+    x->hp->is = 0xFFFFFFFFu;
+    xp_start(x);
+    return -1;
+}
+
+/* Find and set up every SATA disk except the one ahci_init() owns.
+ * Returns how many were found. */
+int ahci_extra_init(void)
+{
+    uint32_t abar;
+    hba_ghc_t* g;
+    int i;
+    if (xp_n) return xp_n;
+    if (find_ahci_pci_device(&abar) != 0 || abar == 0) return 0;
+    g = (hba_ghc_t*)(uintptr_t)abar;
+    g->ghc |= GHC_AE;
+
+    for (i = 0; i < 32 && xp_n < XP_MAX; i++) {
+        hba_port_t* p;
+        struct xp* x;
+        uint32_t k, w;
+        if (!(g->pi & (1u << i))) continue;
+        p = (hba_port_t*)((uint8_t*)g + 0x100 + i * 0x80);
+        if ((p->ssts & 0x0F) != 3 || p->sig != 0x00000101u) continue;   /* a SATA disk */
+        if (p == port) continue;                                        /* ahci_init()'s disk */
+        x = &xps[xp_n];
+        x->hp = p;
+        xp_stop(x);
+        for (k = 0; k < 32; k++) { x->list[k].dw0 = 0; x->list[k].prdbc = 0; x->list[k].ctba = 0; x->list[k].ctbau = 0; }
+        for (k = 0; k < 256; k++) x->fis[k] = 0;
+        p->clb = (uint32_t)(uintptr_t)x->list; p->clbu = 0;
+        p->fb = (uint32_t)(uintptr_t)x->fis;   p->fbu = 0;
+        p->serr = 0xFFFFFFFFu; p->is = 0xFFFFFFFFu;
+        xp_start(x);
+        if (xp_cmd(x, 0xEC, 0, 0, xp_ident, 512) != 0) continue;       /* IDENTIFY DEVICE */
+        if (rd16w(xp_ident, 83) & (1u << 10))
+            x->sectors = (uint64_t)rd16w(xp_ident, 100) | ((uint64_t)rd16w(xp_ident, 101) << 16) |
+                         ((uint64_t)rd16w(xp_ident, 102) << 32) | ((uint64_t)rd16w(xp_ident, 103) << 48);
+        else
+            x->sectors = (uint64_t)rd16w(xp_ident, 60) | ((uint64_t)rd16w(xp_ident, 61) << 16);
+        if (x->sectors == 0) continue;
+        for (k = 0; k < 20; k++) {                                     /* model: words 27..46, byte-swapped */
+            w = rd16w(xp_ident, 27 + k);
+            x->model[2 * k] = (char)(w >> 8);
+            x->model[2 * k + 1] = (char)(w & 0xFF);
+        }
+        x->model[40] = 0;
+        for (k = 40; k > 0 && x->model[k - 1] == ' '; k--) x->model[k - 1] = 0;
+        xp_n++;
+    }
+    return xp_n;
+}
+
+const char* ahci_extra_model(int i) { return (i >= 0 && i < xp_n) ? xps[i].model : ""; }
+uint64_t ahci_extra_sectors(int i) { return (i >= 0 && i < xp_n) ? xps[i].sectors : 0; }
+
+/* read `count` 512-byte sectors; 0 ok, -1 error */
+int ahci_extra_read(int i, uint64_t lba, uint32_t count, void* buf)
+{
+    uint8_t* out = (uint8_t*)buf;
+    if (i < 0 || i >= xp_n || !buf || !count) return -1;
+    if (lba + count > xps[i].sectors) return -1;
+    while (count) {
+        uint32_t n = count > 128 ? 128 : count, k;
+        int aligned = (((uintptr_t)out) & 1u) == 0;
+        void* dst = aligned ? (void*)out : (void*)xp_bounce;
+        int tries;
+        for (tries = 0; tries < 2; tries++)
+            if (xp_cmd(&xps[i], 0x25 /* READ DMA EXT */, lba, n, dst, n * 512) == 0) break;
+        if (tries == 2) return -1;
+        if (!aligned) for (k = 0; k < n * 512; k++) out[k] = xp_bounce[k];
+        out += n * 512; lba += n; count -= n;
+    }
+    return 0;
+}

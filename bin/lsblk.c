@@ -8,7 +8,7 @@
  * device. The model and sector count of each one come from the block
  * device registry, looked up by the node's name. */
 
-#define LB_MAX 16
+#define LB_MAX 40
 
 static int slen(const char* s) {
     int n = 0;
@@ -75,7 +75,7 @@ void main(char* args) {
 
     load_registry();
 
-    print("NAME     MODEL                                    SECTORS\n");
+    print("NAME         MODEL                                    SECTORS\n");
     while (i < (int)sz) {
         char name[32];
         int p = 0, row, pad;
@@ -88,7 +88,7 @@ void main(char* args) {
 
         row = find_row(name);
         print(name);
-        pad = 9 - slen(name);
+        pad = 13 - slen(name);
         while (pad-- > 0) print(" ");
         print(row >= 0 ? r_model[row] : "");
         pad = 41 - (row >= 0 ? slen(r_model[row]) : 0);

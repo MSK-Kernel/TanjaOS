@@ -17,7 +17,7 @@
  */
 
 #define VFS_MAX_MOUNTS   16
-#define VFS_MAX_BDEVS    8
+#define VFS_MAX_BDEVS    32
 #define VFS_PATH_MAX     256
 #define VFS_NAME_MAX     64
 
